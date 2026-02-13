@@ -6,6 +6,7 @@
 
 import * as path from 'path';
 import type { Config, PublishHistory, DirectoryType, Part, Assignment } from '../types/config';
+import { normalizeSubmissionFilters } from '../types/config';
 import type { VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
 import type {
   ReconciliationPlan,
@@ -367,13 +368,14 @@ function detectPartSettingsChanged(
   if (s.number_of_submissions !== undefined && s.number_of_submissions !== (remotePart as unknown as Record<string, unknown>).number_of_submissions) return true;
   if (s.databricks_maxusers !== undefined && s.databricks_maxusers !== (remotePart as unknown as Record<string, unknown>).databricks_maxusers) return true;
 
-  // Compare submission filters
+  // Compare submission filters (normalize both to object format)
   if (s.submission_filters !== undefined) {
-    const remoteFilters = remotePart.submission_filters;
+    const localFilters = normalizeSubmissionFilters(s.submission_filters);
+    const remoteFilters = normalizeSubmissionFilters(remotePart.submission_filters);
     if (!remoteFilters) return true; // Config defines filters but remote has none
-    if (JSON.stringify(s.submission_filters.include ?? []) !== JSON.stringify(remoteFilters.include ?? [])) return true;
-    if (JSON.stringify(s.submission_filters.exclude ?? []) !== JSON.stringify(remoteFilters.exclude ?? [])) return true;
-    if (JSON.stringify(s.submission_filters.list ?? []) !== JSON.stringify((remoteFilters as { list?: string[] }).list ?? [])) return true;
+    if (JSON.stringify(localFilters?.include ?? []) !== JSON.stringify(remoteFilters.include ?? [])) return true;
+    if (JSON.stringify(localFilters?.exclude ?? []) !== JSON.stringify(remoteFilters.exclude ?? [])) return true;
+    if (JSON.stringify(localFilters?.list ?? []) !== JSON.stringify(remoteFilters.list ?? [])) return true;
   }
 
   // Compare lab_interface

@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { slugify, getUniqueDirectoryName } from '../../src/commands/pull';
+import { slugify, getUniqueDirectoryName, valuesEqual } from '../../src/commands/pull';
 
 describe('Pull Command Utilities', () => {
   let tempDir: string;
@@ -126,5 +126,53 @@ describe('Excluded Assignments Integration', () => {
 
     // This behavior is implemented in reconciler.ts lines 222-232
     expect(true).toBe(true);
+  });
+});
+
+describe('Settings Drift Detection', () => {
+  describe('valuesEqual', () => {
+    it('should return true for identical primitives', () => {
+      expect(valuesEqual('hello', 'hello')).toBe(true);
+      expect(valuesEqual(123, 123)).toBe(true);
+      expect(valuesEqual(true, true)).toBe(true);
+    });
+
+    it('should return false for different primitives', () => {
+      expect(valuesEqual('hello', 'world')).toBe(false);
+      expect(valuesEqual(123, 456)).toBe(false);
+      expect(valuesEqual(true, false)).toBe(false);
+    });
+
+    it('should handle undefined values', () => {
+      expect(valuesEqual(undefined, undefined)).toBe(true);
+      expect(valuesEqual(undefined, 'value')).toBe(false);
+      expect(valuesEqual('value', undefined)).toBe(false);
+    });
+
+    it('should compare objects by JSON equality', () => {
+      expect(valuesEqual({ a: 1 }, { a: 1 })).toBe(true);
+      expect(valuesEqual({ a: 1 }, { a: 2 })).toBe(false);
+      expect(valuesEqual({ a: 1, b: 2 }, { a: 1 })).toBe(false);
+    });
+
+    it('should compare arrays by JSON equality', () => {
+      expect(valuesEqual([1, 2, 3], [1, 2, 3])).toBe(true);
+      expect(valuesEqual([1, 2], [1, 2, 3])).toBe(false);
+      expect(valuesEqual(['a', 'b'], ['a', 'b'])).toBe(true);
+    });
+
+    it('should compare nested objects', () => {
+      const obj1 = { filters: { include: ['*.py'], exclude: ['*.pyc'] } };
+      const obj2 = { filters: { include: ['*.py'], exclude: ['*.pyc'] } };
+      const obj3 = { filters: { include: ['*.py'], exclude: ['*.txt'] } };
+
+      expect(valuesEqual(obj1, obj2)).toBe(true);
+      expect(valuesEqual(obj1, obj3)).toBe(false);
+    });
+
+    it('should return false for different types', () => {
+      expect(valuesEqual('123', 123)).toBe(false);
+      expect(valuesEqual(true, 'true')).toBe(false);
+    });
   });
 });

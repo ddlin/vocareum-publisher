@@ -37,14 +37,44 @@ export const DirectoryTypeSchema = z.enum([
 /**
  * Submission filter patterns for part file submissions.
  * Patterns are passed as-is to rsync on the Vocareum backend.
+ *
+ * Accepts two formats:
+ * 1. Object with include/exclude/list arrays: { include: ["*.py"], exclude: ["*.pyc"] }
+ * 2. Simple array (treated as include list): ["*.py", "*.txt"]
  */
-export const SubmissionFiltersSchema = z.object({
+const SubmissionFiltersObjectSchema = z.object({
   include: z.array(z.string()).optional(),
   exclude: z.array(z.string()).optional(),
   list: z.array(z.string()).optional(),  // Explicit file list
 });
 
+export const SubmissionFiltersSchema = z.union([
+  SubmissionFiltersObjectSchema,
+  z.array(z.string()),  // Simple array format from API
+]);
+
 export type SubmissionFilters = z.infer<typeof SubmissionFiltersSchema>;
+
+/** Normalized submission filters in object format */
+export type SubmissionFiltersObject = z.infer<typeof SubmissionFiltersObjectSchema>;
+
+/**
+ * Normalize submission_filters to object format.
+ * Handles both array format (from API) and object format (from config).
+ */
+export function normalizeSubmissionFilters(
+  filters: SubmissionFilters | undefined
+): SubmissionFiltersObject | undefined {
+  if (filters === undefined) return undefined;
+
+  // If it's an array, treat as include list
+  if (Array.isArray(filters)) {
+    return filters.length > 0 ? { include: filters } : undefined;
+  }
+
+  // Already object format
+  return filters;
+}
 
 /**
  * Lab interface configuration schema

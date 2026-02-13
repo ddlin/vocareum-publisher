@@ -26,6 +26,8 @@ export interface CoursesListResponse {
 
 /**
  * Assignment response from Vocareum API
+ *
+ * Includes settings fields that may be returned by getAssignment.
  */
 export interface VocareumAssignmentResponse {
   id: string;
@@ -36,6 +38,24 @@ export interface VocareumAssignmentResponse {
   points?: string;
   published?: string; // "0" or "1"
   deleted: string; // "0" or "1"
+  // Additional settings that may be returned
+  nosubmit?: boolean;
+  publish?: boolean;
+  publish_grades?: string;
+  auto_submit?: boolean;
+  grading_on_submit?: boolean;
+  noworkarea?: boolean;
+  exam_mode?: 'timed' | 'scheduled' | 'timed_scheduled';
+  exam_duration?: number;
+  num_attempts?: number;
+  show_end_exam_button?: boolean;
+  copy_startercode?: boolean;
+  uncompressupload?: boolean;
+  lti_on?: boolean;
+  anonymous_grading?: boolean;
+  grading_visibility?: 'all' | 'assigned';
+  send_webhook?: boolean;
+  live_code_comments?: boolean;
 }
 
 /**
@@ -53,18 +73,40 @@ export interface VocareumPartResponse {
   seqnum: string; // Sequence number as string: "0", "1", "2"
   deleted: string; // "0" or "1"
   part_url?: string;
+  // Cloud/AWS settings
   cloud_labs?: boolean;
   instant_aws_access?: boolean;
+  // Resource budgets
   session_length?: string;
   monthly_dollar?: string;
   monthly_time?: string;
   total_time?: string;
   total_dollar?: string;
+  // Submission settings - API may return array or object format
   submission_filters?: {
     include?: string[];
     exclude?: string[];
     list?: string[];
+  } | string[];
+  // Late submission settings
+  late_penalty_percent?: number;
+  late_penalty_percent_rule?: 'max score' | 'student score';
+  deadlinedate?: string;
+  // Lab settings
+  endlab?: 'stop' | 'terminate';
+  labtype?: string;
+  container_image?: string;
+  number_of_submissions?: number;
+  lab_interface?: {
+    panels?: string[];
+    controls?: string[];
+    information?: string[];
+    launch_behavior?: string[];
+    grades?: string[];
   };
+  // Other settings
+  databricks_maxusers?: number;
+  tags?: string[];
 }
 
 /**

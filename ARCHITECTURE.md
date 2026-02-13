@@ -241,9 +241,12 @@ async function fixValidationIssues(
 **Key Responsibilities:**
 - Scan for orphaned assignments (exist in Vocareum but not in config)
 - Scan for stale assignments (exist in config but deleted from Vocareum)
+- Detect settings drift (local settings differ from Vocareum)
 - Interactive prompts to handle each issue
 - Download assignment content and create local directory structure
-- Add imported assignments to config
+- Fetch and import assignment/part settings from Vocareum API
+- Pull settings from Vocareum to update local config (settings drift)
+- Add imported assignments to config (with settings)
 - Add excluded assignment IDs to `excluded_assignments` list
 - Reset or remove stale assignments from config
 
@@ -316,11 +319,19 @@ async function importAssignment(
   orphan: OrphanedEntity,
   localPath: string
 ): Promise<Assignment> {
+  // Fetch full assignment details including settings
+  const fullAssignment = await getAssignment(client, courseId, orphan.id);
+  const assignmentSettings = mapAssignmentSettings(fullAssignment);
+
   // Get parts for this assignment
   const parts = await listParts(client, courseId, orphan.id);
   const configParts: Part[] = [];
 
   for (const part of parts) {
+    // Fetch full part details including settings
+    const fullPart = await getPart(client, courseId, orphan.id, part.id);
+    const partSettings = mapPartSettings(fullPart);
+
     // Download content
     const files = await downloadContent(client, courseId, orphan.id, part.id);
 
@@ -332,7 +343,7 @@ async function importAssignment(
       path: part.path,
       name: part.name,
       directories: detectDirectories(files),
-      settings: {},
+      settings: partSettings,  // Settings imported from Vocareum
     });
   }
 
@@ -341,7 +352,7 @@ async function importAssignment(
     name: orphan.name,
     path: localPath,
     create_from_template: false,
-    settings: {},
+    settings: assignmentSettings,  // Settings imported from Vocareum
     parts: configParts,
   };
 }
@@ -366,6 +377,27 @@ async function getUniqueDirectoryName(basePath: string, desiredName: string): Pr
   return name;
 }
 ```
+
+**Settings Import:**
+
+When importing assignments, settings are fetched from Vocareum and mapped to config format:
+
+Assignment settings imported:
+- `description`, `nosubmit`, `publish`, `publish_grades`
+- `auto_submit`, `grading_on_submit`, `noworkarea`
+- `exam_mode`, `exam_duration`, `num_attempts`
+- `show_end_exam_button`, `copy_startercode`, `uncompressupload`
+- `lti_on`, `anonymous_grading`, `grading_visibility`
+- `send_webhook`, `live_code_comments`
+
+Part settings imported:
+- `submission_filters` (include/exclude patterns)
+- `cloud_labs`, `instant_aws_access`
+- `session_length`, `monthly_dollar`, `monthly_time`, `total_time`, `total_dollar`
+- `late_penalty_percent`, `late_penalty_percent_rule`, `deadlinedate`
+- `endlab`, `labtype`, `container_image`
+- `number_of_submissions`, `lab_interface`
+- `databricks_maxusers`, `tags`
 
 **Orphan and Stale Detection:**
 

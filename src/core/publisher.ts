@@ -6,6 +6,7 @@
 
 import * as path from 'path';
 import type { Config, PublishHistory } from '../types/config';
+import { normalizeSubmissionFilters } from '../types/config';
 import type { PublishResult, PublishOperationOptions } from '../types/state';
 import { VocareumClient } from '../api/client';
 import { reconcile, displayPlan } from './reconciler';
@@ -372,7 +373,7 @@ export async function publish(
           logger.info(`Updating part settings: ${partName}`);
           await updatePart(client, workingConfig.vocareum.course_id, assignmentId, partId, {
             name: partName,  // Required for all part updates
-            submission_filters: partSettings?.submission_filters,
+            submission_filters: normalizeSubmissionFilters(partSettings?.submission_filters),
             cloud_labs: partSettings?.cloud_labs,
             instant_aws_access: partSettings?.instant_aws_access,
             session_length: partSettings?.session_length,
