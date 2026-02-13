@@ -8,9 +8,12 @@ const {
   reconcileMock,
   displayPlanMock,
   copyAssignmentMock,
+  getAssignmentMock,
   updateAssignmentMock,
   updateCourseMock,
+  getPartMock,
   updatePartMock,
+  readDirectoryMock,
   syncDirectoryMock,
   updateConfigMock,
   commitChangesMock,
@@ -21,9 +24,12 @@ const {
   reconcileMock: vi.fn(),
   displayPlanMock: vi.fn(),
   copyAssignmentMock: vi.fn(),
+  getAssignmentMock: vi.fn(),
   updateAssignmentMock: vi.fn(),
   updateCourseMock: vi.fn(),
+  getPartMock: vi.fn(),
   updatePartMock: vi.fn(),
+  readDirectoryMock: vi.fn(),
   syncDirectoryMock: vi.fn(),
   updateConfigMock: vi.fn(),
   commitChangesMock: vi.fn(),
@@ -39,6 +45,7 @@ vi.mock('../../src/core/reconciler', () => ({
 
 vi.mock('../../src/api/assignments', () => ({
   copyAssignment: copyAssignmentMock,
+  getAssignment: getAssignmentMock,
   updateAssignment: updateAssignmentMock,
 }));
 
@@ -47,10 +54,12 @@ vi.mock('../../src/api/courses', () => ({
 }));
 
 vi.mock('../../src/api/parts', () => ({
+  getPart: getPartMock,
   updatePart: updatePartMock,
 }));
 
 vi.mock('../../src/core/uploader', () => ({
+  readDirectory: readDirectoryMock,
   syncDirectory: syncDirectoryMock,
 }));
 
@@ -112,6 +121,9 @@ describe('publish', () => {
     getGitUserNameMock.mockResolvedValue('tester');
     updateConfigMock.mockResolvedValue(undefined);
     syncDirectoryMock.mockResolvedValue({ succeeded: [], failed: [], directoryHash: 'hash' });
+    readDirectoryMock.mockResolvedValue({});
+    getAssignmentMock.mockResolvedValue({ id: 'asn-1', name: 'Lab 1', deleted: '0', courseid: '201303' });
+    getPartMock.mockResolvedValue({ id: 'part-1', name: 'Part 1', seqnum: '0', deleted: '0', courseid: '201303', assignmentid: 'asn-1' });
     promptConfirmMock.mockResolvedValue(true);
   });
 
@@ -431,5 +443,261 @@ describe('publish', () => {
       submission_filters: { include: ['*.py'], exclude: [], list: undefined },
     });
     expect(updatePartMock.mock.calls[1][4].cloud_labs).toBeUndefined();
+  });
+
+  it('should retry part settings update when error uses statusCode=400 shape', async () => {
+    const assignment = {
+      ...config.assignments[0],
+      assignment_id: 'asn-1',
+      parts: [
+        {
+          part_id: 'part-1',
+          path: 'part1',
+          name: 'Part 1',
+          settings: {
+            session_length: '3600',
+          },
+        },
+      ],
+    };
+
+    const plan: ReconciliationPlan = {
+      config,
+      course: { type: 'skip' },
+      assignments: [
+        {
+          type: 'update',
+          assignment,
+          parts: [
+            {
+              type: 'update',
+              part: assignment.parts[0],
+              contentChanged: false,
+              metadataChanged: true,
+              reason: 'Settings changed',
+            },
+          ],
+          assignmentMetadataChanged: false,
+        },
+      ],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 1,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+      staleInConfig: [],
+    };
+    reconcileMock.mockResolvedValue(plan);
+    updatePartMock
+      .mockRejectedValueOnce({ statusCode: 400, message: 'Request failed with status code 400' })
+      .mockResolvedValueOnce(undefined);
+
+    const result = await publish(config, client, baseOptions);
+
+    expect(result.success).toBe(true);
+    expect(updatePartMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('should skip metadata failure when all payload retries return 400', async () => {
+    const assignment = {
+      ...config.assignments[0],
+      assignment_id: 'asn-1',
+      parts: [
+        {
+          part_id: 'part-1',
+          path: 'part1',
+          name: 'Part 1',
+          settings: {
+            cloud_labs: true,
+            session_length: '3600',
+          },
+        },
+      ],
+    };
+
+    const plan: ReconciliationPlan = {
+      config,
+      course: { type: 'skip' },
+      assignments: [
+        {
+          type: 'update',
+          assignment,
+          parts: [
+            {
+              type: 'update',
+              part: assignment.parts[0],
+              contentChanged: false,
+              metadataChanged: true,
+              reason: 'Settings changed',
+            },
+          ],
+          assignmentMetadataChanged: false,
+        },
+      ],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 1,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+      staleInConfig: [],
+    };
+    reconcileMock.mockResolvedValue(plan);
+    updatePartMock
+      .mockRejectedValueOnce({ response: { status: 400 } })
+      .mockRejectedValueOnce({ response: { status: 400 } })
+      .mockRejectedValueOnce({ response: { status: 400 } });
+
+    const result = await publish(config, client, baseOptions);
+
+    expect(updatePartMock).toHaveBeenCalledTimes(3);
+    expect(updatePartMock.mock.calls[2][4]).toEqual({ name: 'Part 1' });
+    expect(result.failed).toHaveLength(0);
+    expect(result.success).toBe(true);
+  });
+
+  it('should persist detailed settings and file size deltas in publish history', async () => {
+    const withHistory: Config = {
+      ...config,
+      publish_history: [
+        {
+          timestamp: '2026-02-13T00:00:00.000Z',
+          commit_sha: 'old',
+          published_by: 'tester',
+          status: 'success',
+          content_state: {
+            'lab1/part1/docs': 'oldhash',
+          },
+          file_size_state: {
+            'lab1/part1/docs/readme.md': 2,
+          },
+        },
+      ],
+    };
+    const assignment = {
+      ...withHistory.assignments[0],
+      assignment_id: 'asn-1',
+      name: 'Lab 1 Updated',
+      settings: { description: 'new description' },
+      parts: [
+        {
+          part_id: 'part-1',
+          path: 'part1',
+          name: 'Part 1',
+          settings: { session_length: '60' },
+        },
+      ],
+    };
+
+    const plan: ReconciliationPlan = {
+      config: withHistory,
+      course: { type: 'skip' },
+      assignments: [
+        {
+          type: 'update',
+          assignment,
+          parts: [
+            {
+              type: 'update',
+              part: assignment.parts[0],
+              contentChanged: true,
+              changedDirectories: ['docs'],
+              metadataChanged: true,
+              reason: 'Content and settings changed',
+            },
+          ],
+          assignmentMetadataChanged: true,
+        },
+      ],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 1,
+        estimatedApiCalls: 2,
+      },
+      orphanedInVocareum: [],
+      staleInConfig: [],
+    };
+
+    reconcileMock.mockResolvedValue(plan);
+    getAssignmentMock.mockResolvedValue({
+      id: 'asn-1',
+      name: 'Lab 1',
+      deleted: '0',
+      courseid: '201303',
+      description: 'old description',
+    });
+    getPartMock.mockResolvedValue({
+      id: 'part-1',
+      seqnum: '0',
+      name: 'Part 1',
+      deleted: '0',
+      courseid: '201303',
+      assignmentid: 'asn-1',
+      session_length: '30',
+    });
+    readDirectoryMock.mockResolvedValue({
+      'readme.md': Buffer.from('hello'),
+    });
+    syncDirectoryMock.mockResolvedValue({
+      succeeded: ['readme.md'],
+      failed: [],
+      directoryHash: 'newhash',
+      deleted: [],
+    });
+
+    const result = await publish(withHistory, client, baseOptions);
+
+    expect(result.success).toBe(true);
+    expect(updateConfigMock).toHaveBeenCalledTimes(1);
+    const historyArg = updateConfigMock.mock.calls[0][1].publish_history[0];
+    expect(historyArg.changes.settings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          scope: 'assignment',
+          field: 'name',
+          from: 'Lab 1',
+          to: 'Lab 1 Updated',
+        }),
+        expect.objectContaining({
+          scope: 'assignment',
+          field: 'description',
+          from: 'old description',
+          to: 'new description',
+        }),
+        expect.objectContaining({
+          scope: 'part',
+          field: 'session_length',
+          from: '30',
+          to: '60',
+        }),
+      ])
+    );
+    expect(historyArg.changes.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: 'lab1/part1/docs/readme.md',
+          previous_size: 2,
+          current_size: 5,
+          delta: 3,
+        }),
+      ])
+    );
+    expect(historyArg.file_size_state['lab1/part1/docs/readme.md']).toBe(5);
   });
 });

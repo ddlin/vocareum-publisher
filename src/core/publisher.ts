@@ -9,14 +9,15 @@ import type { Config, PublishHistory } from '../types/config';
 import { normalizeSubmissionFilters, nullToUndefined } from '../types/config';
 import type { PartSettings } from '../types/config';
 import type { ApiPartSettings } from '../types/api';
+import type { HistorySettingChange, HistoryFileChange, AssignmentSettings } from '../types/config';
 import type { PublishResult, PublishOperationOptions } from '../types/state';
 import { VocareumClient } from '../api/client';
 import { reconcile, displayPlan } from './reconciler';
-import { copyAssignment, updateAssignment } from '../api/assignments';
+import { copyAssignment, getAssignment, updateAssignment } from '../api/assignments';
 import { updateCourse } from '../api/courses';
-import { updatePart } from '../api/parts';
+import { getPart, updatePart } from '../api/parts';
 import { mapParts } from './mapper';
-import { syncDirectory } from './uploader';
+import { readDirectory as readLocalDirectory, syncDirectory } from './uploader';
 import { updateConfig } from './config';
 import { commitChanges, getCommitSha, getGitUserName } from '../utils/git';
 import { logger } from '../utils/logger';
@@ -24,8 +25,8 @@ import { promptConfirm } from '../utils/prompts';
 
 function isHttp400(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
-  const maybeResponse = error as { response?: { status?: number } };
-  return maybeResponse.response?.status === 400;
+  const maybeError = error as { response?: { status?: number }; statusCode?: number };
+  return maybeError.response?.status === 400 || maybeError.statusCode === 400;
 }
 
 function sanitizeSubmissionFilters(
@@ -76,6 +77,30 @@ function buildPartSettingsPayload(
     databricks_maxusers: nullToUndefined(partSettings?.databricks_maxusers),
     tags: nullToUndefined(partSettings?.tags),
   };
+}
+
+function settingsEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === undefined || a === null) return b === undefined || b === null;
+  if (b === undefined || b === null) return false;
+  if (typeof a === 'object' && typeof b === 'object') {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  return false;
+}
+
+function hasSettingValue(value: unknown): boolean {
+  return value !== undefined && value !== null;
+}
+
+function pushSettingChange(
+  changes: HistorySettingChange[],
+  change: HistorySettingChange
+): void {
+  if (settingsEqual(change.from, change.to)) {
+    return;
+  }
+  changes.push(change);
 }
 
 /**
@@ -238,6 +263,9 @@ export async function publish(
   const configUpdates: Config['assignments'] = [];
   let configChanged = false;
   let shouldAbort = false;
+  const settingChanges: HistorySettingChange[] = [];
+  const fileChanges: HistoryFileChange[] = [];
+  const fileSizeState: Record<string, number> = { ...(lastHistory?.file_size_state ?? {}) };
 
   // 4. Course Updates
   if (plan.course.type === 'update' && workingConfig.vocareum.course_settings) {
@@ -360,7 +388,55 @@ export async function publish(
 
       if (action.assignmentMetadataChanged === true && action.assignment.assignment_id) {
         try {
+          const remoteAssignment = await getAssignment(
+            client,
+            workingConfig.vocareum.course_id,
+            action.assignment.assignment_id
+          );
           const asnSettings = action.assignment.settings;
+          const assignmentKeys: (keyof NonNullable<AssignmentSettings>)[] = [
+            'description',
+            'nosubmit',
+            'publish',
+            'publish_grades',
+            'auto_submit',
+            'grading_on_submit',
+            'noworkarea',
+            'exam_mode',
+            'exam_duration',
+            'num_attempts',
+            'show_end_exam_button',
+            'copy_startercode',
+            'uncompressupload',
+            'lti_on',
+            'anonymous_grading',
+            'grading_visibility',
+            'send_webhook',
+            'live_code_comments',
+          ];
+
+          pushSettingChange(settingChanges, {
+            scope: 'assignment',
+            assignment_id: action.assignment.assignment_id,
+            assignment_name: action.assignment.name,
+            field: 'name',
+            from: remoteAssignment.name,
+            to: action.assignment.name,
+          });
+          for (const key of assignmentKeys) {
+            const toValue = asnSettings?.[key];
+            if (!hasSettingValue(toValue)) continue;
+            const fromValue = (remoteAssignment as unknown as Record<string, unknown>)[key as string];
+            pushSettingChange(settingChanges, {
+              scope: 'assignment',
+              assignment_id: action.assignment.assignment_id,
+              assignment_name: action.assignment.name,
+              field: key,
+              from: fromValue,
+              to: toValue,
+            });
+          }
+
           await updateAssignment(client, workingConfig.vocareum.course_id, action.assignment.assignment_id, {
             name: action.assignment.name,
             description: nullToUndefined(asnSettings?.description),
@@ -429,6 +505,71 @@ export async function publish(
         }
         try {
           logger.info(`Updating part settings: ${partName}`);
+          let metadataUpdated = true;
+          const remotePart = await getPart(client, workingConfig.vocareum.course_id, assignmentId, partId);
+          pushSettingChange(settingChanges, {
+            scope: 'part',
+            assignment_id: assignmentId,
+            assignment_name: action.assignment.name,
+            part_id: partId,
+            part_name: partName,
+            field: 'name',
+            from: remotePart.name,
+            to: partName,
+          });
+          const toPartSettings = partSettings;
+          if (toPartSettings) {
+            const partKeys: (keyof NonNullable<PartSettings>)[] = [
+              'cloud_labs',
+              'instant_aws_access',
+              'session_length',
+              'monthly_dollar',
+              'monthly_time',
+              'total_time',
+              'total_dollar',
+              'late_penalty_percent',
+              'late_penalty_percent_rule',
+              'deadlinedate',
+              'endlab',
+              'labtype',
+              'container_image',
+              'number_of_submissions',
+              'lab_interface',
+              'databricks_maxusers',
+              'tags',
+            ];
+            const normalizedToFilters = sanitizeSubmissionFilters(normalizeSubmissionFilters(toPartSettings.submission_filters));
+            const normalizedFromFilters = sanitizeSubmissionFilters(normalizeSubmissionFilters(remotePart.submission_filters));
+            if (hasSettingValue(normalizedToFilters)) {
+              pushSettingChange(settingChanges, {
+                scope: 'part',
+                assignment_id: assignmentId,
+                assignment_name: action.assignment.name,
+                part_id: partId,
+                part_name: partName,
+                field: 'submission_filters',
+                from: normalizedFromFilters,
+                to: normalizedToFilters,
+              });
+            }
+            const remotePartRecord = remotePart as unknown as Record<string, unknown>;
+            for (const key of partKeys) {
+              const toValue = toPartSettings[key];
+              if (!hasSettingValue(toValue)) continue;
+              const fromValue = remotePartRecord[key as string];
+              pushSettingChange(settingChanges, {
+                scope: 'part',
+                assignment_id: assignmentId,
+                assignment_name: action.assignment.name,
+                part_id: partId,
+                part_name: partName,
+                field: key,
+                from: fromValue,
+                to: toValue,
+              });
+            }
+          }
+
           const fullPayload = buildPartSettingsPayload(partName, partSettings, 'full');
           try {
             await updatePart(client, workingConfig.vocareum.course_id, assignmentId, partId, fullPayload);
@@ -438,9 +579,32 @@ export async function publish(
             }
             logger.warn(`Part settings update rejected for ${partId}; retrying with safe subset`);
             const safePayload = buildPartSettingsPayload(partName, partSettings, 'safe');
-            await updatePart(client, workingConfig.vocareum.course_id, assignmentId, partId, safePayload);
+            try {
+              await updatePart(client, workingConfig.vocareum.course_id, assignmentId, partId, safePayload);
+            } catch (retryError) {
+              if (!isHttp400(retryError)) {
+                throw retryError;
+              }
+              logger.warn(`Safe part settings update rejected for ${partId}; retrying with name only`);
+              try {
+                await updatePart(client, workingConfig.vocareum.course_id, assignmentId, partId, { name: partName });
+              } catch (nameOnlyError) {
+                if (!isHttp400(nameOnlyError)) {
+                  throw nameOnlyError;
+                }
+                metadataUpdated = false;
+                logger.warn(`Skipping part metadata update for ${partId}: API rejected update payload (400)`);
+                result.skipped.push({
+                  type: 'part',
+                  id: partId,
+                  reason: 'Settings update rejected by Vocareum API (400)',
+                });
+              }
+            }
           }
-          logger.success(`Updated part ${partName}`);
+          if (metadataUpdated) {
+            logger.success(`Updated part ${partName}`);
+          }
         } catch (error) {
           logger.error(`Failed to update part settings for ${partId}`, { error });
           result.failed.push({ type: 'part', id: partId, error });
@@ -456,12 +620,17 @@ export async function publish(
       if (partAction.contentChanged && partAction.changedDirectories) {
         for (const dir of partAction.changedDirectories) {
           try {
+            const localDirPath = path.join(action.assignment.path, partAction.part.path, dir);
+            const localFiles = await readLocalDirectory(
+              localDirPath,
+              ['.gitkeep', '**/.gitkeep', ...(config.publish_options?.exclude_patterns ?? [])]
+            );
             const uploadRes = await syncDirectory(
               client,
               workingConfig.vocareum.course_id,
               action.assignment.assignment_id!,
               partId,
-              path.join(action.assignment.path, partAction.part.path, dir), // Local path
+              localDirPath, // Local path
               dir, // Directory type
               {
                 syncDeletes: options.syncDeletes,
@@ -487,6 +656,36 @@ export async function publish(
               // Only advance stored hash when this directory upload succeeded.
               const key = path.join(action.assignment.path, partAction.part.path, dir);
               result.contentState[key] = uploadRes.directoryHash;
+
+              for (const [relativePath, content] of Object.entries(localFiles)) {
+                const fileKey = path.join(action.assignment.path, partAction.part.path, dir, relativePath);
+                const currentSize = Buffer.isBuffer(content) ? content.length : Buffer.byteLength(content);
+                const previousSize = fileSizeState[fileKey] ?? 0;
+                fileChanges.push({
+                  path: fileKey,
+                  part_id: partId,
+                  directory: dir,
+                  previous_size: previousSize,
+                  current_size: currentSize,
+                  delta: currentSize - previousSize,
+                });
+                fileSizeState[fileKey] = currentSize;
+              }
+              if (uploadRes.deleted) {
+                for (const deletedPath of uploadRes.deleted) {
+                  const fileKey = path.join(action.assignment.path, partAction.part.path, dir, deletedPath);
+                  const previousSize = fileSizeState[fileKey] ?? 0;
+                  fileChanges.push({
+                    path: fileKey,
+                    part_id: partId,
+                    directory: dir,
+                    previous_size: previousSize,
+                    current_size: 0,
+                    delta: -previousSize,
+                  });
+                  delete fileSizeState[fileKey];
+                }
+              }
             }
           } catch (error) {
             logger.error(`Failed to upload ${dir} for part ${partId}`, { error });
@@ -509,6 +708,13 @@ export async function publish(
     published_by: userName,
     status: result.success ? 'success' : 'failed',
     content_state: result.contentState,
+    file_size_state: fileSizeState,
+    changes: settingChanges.length > 0 || fileChanges.length > 0
+      ? {
+        settings: settingChanges.length > 0 ? settingChanges : undefined,
+        files: fileChanges.length > 0 ? fileChanges : undefined,
+      }
+      : undefined,
     created: result.created.map(c => ({
       assignment: c.id,
       parts: c.parts || []

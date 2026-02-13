@@ -292,6 +292,46 @@ export const HistoryFailedEntitySchema = z.object({
 export type HistoryFailedEntity = z.infer<typeof HistoryFailedEntitySchema>;
 
 /**
+ * Detailed settings change record for publish history
+ */
+export const HistorySettingChangeSchema = z.object({
+  scope: z.enum(['assignment', 'part']),
+  assignment_id: z.string(),
+  assignment_name: z.string(),
+  part_id: z.string().optional(),
+  part_name: z.string().optional(),
+  field: z.string(),
+  from: z.unknown().optional(),
+  to: z.unknown().optional(),
+});
+
+export type HistorySettingChange = z.infer<typeof HistorySettingChangeSchema>;
+
+/**
+ * Detailed file size change record for publish history
+ */
+export const HistoryFileChangeSchema = z.object({
+  path: z.string(),
+  part_id: z.string(),
+  directory: DirectoryTypeSchema,
+  previous_size: z.number(),
+  current_size: z.number(),
+  delta: z.number(),
+});
+
+export type HistoryFileChange = z.infer<typeof HistoryFileChangeSchema>;
+
+/**
+ * Detailed change summary for a publish run
+ */
+export const HistoryChangesSchema = z.object({
+  settings: z.array(HistorySettingChangeSchema).optional(),
+  files: z.array(HistoryFileChangeSchema).optional(),
+});
+
+export type HistoryChanges = z.infer<typeof HistoryChangesSchema>;
+
+/**
  * Publish history entry
  */
 export const PublishHistorySchema = z.object({
@@ -300,6 +340,8 @@ export const PublishHistorySchema = z.object({
   published_by: z.string(),
   status: z.enum(['success', 'failed']).optional().default('success'),
   content_state: z.record(z.string(), z.string()),
+  file_size_state: z.record(z.string(), z.number()).optional(),
+  changes: HistoryChangesSchema.optional(),
   created: z.array(HistoryCreatedEntitySchema).optional(),
   updated: z.array(HistoryUpdatedEntitySchema).optional(),
   failed: z.array(HistoryFailedEntitySchema).optional(),
