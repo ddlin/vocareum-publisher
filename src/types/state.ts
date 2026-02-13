@@ -147,6 +147,7 @@ export interface CreatedEntity {
 export interface UpdatedEntity {
   type: 'assignment' | 'part';
   id: string;
+  parts?: string[];
 }
 
 /**

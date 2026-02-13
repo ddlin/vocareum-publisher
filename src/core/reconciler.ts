@@ -159,12 +159,15 @@ export async function reconcile(
           }
 
           // Check for content changes
+          // Use same exclude patterns as publisher for consistent hash comparison
+          const excludePatterns = ['.gitkeep', '**/.gitkeep', ...(config.publish_options?.exclude_patterns ?? [])];
           const changedDirs = await detectChangedDirectories(
             configAssignment.path,
             configPart.path,
             configPart.directories ?? ['startercode', 'scripts', 'docs', 'data'],
             lastPublishHistory,
-            options.forceAll
+            options.forceAll,
+            excludePatterns
           );
 
           // Fetch full part details for accurate settings comparison
@@ -411,13 +414,16 @@ function detectPartSettingsChanged(
 
 /**
  * Detect changed directories by comparing hashes
+ *
+ * @param excludePatterns - Patterns to exclude from hash calculation (must match publisher)
  */
 async function detectChangedDirectories(
   assignmentPath: string,
   partPath: string,
   directories: DirectoryType[],
   lastPublishHistory?: PublishHistory,
-  forceAll: boolean = false
+  forceAll: boolean = false,
+  excludePatterns: string[] = []
 ): Promise<DirectoryType[]> {
   if (forceAll) {
     return directories;
@@ -430,35 +436,10 @@ async function detectChangedDirectories(
   }
 
   for (const dir of directories) {
-    // Key format must match what we store in publisher/uploader
-    // Usually: "{assignmentPath}/{partPath}/{dir}" relative to base
-    // We need to ensure we use consistent keys.
-    // Let's assume key is relative path from basePath.
-    // But config paths are relative to basePath.
     const key = path.join(assignmentPath, partPath, dir);
 
-    // We need to calculate hash of local directory
-    // NOTE: This assumes we are running in the correct cwd or we need basePath passed to detectChangedDirectories
-    // `assignmentPath` from config is relative. `partPath` is relative.
-    // calculateDirectoryHash takes a path. We should pass full path if we have basePath.
-    // But `detectChangedDirectories` doesn't have `basePath`.
-    // Config paths are relative. 
-    // `uploadDirectory` will take `localPath`.
-    // We should assume `assignmentPath` and `partPath` are relative to CWD?
-    // In `validateStructure` we used `path.join(basePath, ...)`
-    // Here we assume CWD is basePath?
-    // Let's assume CWD for now or we might need to update signature to take basePath.
-    // `reconcile` doesn't take basePath. 
-    // `loadConfig` returns config with paths.
-    // The CLI usually runs from root.
-
-    // Check if dir exists first? 
-    // calculateDirectoryHash returns hash of empty ("empty") if not exists or empty?
-    // `calculateDirectoryHash` in `files.ts` calls `readDirectory`. 
-    // `readDirectory` checks `pathExists` and returns empty map if not found.
-    // So hash will be consistent for empty/missing.
-
-    const currentHash = await calculateDirectoryHash(key); // Relative path from CWD
+    // Calculate hash with same exclude patterns as publisher to ensure consistency
+    const currentHash = await calculateDirectoryHash(key, excludePatterns);
     const previousHash = lastPublishHistory.content_state[key];
 
     if (currentHash !== previousHash) {

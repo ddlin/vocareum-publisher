@@ -293,6 +293,9 @@ export async function publish(
       break assignmentLoop;
     }
 
+    // Track updated parts for this assignment (only used for update actions)
+    let currentUpdateEntry: { type: 'assignment'; id: string; parts: string[] } | null = null;
+
     if (action.type === 'error') {
       result.failed.push({
         type: 'assignment',
@@ -378,7 +381,9 @@ export async function publish(
       }
     }
     else if (action.type === 'update') {
-      result.updated.push({ type: 'assignment', id: action.assignment.assignment_id! });
+      // Track this assignment and its parts for history
+      currentUpdateEntry = { type: 'assignment', id: action.assignment.assignment_id!, parts: [] };
+      result.updated.push(currentUpdateEntry);
 
       // If IDs were discovered (assignment or parts), persist to config
       if (action.idDiscoveredByName === true || action.partIdsDiscovered === true) {
@@ -492,6 +497,9 @@ export async function publish(
         continue;
       }
 
+      // Track if this part was successfully updated (metadata or content)
+      let partWasUpdated = false;
+
       // Update part metadata/settings if needed
       if (partAction.metadataChanged && !action.willCreate) {
         // name is REQUIRED for part updates
@@ -604,6 +612,7 @@ export async function publish(
           }
           if (metadataUpdated) {
             logger.success(`Updated part ${partName}`);
+            partWasUpdated = true;
           }
         } catch (error) {
           logger.error(`Failed to update part settings for ${partId}`, { error });
@@ -656,6 +665,7 @@ export async function publish(
               // Only advance stored hash when this directory upload succeeded.
               const key = path.join(action.assignment.path, partAction.part.path, dir);
               result.contentState[key] = uploadRes.directoryHash;
+              partWasUpdated = true;
 
               for (const [relativePath, content] of Object.entries(localFiles)) {
                 const fileKey = path.join(action.assignment.path, partAction.part.path, dir, relativePath);
@@ -698,6 +708,11 @@ export async function publish(
           }
         }
       }
+
+      // Track this part as updated if any operation succeeded
+      if (partWasUpdated && currentUpdateEntry && !currentUpdateEntry.parts.includes(partId)) {
+        currentUpdateEntry.parts.push(partId);
+      }
     }
   }
 
@@ -719,6 +734,12 @@ export async function publish(
       assignment: c.id,
       parts: c.parts || []
     })),
+    updated: result.updated.length > 0
+      ? result.updated.map(u => ({
+        assignment: u.id,
+        parts: u.parts || []
+      }))
+      : undefined,
     failed: result.failed.length > 0
       ? result.failed.map((f) => ({
         type: f.type,
