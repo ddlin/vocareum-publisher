@@ -45,36 +45,98 @@ export async function listParts(
 /**
  * Get part details
  *
+ * IMPORTANT: Direct endpoint /api/v2/parts/{id} returns 400.
+ * Must use course-scoped endpoint.
+ *
  * @param client - Vocareum API client
+ * @param courseId - Course ID (string!)
+ * @param assignmentId - Assignment ID (string!)
  * @param partId - Part ID (string!)
  * @returns Part details
  */
 export async function getPart(
   client: VocareumClient,
+  courseId: string,
+  assignmentId: string,
   partId: string
 ): Promise<VocareumPartResponse> {
-  return client.request<VocareumPartResponse>({
+  const response = await client.request<PartsListResponse>({
     method: 'GET',
-    url: `/api/v2/parts/${partId}`,
+    url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
   });
+  if (!response.parts || response.parts.length === 0) {
+    throw new Error(`Part not found: ${partId}`);
+  }
+  return response.parts[0];
 }
 
 /**
  * Update part settings
  *
+ * IMPORTANT: Direct endpoint /api/v2/parts/{id} returns 400.
+ * Must use course-scoped endpoint.
+ *
+ * Confirmed working fields (Feb 2026):
+ * - name (REQUIRED for most updates)
+ * - submission_filters (object with include/exclude/list arrays)
+ * - session_length, monthly_dollar, monthly_time, total_time, total_dollar
+ *
+ * Fields requiring org permissions:
+ * - cloud_labs, instant_aws_access ("Cloud not allowed for the org")
+ *
  * @param client - Vocareum API client
+ * @param courseId - Course ID (string!)
+ * @param assignmentId - Assignment ID (string!)
  * @param partId - Part ID (string!)
- * @param settings - Settings to update
- * @returns Updated part
+ * @param settings - Settings to update (must include name!)
  */
 export async function updatePart(
   client: VocareumClient,
+  courseId: string,
+  assignmentId: string,
   partId: string,
   settings: ApiPartSettings
-): Promise<VocareumPartResponse> {
-  return client.request<VocareumPartResponse>({
+): Promise<void> {
+  const response = await client.request<{
+    status: 'success';
+    message?: string;
+    transactionid?: string;
+    objid?: string;
+  }>({
     method: 'PUT',
-    url: `/api/v2/parts/${partId}`,
+    url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
     data: settings,
   });
+
+  // Update is async - wait for transaction if provided
+  if (response.transactionid !== undefined && response.transactionid !== '') {
+    // Poll transaction endpoint until complete
+    const maxAttempts = 15;
+    const delayMs = 2000;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const txn = await client.request<{
+        status: 'success';
+        state: 'pending' | 'success' | 'failed';
+        message?: string;
+      }>({
+        method: 'GET',
+        url: `/api/v2/transaction/${response.transactionid}`,
+      });
+
+      if (txn.state === 'success') {
+        return;
+      }
+      if (txn.state === 'failed') {
+        throw new Error(
+          txn.message ?? `Part update transaction failed (txn=${response.transactionid})`
+        );
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
+    throw new Error(
+      `Timed out after ${maxAttempts * delayMs}ms waiting for part update (txn=${response.transactionid})`
+    );
+  }
 }

@@ -5,7 +5,8 @@
  */
 
 import * as path from 'path';
-import type { Config, PublishHistory, DirectoryType } from '../types/config';
+import type { Config, PublishHistory, DirectoryType, Part } from '../types/config';
+import type { VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
 import type {
   ReconciliationPlan,
   AssignmentAction,
@@ -71,7 +72,7 @@ export async function reconcile(
   // 3. Process Config Assignments
   for (const configAssignment of config.assignments) {
     let assignmentActionType: 'create' | 'update' | 'skip' | 'error' = 'skip';
-    let remoteAssignment: { id: string; name: string; description?: string; due_date?: string } | null = null;
+    let remoteAssignment: VocareumAssignmentResponse | null = null;
     let idDiscoveredByName = false;
     let assignmentMetadataChanged = false;
     let assignmentReason: string | undefined;
@@ -119,18 +120,19 @@ export async function reconcile(
 
     // If we are updating, we need to check parts
     if (assignmentActionType === 'update' && remoteAssignment) {
+      // Check for changes in fields that can be updated via API
+      // Working fields: name, description, nosubmit, auto_submit, grading_on_submit
+      // NOT working: due_date, points, published (return "No valid parameters")
       assignmentMetadataChanged =
         configAssignment.name !== remoteAssignment.name ||
         (configAssignment.settings?.description !== undefined &&
-          configAssignment.settings.description !== remoteAssignment.description) ||
-        (configAssignment.settings?.due_date !== undefined &&
-          configAssignment.settings.due_date !== remoteAssignment.due_date);
+          configAssignment.settings.description !== remoteAssignment.description);
 
       // Fetch parts
       const remoteParts = await listParts(client, config.vocareum.course_id, remoteAssignment.id);
 
-      // Create map of remote part ID -> name for metadata comparison
-      const remotePartNameMap = new Map(remoteParts.map(p => [p.id, p.name]));
+      // Create map of remote part ID -> remote part for metadata comparison
+      const remotePartMap = new Map(remoteParts.map(p => [p.id, p]));
 
       // Map parts
       try {
@@ -154,10 +156,9 @@ export async function reconcile(
             options.forceAll
           );
 
-          // Check for metadata changes (name)
-          const remoteName = remotePartNameMap.get(mapping.apiPartId);
-          const configName = configPart.name ?? configPart.settings?.name;
-          const metadataChanged = configName !== undefined && configName !== remoteName;
+          // Check for metadata/settings changes
+          const remotePart = remotePartMap.get(mapping.apiPartId);
+          const metadataChanged = detectPartSettingsChanged(configPart, remotePart);
 
           if (changedDirs.length > 0 || metadataChanged) {
             const reasons: string[] = [];
@@ -165,7 +166,7 @@ export async function reconcile(
               reasons.push(`Content: ${changedDirs.join(', ')}`);
             }
             if (metadataChanged) {
-              reasons.push(`Name: "${remoteName}" → "${configName}"`);
+              reasons.push('Settings changed');
             }
             partActions.push({
               type: 'update',
@@ -258,6 +259,54 @@ export async function reconcile(
     summary,
     orphanedInVocareum
   };
+}
+
+/**
+ * Detect whether part settings in config differ from remote state.
+ *
+ * Only settings explicitly defined in the config are compared; undefined
+ * config values are treated as "do not change" and never trigger an update.
+ */
+/**
+ * Detect if part settings have changed between config and remote
+ *
+ * Working fields (Feb 2026 API probes):
+ * - name, submission_filters, session_length, monthly_dollar, monthly_time, total_time, total_dollar
+ *
+ * Conditional fields (require org permissions):
+ * - cloud_labs, instant_aws_access
+ */
+function detectPartSettingsChanged(
+  configPart: Part,
+  remotePart?: VocareumPartResponse
+): boolean {
+  if (!remotePart) return false;
+
+  const configName = configPart.name ?? configPart.settings?.name;
+  if (configName !== undefined && configName !== remotePart.name) return true;
+
+  const s = configPart.settings;
+  if (!s) return false;
+
+  // cloud_labs and instant_aws_access may fail if org doesn't have cloud permissions
+  if (s.cloud_labs !== undefined && s.cloud_labs !== remotePart.cloud_labs) return true;
+  if (s.instant_aws_access !== undefined && s.instant_aws_access !== remotePart.instant_aws_access) return true;
+  if (s.session_length !== undefined && s.session_length !== remotePart.session_length) return true;
+  if (s.monthly_dollar !== undefined && s.monthly_dollar !== remotePart.monthly_dollar) return true;
+  if (s.monthly_time !== undefined && s.monthly_time !== remotePart.monthly_time) return true;
+  if (s.total_time !== undefined && s.total_time !== remotePart.total_time) return true;
+  if (s.total_dollar !== undefined && s.total_dollar !== remotePart.total_dollar) return true;
+
+  // Compare submission filters
+  if (s.submission_filters !== undefined) {
+    const remoteFilters = remotePart.submission_filters;
+    if (!remoteFilters) return true; // Config defines filters but remote has none
+    if (JSON.stringify(s.submission_filters.include ?? []) !== JSON.stringify(remoteFilters.include ?? [])) return true;
+    if (JSON.stringify(s.submission_filters.exclude ?? []) !== JSON.stringify(remoteFilters.exclude ?? [])) return true;
+    if (JSON.stringify(s.submission_filters.list ?? []) !== JSON.stringify((remoteFilters as { list?: string[] }).list ?? [])) return true;
+  }
+
+  return false;
 }
 
 /**

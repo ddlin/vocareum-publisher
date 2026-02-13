@@ -33,6 +33,8 @@ export interface VocareumAssignmentResponse {
   name: string;
   description?: string;
   due_date?: string;
+  points?: string;
+  published?: string; // "0" or "1"
   deleted: string; // "0" or "1"
 }
 
@@ -47,6 +49,7 @@ export interface VocareumPartResponse {
   courseid: string;
   assignmentid: string;
   name: string;
+  description?: string;
   seqnum: string; // Sequence number as string: "0", "1", "2"
   deleted: string; // "0" or "1"
   part_url?: string;
@@ -57,6 +60,11 @@ export interface VocareumPartResponse {
   monthly_time?: string;
   total_time?: string;
   total_dollar?: string;
+  submission_filters?: {
+    include?: string[];
+    exclude?: string[];
+    list?: string[];
+  };
 }
 
 /**
@@ -100,19 +108,46 @@ export interface CourseSettings {
 
 /**
  * Assignment settings for API updates
+ *
+ * Confirmed working fields (Feb 2026 live probes):
+ * - name, description, nosubmit, auto_submit, grading_on_submit
+ *
+ * Fields that DO NOT work (return "No valid parameters to update the assignment"):
+ * - published, points, due_date, gradespublished
  */
 export interface ApiAssignmentSettings {
   name?: string;
   description?: string;
-  due_date?: string;
+  nosubmit?: boolean;
+  auto_submit?: boolean;
+  grading_on_submit?: boolean;
 }
 
 /**
  * Part settings for API updates
+ *
+ * Confirmed working fields (Feb 2026 live probes):
+ * - name (REQUIRED for most updates)
+ * - submission_filters (object with include/exclude/list arrays)
+ * - session_length, monthly_dollar, monthly_time, total_time, total_dollar
+ *
+ * Fields requiring org permissions:
+ * - cloud_labs, instant_aws_access ("Cloud not allowed for the org")
  */
 export interface ApiPartSettings {
-  name?: string;
-  description?: string;
+  name?: string;  // REQUIRED for most updates
+  submission_filters?: {
+    include?: string[];
+    exclude?: string[];
+    list?: string[];  // Explicit file list
+  };
+  cloud_labs?: boolean;  // Requires org permission
+  instant_aws_access?: boolean;  // Requires org permission
+  session_length?: string;
+  monthly_dollar?: string;
+  monthly_time?: string;
+  total_time?: string;
+  total_dollar?: string;
 }
 
 /**

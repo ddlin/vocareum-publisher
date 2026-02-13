@@ -48,18 +48,27 @@ export async function listAssignments(
 /**
  * Get assignment details
  *
+ * IMPORTANT: Direct endpoint /api/v2/assignments/{id} returns 400.
+ * Must use course-scoped endpoint.
+ *
  * @param client - Vocareum API client
+ * @param courseId - Course ID (string!)
  * @param assignmentId - Assignment ID (string!)
  * @returns Assignment details
  */
 export async function getAssignment(
   client: VocareumClient,
+  courseId: string,
   assignmentId: string
 ): Promise<VocareumAssignmentResponse> {
-  return client.request<VocareumAssignmentResponse>({
+  const response = await client.request<AssignmentsListResponse>({
     method: 'GET',
-    url: `/api/v2/assignments/${assignmentId}`,
+    url: `/api/v2/courses/${courseId}/assignments/${assignmentId}`,
   });
+  if (!response.assignments || response.assignments.length === 0) {
+    throw new Error(`Assignment not found: ${assignmentId}`);
+  }
+  return response.assignments[0];
 }
 
 /**
@@ -161,19 +170,39 @@ export async function waitForAssignmentObjId(
 /**
  * Update assignment settings
  *
+ * IMPORTANT: Direct endpoint /api/v2/assignments/{id} returns 400.
+ * Must use course-scoped endpoint.
+ *
+ * Confirmed working fields (Feb 2026):
+ * - name, description, nosubmit, auto_submit, grading_on_submit
+ *
+ * Fields that DO NOT work (return "No valid parameters"):
+ * - published, points, due_date, gradespublished
+ *
  * @param client - Vocareum API client
+ * @param courseId - Course ID (string!)
  * @param assignmentId - Assignment ID (string!)
  * @param settings - Settings to update
- * @returns Updated assignment
  */
 export async function updateAssignment(
   client: VocareumClient,
+  courseId: string,
   assignmentId: string,
   settings: ApiAssignmentSettings
-): Promise<VocareumAssignmentResponse> {
-  return client.request<VocareumAssignmentResponse>({
-    method: 'PUT', // or PATCH?
-    url: `/api/v2/assignments/${assignmentId}`,
+): Promise<void> {
+  const response = await client.request<{
+    status: 'success';
+    message?: string;
+    transactionid?: string;
+    objid?: string;
+  }>({
+    method: 'PUT',
+    url: `/api/v2/courses/${courseId}/assignments/${assignmentId}`,
     data: settings,
   });
+
+  // Update is async - wait for transaction if provided
+  if (response.transactionid !== undefined && response.transactionid !== '') {
+    await waitForAssignmentObjId(client, response.transactionid);
+  }
 }

@@ -159,7 +159,7 @@ describe('publish', () => {
     const assignment = {
       ...config.assignments[0],
       assignment_id: 'asn-1',
-      settings: { description: 'New description', due_date: '2026-12-31T23:59:00Z' },
+      settings: { description: 'New description' },
     };
 
     const plan: ReconciliationPlan = {
@@ -186,15 +186,143 @@ describe('publish', () => {
       orphanedInVocareum: [],
     };
     reconcileMock.mockResolvedValue(plan);
-    updateAssignmentMock.mockResolvedValue({ id: 'asn-1' });
+    updateAssignmentMock.mockResolvedValue(undefined);
 
     const result = await publish(config, client, baseOptions);
 
     expect(result.success).toBe(true);
-    expect(updateAssignmentMock).toHaveBeenCalledWith(client, 'asn-1', {
+    // API now uses course-scoped endpoint: updateAssignment(client, courseId, assignmentId, settings)
+    expect(updateAssignmentMock).toHaveBeenCalledWith(client, '201303', 'asn-1', {
       name: 'Lab 1',
       description: 'New description',
-      due_date: '2026-12-31T23:59:00Z',
+      nosubmit: undefined,
+      auto_submit: undefined,
+      grading_on_submit: undefined,
+    });
+  });
+
+  it('should send all working assignment settings', async () => {
+    // Note: due_date, points, published do NOT work via API (return "No valid parameters")
+    // Working fields: name, description, nosubmit, auto_submit, grading_on_submit
+    const assignment = {
+      ...config.assignments[0],
+      assignment_id: 'asn-1',
+      settings: {
+        description: 'Updated description',
+        nosubmit: false,
+        auto_submit: true,
+        grading_on_submit: true,
+      },
+    };
+
+    const plan: ReconciliationPlan = {
+      config,
+      course: { type: 'skip' },
+      assignments: [
+        {
+          type: 'update',
+          assignment,
+          parts: [],
+          assignmentMetadataChanged: true,
+        },
+      ],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 0,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+    };
+    reconcileMock.mockResolvedValue(plan);
+    updateAssignmentMock.mockResolvedValue(undefined);
+
+    const result = await publish(config, client, baseOptions);
+
+    expect(result.success).toBe(true);
+    // API now uses course-scoped endpoint: updateAssignment(client, courseId, assignmentId, settings)
+    expect(updateAssignmentMock).toHaveBeenCalledWith(client, '201303', 'asn-1', {
+      name: 'Lab 1',
+      description: 'Updated description',
+      nosubmit: false,
+      auto_submit: true,
+      grading_on_submit: true,
+    });
+  });
+
+  it('should send all part settings when part metadata changed', async () => {
+    // Note: name is REQUIRED for part updates
+    // Working fields: name, submission_filters, session_length, cloud_labs (if org permits),
+    // monthly_dollar, monthly_time, total_time, total_dollar
+    const assignment = {
+      ...config.assignments[0],
+      assignment_id: 'asn-1',
+      parts: [
+        {
+          part_id: 'part-1',
+          path: 'part1',
+          name: 'Updated Part',
+          settings: {
+            cloud_labs: true,
+            session_length: '3600',
+            submission_filters: { include: ['*.py'], exclude: ['*.pyc'] },
+          },
+        },
+      ],
+    };
+
+    const plan: ReconciliationPlan = {
+      config,
+      course: { type: 'skip' },
+      assignments: [
+        {
+          type: 'update',
+          assignment,
+          parts: [
+            {
+              type: 'update',
+              part: assignment.parts[0],
+              contentChanged: false,
+              metadataChanged: true,
+              reason: 'Settings changed',
+            },
+          ],
+          assignmentMetadataChanged: false,
+        },
+      ],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 1,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+    };
+    reconcileMock.mockResolvedValue(plan);
+    updatePartMock.mockResolvedValue(undefined);
+
+    const result = await publish(config, client, baseOptions);
+
+    expect(result.success).toBe(true);
+    // API now uses course-scoped endpoint: updatePart(client, courseId, assignmentId, partId, settings)
+    expect(updatePartMock).toHaveBeenCalledWith(client, '201303', 'asn-1', 'part-1', {
+      name: 'Updated Part',  // Required for all part updates
+      cloud_labs: true,
+      session_length: '3600',
+      submission_filters: { include: ['*.py'], exclude: ['*.pyc'] },
+      instant_aws_access: undefined,
+      monthly_dollar: undefined,
+      monthly_time: undefined,
+      total_time: undefined,
+      total_dollar: undefined,
     });
   });
 

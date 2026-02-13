@@ -35,12 +35,40 @@ export const DirectoryTypeSchema = z.enum([
 ]);
 
 /**
+ * Submission filter patterns for part file submissions.
+ * Patterns are passed as-is to rsync on the Vocareum backend.
+ */
+export const SubmissionFiltersSchema = z.object({
+  include: z.array(z.string()).optional(),
+  exclude: z.array(z.string()).optional(),
+  list: z.array(z.string()).optional(),  // Explicit file list
+});
+
+export type SubmissionFilters = z.infer<typeof SubmissionFiltersSchema>;
+
+/**
  * Part settings for Vocareum configuration
  */
 export const PartSettingsSchema = z
   .object({
     name: z.string().optional(),
     description: z.string().optional(),
+    /** Include/exclude patterns for student submissions (passed to rsync) */
+    submission_filters: SubmissionFiltersSchema.optional(),
+    /** Enable cloud labs for this part */
+    cloud_labs: z.boolean().optional(),
+    /** Enable instant AWS access for this part */
+    instant_aws_access: z.boolean().optional(),
+    /** Lab session length (e.g. "3600" for 1 hour) */
+    session_length: z.string().optional(),
+    /** Monthly dollar budget for cloud resources */
+    monthly_dollar: z.string().optional(),
+    /** Monthly time budget for cloud resources */
+    monthly_time: z.string().optional(),
+    /** Total time budget for cloud resources */
+    total_time: z.string().optional(),
+    /** Total dollar budget for cloud resources */
+    total_dollar: z.string().optional(),
   })
   .optional();
 
@@ -62,11 +90,23 @@ export type Part = z.infer<typeof PartSchema>;
 
 /**
  * Assignment settings for Vocareum configuration
+ *
+ * Confirmed working fields (Feb 2026 API probes):
+ * - description, nosubmit, auto_submit, grading_on_submit
+ *
+ * Fields that DO NOT work via API (return "No valid parameters"):
+ * - published, points, due_date
+ * These must be set manually in Vocareum UI.
  */
 export const AssignmentSettingsSchema = z
   .object({
-    due_date: z.string().optional(),
     description: z.string().optional(),
+    /** Disable student submissions for this assignment */
+    nosubmit: z.boolean().optional(),
+    /** Enable automatic submission */
+    auto_submit: z.boolean().optional(),
+    /** Grade immediately on submit */
+    grading_on_submit: z.boolean().optional(),
   })
   .optional();
 

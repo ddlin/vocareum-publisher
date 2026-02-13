@@ -95,6 +95,214 @@ describe('reconcile options behavior', () => {
     expect(plan.assignments[0].reason).toContain('on_missing_id=abort');
   });
 
+  it('should detect assignment metadata change when description differs', async () => {
+    // Working fields: name, description
+    // Note: points, published, due_date do NOT work via API
+    const config: Config = {
+      ...baseConfig,
+      assignments: [
+        {
+          ...baseConfig.assignments[0],
+          assignment_id: 'asn-1',
+          settings: { description: 'New description' },
+        },
+      ],
+    };
+
+    listAssignmentsMock.mockResolvedValue([
+      { id: 'asn-1', name: 'Lab 1', deleted: '0', description: 'Old description' },
+    ]);
+
+    const plan = await reconcile(config, client, undefined);
+
+    expect(plan.assignments[0].assignmentMetadataChanged).toBe(true);
+  });
+
+  it('should detect assignment metadata change when name differs', async () => {
+    const config: Config = {
+      ...baseConfig,
+      assignments: [
+        {
+          ...baseConfig.assignments[0],
+          assignment_id: 'asn-1',
+          name: 'Lab 1 Updated',
+        },
+      ],
+    };
+
+    listAssignmentsMock.mockResolvedValue([
+      { id: 'asn-1', name: 'Lab 1', deleted: '0' },
+    ]);
+
+    const plan = await reconcile(config, client, undefined);
+
+    expect(plan.assignments[0].assignmentMetadataChanged).toBe(true);
+  });
+
+  it('should not flag assignment metadata changed when description matches', async () => {
+    const config: Config = {
+      ...baseConfig,
+      assignments: [
+        {
+          ...baseConfig.assignments[0],
+          assignment_id: 'asn-1',
+          settings: { description: 'Same description' },
+        },
+      ],
+    };
+
+    listAssignmentsMock.mockResolvedValue([
+      { id: 'asn-1', name: 'Lab 1', deleted: '0', description: 'Same description' },
+    ]);
+
+    const plan = await reconcile(config, client, undefined);
+
+    // No name change, no description change
+    expect(plan.assignments[0].assignmentMetadataChanged).toBe(false);
+  });
+
+  it('should detect part metadata change when session_length differs', async () => {
+    // Working part fields: name, session_length, submission_filters, cloud_labs (if org permits)
+    const config: Config = {
+      ...baseConfig,
+      assignments: [
+        {
+          ...baseConfig.assignments[0],
+          assignment_id: 'asn-1',
+          parts: [
+            {
+              part_id: 'part-1',
+              path: 'part1',
+              directories: ['startercode', 'scripts', 'docs', 'data'],
+              settings: { session_length: '3600' },
+            },
+          ],
+        },
+      ],
+    };
+
+    listAssignmentsMock.mockResolvedValue([
+      { id: 'asn-1', name: 'Lab 1', deleted: '0' },
+    ]);
+    listPartsMock.mockResolvedValue([
+      { id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0', session_length: '240' },
+    ]);
+
+    const plan = await reconcile(config, client, undefined);
+
+    expect(plan.assignments[0].parts[0].metadataChanged).toBe(true);
+    expect(plan.assignments[0].parts[0].reason).toContain('Settings changed');
+  });
+
+  it('should detect part metadata change when cloud_labs differs', async () => {
+    const config: Config = {
+      ...baseConfig,
+      assignments: [
+        {
+          ...baseConfig.assignments[0],
+          assignment_id: 'asn-1',
+          parts: [
+            {
+              part_id: 'part-1',
+              path: 'part1',
+              directories: ['startercode', 'scripts', 'docs', 'data'],
+              settings: { cloud_labs: true },
+            },
+          ],
+        },
+      ],
+    };
+
+    listAssignmentsMock.mockResolvedValue([
+      { id: 'asn-1', name: 'Lab 1', deleted: '0' },
+    ]);
+    listPartsMock.mockResolvedValue([
+      { id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0', cloud_labs: false },
+    ]);
+
+    const plan = await reconcile(config, client, undefined);
+
+    expect(plan.assignments[0].parts[0].metadataChanged).toBe(true);
+  });
+
+  it('should detect part metadata change when submission_filters differ', async () => {
+    const config: Config = {
+      ...baseConfig,
+      assignments: [
+        {
+          ...baseConfig.assignments[0],
+          assignment_id: 'asn-1',
+          parts: [
+            {
+              part_id: 'part-1',
+              path: 'part1',
+              directories: ['startercode', 'scripts', 'docs', 'data'],
+              settings: { submission_filters: { include: ['*.py'], exclude: ['*.pyc'] } },
+            },
+          ],
+        },
+      ],
+    };
+
+    listAssignmentsMock.mockResolvedValue([
+      { id: 'asn-1', name: 'Lab 1', deleted: '0' },
+    ]);
+    listPartsMock.mockResolvedValue([
+      { id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0' },
+    ]);
+
+    const plan = await reconcile(config, client, undefined);
+
+    expect(plan.assignments[0].parts[0].metadataChanged).toBe(true);
+  });
+
+  it('should not flag part metadata changed when all settings match', async () => {
+    const publishHistory = {
+      timestamp: '2026-02-12T00:00:00Z',
+      commit_sha: 'abc',
+      published_by: 'tester',
+      status: 'success' as const,
+      content_state: {
+        'lab1/part1/startercode': 'same-hash',
+        'lab1/part1/scripts': 'same-hash',
+        'lab1/part1/docs': 'same-hash',
+        'lab1/part1/data': 'same-hash',
+      },
+    };
+
+    const config: Config = {
+      ...baseConfig,
+      assignments: [
+        {
+          ...baseConfig.assignments[0],
+          assignment_id: 'asn-1',
+          parts: [
+            {
+              part_id: 'part-1',
+              path: 'part1',
+              name: 'Part 1',
+              directories: ['startercode', 'scripts', 'docs', 'data'],
+              settings: { description: 'Same', cloud_labs: true },
+            },
+          ],
+        },
+      ],
+      publish_history: [publishHistory],
+    };
+
+    listAssignmentsMock.mockResolvedValue([
+      { id: 'asn-1', name: 'Lab 1', deleted: '0' },
+    ]);
+    listPartsMock.mockResolvedValue([
+      { id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0', description: 'Same', cloud_labs: true },
+    ]);
+
+    const plan = await reconcile(config, client, publishHistory);
+
+    expect(plan.assignments[0].parts[0].type).toBe('skip');
+    expect(plan.assignments[0].parts[0].metadataChanged).toBeUndefined();
+  });
+
   it('should mark all directories as changed when forceAll=true', async () => {
     const config: Config = {
       ...baseConfig,
