@@ -1,344 +1,214 @@
-# Vocareum API Reference
+# Vocareum API Findings & Recommendations
 
-Quick reference for Vocareum API v2 endpoints. Based on live testing (February 2026).
-
----
-
-## Quick Reference
-
-| Operation | Method | Endpoint |
-|-----------|--------|----------|
-| Get course | GET | `/api/v2/courses/{courseId}` |
-| List assignments | GET | `/api/v2/courses/{courseId}/assignments` |
-| Get assignment | GET | `/api/v2/courses/{courseId}/assignments/{assignmentId}` |
-| Update assignment | PUT | `/api/v2/courses/{courseId}/assignments/{assignmentId}` |
-| Copy assignment | POST | `/api/v2/courses/{courseId}/assignments` |
-| List parts | GET | `/api/v2/courses/{courseId}/assignments/{assignmentId}/parts` |
-| Get part | GET | `/api/v2/courses/{courseId}/assignments/{assignmentId}/parts/{partId}` |
-| Update part | PUT | `/api/v2/courses/{courseId}/assignments/{assignmentId}/parts/{partId}` |
-| Upload content | PUT | `/api/v2/courses/{courseId}/assignments/{assignmentId}/parts/{partId}` |
-| List files | GET | `.../parts/{partId}/files?dir={directory}` |
-| Download file | GET | `.../parts/{partId}/files?dir={directory}&filename={path}` |
-| Poll transaction | GET | `/api/v2/transaction/{transactionId}` |
-
-**Authentication:** `Authorization: Token <token>` (not Bearer)
-
-**Base URL:** `https://api.vocareum.com`
+**Date:** February 2026
+**Project:** vocareum-publisher (GitHub → Vocareum sync tool)
+**Purpose:** Document API issues discovered during integration, with recommendations for Vocareum team.
 
 ---
 
-## Assignment Settings
+## Summary
 
-**Endpoint:** `PUT /api/v2/courses/{courseId}/assignments/{assignmentId}`
+We built a CLI tool to sync assignment content from GitHub to Vocareum. During integration, we encountered several undocumented behaviors, inconsistencies, and gaps that required significant trial-and-error to resolve. This document captures our findings to help improve the API and documentation.
 
-### Working Fields
+**What we tested:**
+- Course, assignment, and part CRUD operations
+- Content upload via multiple approaches
+- Assignment copy/duplication
+- Transaction polling for async operations
+- All assignment and part settings fields
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Assignment display name |
-| `description` | string | Assignment description |
-| `nosubmit` | boolean | Disable student submissions |
-| `publish` | boolean | Publish to students |
-| `publish_grades` | string | Grades publishing setting |
-| `auto_submit` | boolean | Enable automatic submission |
-| `grading_on_submit` | boolean | Grade immediately on submit |
-| `noworkarea` | boolean | Disable work area for students |
-| `exam_mode` | string | `"timed"`, `"scheduled"`, or `"timed_scheduled"` |
-| `exam_duration` | integer | Exam duration in minutes |
-| `num_attempts` | integer | Number of attempts allowed |
-| `show_end_exam_button` | boolean | Show end exam button |
-| `copy_startercode` | boolean | Copy starter code to workspace |
-| `uncompressupload` | boolean | Uncompress uploaded files |
-| `lti_on` | boolean | Enable LTI integration |
-| `anonymous_grading` | boolean | Enable anonymous grading |
-| `grading_visibility` | string | `"all"` or `"assigned"` |
-| `send_webhook` | boolean | Send webhook on events |
-| `live_code_comments` | boolean | Enable live code comments |
-
-### Non-Working Fields
-
-| Field | Error |
-|-------|-------|
-| `points` | "No valid parameters to update the assignment" |
-| `due_date` | "No valid parameters to update the assignment" |
-| `gradespublished` | "No valid parameters to update the assignment" |
+**Test environment:** Live API (`api.vocareum.com`), course `201303`
 
 ---
 
-## Part Settings
+## Critical Issues
 
-**Endpoint:** `PUT /api/v2/courses/{courseId}/assignments/{assignmentId}/parts/{partId}`
+### 1. Direct endpoints return 400 (Undocumented)
 
-**Important:** `name` field is **required** for most update requests.
+**Problem:** The Postman docs suggest endpoints like `/api/v2/assignments/{id}` and `/api/v2/parts/{id}` exist, but they return `400 Invalid Request`.
 
-### Working Fields
+**Discovery:** After many failed attempts, we found that **course-scoped endpoints** work:
+- `/api/v2/courses/{courseId}/assignments/{assignmentId}` ✓
+- `/api/v2/courses/{courseId}/assignments/{assignmentId}/parts/{partId}` ✓
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Part display name (**required**) |
-| `submission_filters` | object | Student submission filters (see below) |
-| `session_length` | string | Lab session length in minutes (e.g., `"60"`) |
-| `monthly_dollar` | string | Monthly dollar budget |
-| `monthly_time` | string | Monthly time budget in minutes |
-| `total_time` | string | Total time budget in minutes |
-| `total_dollar` | string | Total dollar budget |
-| `late_penalty_percent` | integer | Late penalty percentage (0-100) |
-| `late_penalty_percent_rule` | string | `"max score"` or `"student score"` |
-| `deadlinedate` | string | Part deadline (ISO 8601) |
-| `endlab` | string | `"stop"` or `"terminate"` |
-| `labtype` | string | Lab type (e.g., `"JupyterLab"`, `"Visual Studio Code"`) |
-| `container_image` | string | Container image (must match labtype) |
-| `number_of_submissions` | integer | Max submissions allowed |
-| `lab_interface` | object | Lab interface configuration (see below) |
-| `databricks_maxusers` | integer | Max users for Databricks labs |
-| `tags` | array | Array of tag strings |
+**Recommendation:** Document that all operations require course-scoped paths. Remove or deprecate direct endpoints from docs if they don't work.
 
-### Submission Filters Object
+### 2. Content upload contract is non-obvious
 
+**Problem:** We initially tried `POST /api/v2/upload`, multipart uploads, and various `/files` endpoint patterns. All returned `400 Invalid Request` with no guidance.
+
+**Discovery:** Content upload uses the **part update endpoint** with a special payload:
 ```json
-{
-  "submission_filters": {
-    "include": ["*.py", "*.txt"],
-    "exclude": ["*.pyc", "__pycache__"],
-    "list": ["specific_file.py"]
-  }
-}
-```
-
-### Lab Interface Object
-
-```json
-{
-  "lab_interface": {
-    "panels": ["Console", "Html"],
-    "controls": ["Reset"],
-    "information": ["Assignments"],
-    "launch_behavior": [],
-    "grades": []
-  }
-}
-```
-
-### Org-Restricted Fields
-
-| Field | Error |
-|-------|-------|
-| `cloud_labs` | "Cloud not allowed for the org" (if org lacks permission) |
-| `instant_aws_access` | Same restriction as cloud_labs |
-
----
-
-## Content Upload
-
-**Endpoint:** `PUT /api/v2/courses/{courseId}/assignments/{assignmentId}/parts/{partId}`
-
-### Request Body
-
-```json
+PUT /api/v2/courses/{cid}/assignments/{aid}/parts/{pid}
 {
   "update": 1,
-  "content": [
-    {
-      "target": "startercode",
-      "zipcontent": "<base64-encoded-zip>",
-      "reset": 1
-    }
+  "content": [{
+    "target": "startercode",
+    "zipcontent": "<base64-zip>",
+    "reset": 1
+  }]
+}
+```
+
+**Recommendation:** Add dedicated documentation for content upload including:
+- The exact endpoint and payload schema
+- Valid `target` values by scope (part-level vs course-level)
+- Semantics of `reset` (0 vs 1)
+- Maximum payload size limits
+- Whether multiple `content[]` entries work in one request
+
+### 3. Authentication format undocumented
+
+**Problem:** We initially used `Authorization: Bearer <token>` (industry standard). It was rejected as "Missing Token".
+
+**Discovery:** The correct format is `Authorization: Token <token>`.
+
+**Recommendation:** Explicitly document the auth header format. If Bearer is intentionally unsupported, note that.
+
+### 4. Generic error responses hinder debugging
+
+**Problem:** Many different failure modes return the same `400 Invalid Request` with no details:
+- Missing required field
+- Invalid field value
+- Wrong endpoint structure
+- Unsupported operation
+
+**Recommendation:** Return field-level validation errors. Example:
+```json
+{
+  "status": "error",
+  "code": "VALIDATION_ERROR",
+  "errors": [
+    {"field": "target", "message": "Invalid value 'foo'. Valid: startercode, scripts, ..."}
   ]
 }
 ```
 
-### Content Fields
+### 5. Some assignment fields don't work via API
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `update` | number | Yes | Must be `1` |
-| `content` | array | Yes | Array of upload objects |
-| `content[].target` | string | Yes | Directory type |
-| `content[].zipcontent` | string | Yes* | Base64-encoded ZIP |
-| `content[].url` | string | No | Alternative: URL to fetch ZIP |
-| `content[].reset` | number | No | `1` = clear first, `0` = append |
+**Problem:** These fields return "No valid parameters to update the assignment":
+- `points`
+- `due_date`
+- `gradespublished`
 
-### Valid Target Values
+**Discovery:** These may require a different endpoint or workflow not documented.
 
-**Part-level:** `startercode`, `scripts`, `docs`, `data`, `lib`, `asnlib`
+**Recommendation:** Either enable these fields on the existing endpoint, document the correct approach, or explicitly mark them as UI-only.
 
-**Course-level:** `course`, `data`, `docs`, `scripts`, `private`, `startercode`
+### 6. Org-restricted fields fail silently
 
----
+**Problem:** `cloud_labs` and `instant_aws_access` return "Cloud not allowed for the org" only after attempting the update.
 
-## Assignment Copy
-
-**Endpoint:** `POST /api/v2/courses/{courseId}/assignments`
-
-### Request Body
-
-```json
-{
-  "method": "copy",
-  "source": "<source-assignment-id>",
-  "name": "<new assignment name>"
-}
-```
-
-### Response
-
-Returns `202` with `transactionid`. Poll until complete to get final `objid` (new assignment ID).
+**Recommendation:** Provide a capabilities endpoint or include org permissions in course/assignment responses so clients can check before attempting.
 
 ---
 
-## Transaction Polling
+## Inconsistencies
 
-**Endpoint:** `GET /api/v2/transaction/{transactionId}`
+### ID type varies
 
-### Response
+- Most responses return IDs as strings (`"12345"`)
+- Some contexts return IDs as numbers (`12345`)
 
-```json
-{
-  "status": "success",
-  "state": "pending | success | failed",
-  "message": "optional error detail",
-  "objid": "created-object-id"
-}
-```
+**Impact:** Comparison bugs if client doesn't normalize.
 
-### Polling Strategy
+**Recommendation:** Consistently return all IDs as strings.
 
-| Parameter | Value |
-|-----------|-------|
-| Poll interval | 1000ms |
-| Max attempts | 30 |
-| Timeout | 30s |
+### Content-Type header inconsistent
 
-**States:** `pending` → keep polling, `success` → done, `failed` → throw error
+- Some JSON responses are served with `Content-Type: text/html; charset=UTF-8`
 
----
+**Impact:** Breaks strict content-type validation in HTTP clients.
 
-## Important Behaviors
+**Recommendation:** Return `Content-Type: application/json` for all JSON responses.
 
-### Async Operations
+### File download format varies
 
-All PUT operations return `transactionid` and require polling:
-- Assignment updates
-- Part updates
-- Content uploads
+`GET .../files?dir=...&filename=...` returns different shapes:
+- Sometimes raw string content
+- Sometimes a Buffer
+- Sometimes JSON with `content`, `data`, `file`, or `base64` field
 
-### Rate Limiting
+**Recommendation:** Standardize on one format (suggest: always base64 in JSON wrapper, or always raw bytes with Content-Disposition header).
 
-Rapid successive requests may fail with: "The previous corresponding API request is not yet complete"
+### Part `seqnum` is a string
 
-**Solution:** Implement retry with backoff.
+`seqnum` values are strings like `"0"`, `"1"`, `"2"` rather than integers.
 
-### ID Types
+**Impact:** Must parse to int for sorting; string sort gives wrong order (`"10"` < `"2"`).
 
-All IDs are **strings**, not numbers. Normalize in your client.
-
-### Direct Endpoints Don't Work
-
-These return `400 Invalid Request`:
-- `/api/v2/assignments/{id}`
-- `/api/v2/parts/{id}`
-
-**Always use course-scoped endpoints.**
+**Recommendation:** Return as integers, or document the string format clearly.
 
 ---
 
-## curl Examples
+## Documentation Gaps
 
-### Setup
+### Missing from Postman/API docs:
 
-```bash
-TOKEN="<your_token>"
-CID="<course_id>"
-AID="<assignment_id>"
-PID="<part_id>"
-BASE="https://api.vocareum.com"
-```
+| Topic | What's needed |
+|-------|---------------|
+| Content upload | Full schema for `content[]` payload |
+| Valid `target` values | List by scope (part vs course) |
+| Transaction polling | Endpoint, states, recommended intervals |
+| Assignment copy | Full request/response schema |
+| Required fields | `name` required for part updates |
+| Async behavior | Which operations return `transactionid` |
+| Rate limiting | Limits and retry guidance |
+| Auth format | `Token` vs `Bearer` clarification |
 
-### Read Operations
+### Fields we confirmed working (not all documented):
 
-```bash
-# Get course
-curl -sS "$BASE/api/v2/courses/$CID" -H "Authorization: Token $TOKEN"
+**Assignment settings:**
+`name`, `description`, `nosubmit`, `publish`, `publish_grades`, `auto_submit`, `grading_on_submit`, `noworkarea`, `exam_mode`, `exam_duration`, `num_attempts`, `show_end_exam_button`, `copy_startercode`, `uncompressupload`, `lti_on`, `anonymous_grading`, `grading_visibility`, `send_webhook`, `live_code_comments`
 
-# List assignments
-curl -sS "$BASE/api/v2/courses/$CID/assignments" -H "Authorization: Token $TOKEN"
-
-# List parts
-curl -sS "$BASE/api/v2/courses/$CID/assignments/$AID/parts" -H "Authorization: Token $TOKEN"
-
-# List files
-curl -sS "$BASE/api/v2/courses/$CID/assignments/$AID/parts/$PID/files?dir=startercode" \
-  -H "Authorization: Token $TOKEN"
-```
-
-### Update Assignment
-
-```bash
-curl -sS -X PUT "$BASE/api/v2/courses/$CID/assignments/$AID" \
-  -H "Authorization: Token $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Updated Name","description":"New description"}'
-```
-
-### Update Part
-
-```bash
-curl -sS -X PUT "$BASE/api/v2/courses/$CID/assignments/$AID/parts/$PID" \
-  -H "Authorization: Token $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Part 1","session_length":"60","late_penalty_percent":10}'
-```
-
-### Upload Content
-
-```bash
-# Create and encode ZIP
-echo "print('hello')" > /tmp/main.py
-cd /tmp && zip upload.zip main.py && cd -
-ZIP_B64=$(base64 -w 0 /tmp/upload.zip)
-
-# Upload
-curl -sS -X PUT "$BASE/api/v2/courses/$CID/assignments/$AID/parts/$PID" \
-  -H "Authorization: Token $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{\"update\":1,\"content\":[{\"target\":\"startercode\",\"zipcontent\":\"$ZIP_B64\",\"reset\":1}]}"
-```
-
-### Copy Assignment
-
-```bash
-curl -sS -X POST "$BASE/api/v2/courses/$CID/assignments" \
-  -H "Authorization: Token $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"method":"copy","source":"'"$AID"'","name":"New Assignment"}'
-```
-
-### Poll Transaction
-
-```bash
-curl -sS "$BASE/api/v2/transaction/$TXN_ID" -H "Authorization: Token $TOKEN"
-```
+**Part settings:**
+`name`, `submission_filters`, `session_length`, `monthly_dollar`, `monthly_time`, `total_time`, `total_dollar`, `late_penalty_percent`, `late_penalty_percent_rule`, `deadlinedate`, `endlab`, `labtype`, `container_image`, `number_of_submissions`, `lab_interface`, `databricks_maxusers`, `tags`
 
 ---
 
-## Known Issues
+## Recommendations Summary
 
-| Issue | Workaround |
-|-------|------------|
-| IDs sometimes returned as numbers | Normalize to strings |
-| JSON responses with `text/html` content-type | Parse response body, ignore content-type |
-| Generic `400 Invalid Request` errors | Trial and error; check this doc |
-| File download format varies | Try multiple response shapes |
-| File deletion may not be supported | Use `reset: 1` on upload instead |
+| Priority | Recommendation |
+|----------|----------------|
+| High | Document content upload contract (endpoint + payload schema) |
+| High | Return detailed validation errors instead of generic 400 |
+| High | Document that course-scoped endpoints are required |
+| High | Document auth header format (`Token` not `Bearer`) |
+| Medium | Publish OpenAPI/Swagger spec |
+| Medium | Standardize ID types as strings |
+| Medium | Standardize JSON Content-Type headers |
+| Medium | Document which fields work via API vs UI-only |
+| Low | Add capabilities/introspection endpoint |
+| Low | Standardize file download response format |
 
 ---
 
-## Appendix: Testing Scope
+## Workarounds We Implemented
 
-Live API probes conducted February 2026 against:
-- Base: `https://api.vocareum.com`
-- Test course: `201303`
-- Test assignment: `5137423`
-- Test part: `5137424`
+| Issue | Our workaround |
+|-------|----------------|
+| Direct endpoints don't work | Always use course-scoped paths |
+| Upload contract undocumented | Discovered via Postman collection + trial-and-error |
+| Generic 400 errors | Extensive probing to find valid field combinations |
+| ID type varies | Normalize all IDs to strings |
+| Content-Type inconsistent | Parse body regardless of Content-Type |
+| File download format varies | Try multiple response shapes, fallback gracefully |
+| Rate limiting on rapid requests | Retry with exponential backoff |
+| Async operations | Poll `/api/v2/transaction/{id}` until complete |
 
-All fields documented as "working" were confirmed via actual API calls.
+---
+
+## Testing Methodology
+
+1. **Endpoint discovery:** Tried documented endpoints, then variations until finding working patterns
+2. **Field probing:** Tested each settings field individually via curl to confirm which work
+3. **Error analysis:** Catalogued all error responses to understand failure modes
+4. **Live verification:** All "working" fields confirmed via actual API calls against course `201303`
+
+**Probe script:** `scripts/probe-vocareum-api.mjs` (in our repo) contains reproducible tests for all findings.
+
+---
+
+## Contact
+
+For questions about these findings or our integration approach, see the [vocareum-publisher](https://github.com/ddlin/vocareum-publisher) repository.
