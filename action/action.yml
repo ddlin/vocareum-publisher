@@ -1,0 +1,48 @@
+name: 'Vocareum Publisher'
+description: 'Publish assignment content from GitHub to Vocareum'
+author: 'Vocareum'
+branding:
+  icon: 'upload-cloud'
+  color: 'blue'
+
+inputs:
+  config-file:
+    description: 'Path to vocareum.yaml'
+    required: false
+    default: 'vocareum.yaml'
+  api-key:
+    description: 'Vocareum API key'
+    required: true
+  dry-run:
+    description: 'Preview changes without publishing'
+    required: false
+    default: 'false'
+  assignment:
+    description: 'Specific assignment to publish'
+    required: false
+  sync-deletes:
+    description: 'Delete files from Vocareum not in Git (experimental)'
+    required: false
+    default: 'false'
+  auto-commit:
+    description: 'Auto-commit config updates (NOT RECOMMENDED for CI/CD)'
+    required: false
+    default: 'false'
+  verbose:
+    description: 'Enable verbose logging'
+    required: false
+    default: 'false'
+
+outputs:
+  success:
+    description: 'Whether publish succeeded (true/false)'
+  summary:
+    description: 'Publish summary text'
+  created-ids:
+    description: 'JSON of newly created entity IDs'
+  updated-ids:
+    description: 'JSON of updated entity IDs'
+
+runs:
+  using: 'node20'
+  main: 'dist/action/index.js'

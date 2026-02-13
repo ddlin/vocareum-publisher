@@ -1,0 +1,195 @@
+# Vocareum Publisher
+
+Publish assignment content from GitHub to Vocareum.
+
+A CLI tool and GitHub Action that enables instructors to maintain assignment content in Git with full version control while seamlessly publishing to Vocareum.
+
+## Features
+
+- **Git-First Workflow**: GitHub is the source of truth for all assignment content
+- **CLI Tool**: Local development and publishing via command line
+- **GitHub Action**: Automated CI/CD publishing on push
+- **Change Detection**: Only uploads changed content (efficient)
+- **Template-Based Creation**: Create new assignments from templates
+- **Validation**: Verify configuration before publishing
+
+## Installation
+
+```bash
+npm install -g vocareum-publisher
+```
+
+## Quick Start
+
+### 1. Initialize a Course Repository
+
+```bash
+mkdir my-course && cd my-course
+git init
+vocareum-publish init
+```
+
+### 2. Create an Assignment
+
+```bash
+vocareum-publish new lab1-intro
+# Follow interactive prompts
+```
+
+### 3. Add Content
+
+Add your files to the generated directory structure:
+
+```
+lab1-intro/
+├── part1/
+│   ├── startercode/   # Student-visible files
+│   ├── scripts/       # Grading scripts
+│   ├── docs/          # Documentation
+│   └── data/          # Datasets
+```
+
+### 4. Validate and Publish
+
+```bash
+vocareum-publish --validate
+vocareum-publish
+```
+
+### 5. Commit and Push
+
+```bash
+git add .
+git commit -m "Add Lab 1"
+git push
+```
+
+## Configuration
+
+All configuration is stored in `vocareum.yaml`:
+
+```yaml
+version: "1.0"
+
+vocareum:
+  org_id: "12345"
+  course_id: "67890"
+  template_assignment_id: "99999"
+
+assignments:
+  - assignment_id: "11111"
+    name: "Lab 1: Introduction"
+    path: "lab1-intro"
+    parts:
+      - part_id: "22222"
+        path: "part1"
+        name: "Part 1: Setup"
+
+publish_options:
+  on_missing_id: "skip"
+  auto_commit: false
+```
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `vocareum-publish init` | Initialize a new course repository |
+| `vocareum-publish new <path>` | Create new assignment structure |
+| `vocareum-publish validate` | Validate configuration and structure |
+| `vocareum-publish fix` | Interactively fix validation issues |
+| `vocareum-publish` | Publish to Vocareum |
+
+### Publish Options
+
+```bash
+vocareum-publish --dry-run           # Preview changes
+vocareum-publish --assignment lab1   # Publish specific assignment
+vocareum-publish --force-all         # Re-upload everything
+vocareum-publish --sync-deletes      # Delete files not in Git (experimental)
+vocareum-publish --verbose           # Detailed logging
+```
+
+## GitHub Action
+
+```yaml
+name: Publish to Vocareum
+on:
+  push:
+    branches: [main]
+    paths: ['lab*/**', 'vocareum.yaml']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Publish to Vocareum
+        uses: vocareum/publish-action@v1
+        with:
+          config-file: vocareum.yaml
+          api-key: ${{ secrets.VOCAREUM_API_KEY }}
+          non-interactive: true
+```
+
+## Directory Structure
+
+```
+course-repo/
+├── vocareum.yaml         # Configuration
+├── lab1-intro/
+│   └── part1/
+│       ├── startercode/  # Student code
+│       ├── scripts/      # Grading scripts
+│       ├── docs/         # Documentation
+│       └── data/         # Datasets
+└── lab2-analysis/
+    └── ...
+```
+
+## Important Notes
+
+### All IDs Are Strings
+
+Vocareum API returns all IDs as strings. Always use string types:
+
+```yaml
+# Correct
+assignment_id: "12345"
+
+# Wrong
+assignment_id: 12345
+```
+
+### Local Creation, CI/CD Updates
+
+- **Create assignments locally** using `vocareum-publish new`
+- **Commit IDs** to Git before CI/CD runs
+- **CI/CD only updates** existing assignments
+
+### Never Auto-Commit in CI/CD
+
+The `auto_commit` option should only be used locally, never in CI/CD workflows.
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `VOCAREUM_API_KEY` | API key for authentication |
+| `VOCAREUM_LOG_LEVEL` | Log level: ERROR, WARN, INFO, DEBUG, TRACE |
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## License
+
+MIT License - see [LICENSE](LICENSE) for details.
+
+## Links
+
+- [Documentation](docs/)
+- [Examples](examples/)
+- [Vocareum API](https://documenter.getpostman.com/view/6736336/S11Exg4b)
+- [Issues](https://github.com/vocareum/vocareum-publisher/issues)

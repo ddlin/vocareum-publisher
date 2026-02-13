@@ -1,0 +1,74 @@
+{
+  "name": "vocareum-publisher",
+  "version": "1.0.0",
+  "description": "Publish assignment content from GitHub to Vocareum",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "vocareum-publish": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:action": "tsc && cp action/action.yml dist/action/",
+    "dev": "tsx src/index.ts",
+    "test": "vitest",
+    "test:coverage": "vitest --coverage",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "format": "prettier --write 'src/**/*.ts'",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist",
+    "action",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "vocareum",
+    "education",
+    "assignments",
+    "publishing",
+    "cli",
+    "github-action"
+  ],
+  "author": "Vocareum",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vocareum/vocareum-publisher.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vocareum/vocareum-publisher/issues"
+  },
+  "homepage": "https://github.com/vocareum/vocareum-publisher#readme",
+  "dependencies": {
+    "@actions/core": "^3.0.0",
+    "axios": "^1.6.0",
+    "chalk": "^5.3.0",
+    "commander": "^11.1.0",
+    "cosmiconfig": "^9.0.0",
+    "form-data": "^4.0.0",
+    "inquirer": "^9.2.0",
+    "js-yaml": "^4.1.0",
+    "ora": "^7.0.0",
+    "simple-git": "^3.21.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.7",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.10.0",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "eslint": "^8.56.0",
+    "prettier": "^3.1.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  }
+}

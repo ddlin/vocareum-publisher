@@ -1,0 +1,52 @@
+version: "1.0"
+
+vocareum:
+  # Replace these with your actual Vocareum IDs
+  org_id: "YOUR_ORG_ID"
+  course_id: "YOUR_COURSE_ID"
+  template_assignment_id: "YOUR_TEMPLATE_ID"
+
+assignments:
+  # Existing assignment (already in Vocareum)
+  - assignment_id: "11111"  # Replace with actual ID
+    name: "Lab 1: Introduction to Python"
+    path: "lab1-intro"
+    settings:
+      due_date: "2025-03-15T23:59:00Z"
+    parts:
+      - part_id: "22222"  # Replace with actual ID
+        path: "part1"
+        name: "Part 1: Hello World"
+        directories: ["startercode", "scripts", "docs"]
+
+  # New assignment (will be created from template)
+  - assignment_id: null
+    name: "Lab 2: Data Analysis"
+    path: "lab2-analysis"
+    create_from_template: true
+    settings:
+      due_date: "2025-03-22T23:59:00Z"
+    parts:
+      - part_id: null
+        path: "part1"
+        name: "Part 1: Data Loading"
+        directories: ["startercode", "scripts", "data"]
+      - part_id: null
+        path: "part2"
+        name: "Part 2: Visualization"
+        directories: ["startercode", "scripts"]
+
+publish_options:
+  on_missing_id: "skip"
+  auto_commit: false
+  abort_on_error: false
+  sync_deletes: false
+  exclude_patterns:
+    - "*.tmp"
+    - ".DS_Store"
+    - "*.pyc"
+    - "__pycache__"
+    - ".git"
+    - ".gitkeep"
+
+publish_history: []
