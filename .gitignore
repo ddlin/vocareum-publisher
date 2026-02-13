@@ -43,3 +43,6 @@ temp/
 # Vocareum publisher specific
 # Don't commit API keys or sensitive config
 vocareum-api-key.txt
+
+# Claude Code
+.claude/
