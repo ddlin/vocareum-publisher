@@ -47,7 +47,9 @@ export function crc32(buffer: Buffer): number {
  * @internal Exported for testing
  */
 export function createZipBuffer(files: FileMap): Buffer {
-  const entries = Object.entries(files);
+  const entries = Object.entries(files)
+    .map(([relativePath, content]) => [relativePath.replace(/\\/g, '/'), content] as const)
+    .sort(([a], [b]) => a.localeCompare(b));
   if (entries.length === 0) {
     throw new Error('Cannot create ZIP: no files provided');
   }
@@ -57,8 +59,7 @@ export function createZipBuffer(files: FileMap): Buffer {
   let offset = 0;
   let fileCount = 0;
 
-  for (const [relativePath, content] of entries) {
-    const normalizedPath = relativePath.replace(/\\/g, '/');
+  for (const [normalizedPath, content] of entries) {
     const nameBuffer = Buffer.from(normalizedPath, 'utf8');
     const dataBuffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
     const crc = crc32(dataBuffer);

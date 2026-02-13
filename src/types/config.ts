@@ -101,15 +101,28 @@ export const HistoryUpdatedEntitySchema = z.object({
 export type HistoryUpdatedEntity = z.infer<typeof HistoryUpdatedEntitySchema>;
 
 /**
+ * Failed entity record for publish history (YAML format)
+ */
+export const HistoryFailedEntitySchema = z.object({
+  type: z.enum(['assignment', 'part', 'file']),
+  id: z.string(),
+  error: z.string(),
+});
+
+export type HistoryFailedEntity = z.infer<typeof HistoryFailedEntitySchema>;
+
+/**
  * Publish history entry
  */
 export const PublishHistorySchema = z.object({
   timestamp: z.string(),
   commit_sha: z.string(),
   published_by: z.string(),
+  status: z.enum(['success', 'failed']).optional().default('success'),
   content_state: z.record(z.string(), z.string()),
   created: z.array(HistoryCreatedEntitySchema).optional(),
   updated: z.array(HistoryUpdatedEntitySchema).optional(),
+  failed: z.array(HistoryFailedEntitySchema).optional(),
 });
 
 export type PublishHistory = z.infer<typeof PublishHistorySchema>;

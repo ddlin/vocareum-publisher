@@ -190,10 +190,6 @@ export async function publish(
               }
             );
 
-            // Update content hash in state
-            const key = path.join(action.assignment.path, partAction.part.path, dir);
-            result.contentState[key] = uploadRes.directoryHash;
-
             if (uploadRes.failed.length > 0) {
               logger.warn(`Some files failed to upload in ${dir}`);
               for (const failedFile of uploadRes.failed) {
@@ -204,6 +200,10 @@ export async function publish(
                 });
               }
               result.success = false;
+            } else {
+              // Only advance stored hash when this directory upload succeeded.
+              const key = path.join(action.assignment.path, partAction.part.path, dir);
+              result.contentState[key] = uploadRes.directoryHash;
             }
           } catch (error) {
             logger.error(`Failed to upload ${dir} for part ${partId}`, { error });
@@ -220,11 +220,19 @@ export async function publish(
     timestamp: new Date().toISOString(),
     commit_sha: commitSha,
     published_by: userName,
+    status: result.success ? 'success' : 'failed',
     content_state: result.contentState,
     created: result.created.map(c => ({
       assignment: c.id,
       parts: c.parts || []
-    }))
+    })),
+    failed: result.failed.length > 0
+      ? result.failed.map((f) => ({
+        type: f.type,
+        id: f.id,
+        error: f.error instanceof Error ? f.error.message : String(f.error),
+      }))
+      : undefined,
   };
 
   await updateConfig(configPath, {
