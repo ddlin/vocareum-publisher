@@ -6,7 +6,7 @@
 
 import * as path from 'path';
 import type { Config, PublishHistory } from '../types/config';
-import { normalizeSubmissionFilters } from '../types/config';
+import { normalizeSubmissionFilters, nullToUndefined } from '../types/config';
 import type { PublishResult, PublishOperationOptions } from '../types/state';
 import { VocareumClient } from '../api/client';
 import { reconcile, displayPlan } from './reconciler';
@@ -305,24 +305,24 @@ export async function publish(
           const asnSettings = action.assignment.settings;
           await updateAssignment(client, workingConfig.vocareum.course_id, action.assignment.assignment_id, {
             name: action.assignment.name,
-            description: asnSettings?.description,
-            nosubmit: asnSettings?.nosubmit,
-            publish: asnSettings?.publish,
-            publish_grades: asnSettings?.publish_grades,
-            auto_submit: asnSettings?.auto_submit,
-            grading_on_submit: asnSettings?.grading_on_submit,
-            noworkarea: asnSettings?.noworkarea,
-            exam_mode: asnSettings?.exam_mode,
-            exam_duration: asnSettings?.exam_duration,
-            num_attempts: asnSettings?.num_attempts,
-            show_end_exam_button: asnSettings?.show_end_exam_button,
-            copy_startercode: asnSettings?.copy_startercode,
-            uncompressupload: asnSettings?.uncompressupload,
-            lti_on: asnSettings?.lti_on,
-            anonymous_grading: asnSettings?.anonymous_grading,
-            grading_visibility: asnSettings?.grading_visibility,
-            send_webhook: asnSettings?.send_webhook,
-            live_code_comments: asnSettings?.live_code_comments,
+            description: nullToUndefined(asnSettings?.description),
+            nosubmit: nullToUndefined(asnSettings?.nosubmit),
+            publish: nullToUndefined(asnSettings?.publish),
+            publish_grades: nullToUndefined(asnSettings?.publish_grades),
+            auto_submit: nullToUndefined(asnSettings?.auto_submit),
+            grading_on_submit: nullToUndefined(asnSettings?.grading_on_submit),
+            noworkarea: nullToUndefined(asnSettings?.noworkarea),
+            exam_mode: nullToUndefined(asnSettings?.exam_mode),
+            exam_duration: nullToUndefined(asnSettings?.exam_duration),
+            num_attempts: nullToUndefined(asnSettings?.num_attempts),
+            show_end_exam_button: nullToUndefined(asnSettings?.show_end_exam_button),
+            copy_startercode: nullToUndefined(asnSettings?.copy_startercode),
+            uncompressupload: nullToUndefined(asnSettings?.uncompressupload),
+            lti_on: nullToUndefined(asnSettings?.lti_on),
+            anonymous_grading: nullToUndefined(asnSettings?.anonymous_grading),
+            grading_visibility: nullToUndefined(asnSettings?.grading_visibility),
+            send_webhook: nullToUndefined(asnSettings?.send_webhook),
+            live_code_comments: nullToUndefined(asnSettings?.live_code_comments),
           });
           logger.success(`Updated assignment metadata: ${action.assignment.name}`);
         } catch (error) {
@@ -374,23 +374,23 @@ export async function publish(
           await updatePart(client, workingConfig.vocareum.course_id, assignmentId, partId, {
             name: partName,  // Required for all part updates
             submission_filters: normalizeSubmissionFilters(partSettings?.submission_filters),
-            cloud_labs: partSettings?.cloud_labs,
-            instant_aws_access: partSettings?.instant_aws_access,
-            session_length: partSettings?.session_length,
-            monthly_dollar: partSettings?.monthly_dollar,
-            monthly_time: partSettings?.monthly_time,
-            total_time: partSettings?.total_time,
-            total_dollar: partSettings?.total_dollar,
-            late_penalty_percent: partSettings?.late_penalty_percent,
-            late_penalty_percent_rule: partSettings?.late_penalty_percent_rule,
-            deadlinedate: partSettings?.deadlinedate,
-            endlab: partSettings?.endlab,
-            labtype: partSettings?.labtype,
-            container_image: partSettings?.container_image,
-            number_of_submissions: partSettings?.number_of_submissions,
-            lab_interface: partSettings?.lab_interface,
-            databricks_maxusers: partSettings?.databricks_maxusers,
-            tags: partSettings?.tags,
+            cloud_labs: nullToUndefined(partSettings?.cloud_labs),
+            instant_aws_access: nullToUndefined(partSettings?.instant_aws_access),
+            session_length: nullToUndefined(partSettings?.session_length),
+            monthly_dollar: nullToUndefined(partSettings?.monthly_dollar),
+            monthly_time: nullToUndefined(partSettings?.monthly_time),
+            total_time: nullToUndefined(partSettings?.total_time),
+            total_dollar: nullToUndefined(partSettings?.total_dollar),
+            late_penalty_percent: nullToUndefined(partSettings?.late_penalty_percent),
+            late_penalty_percent_rule: nullToUndefined(partSettings?.late_penalty_percent_rule),
+            deadlinedate: nullToUndefined(partSettings?.deadlinedate),
+            endlab: nullToUndefined(partSettings?.endlab),
+            labtype: nullToUndefined(partSettings?.labtype),
+            container_image: nullToUndefined(partSettings?.container_image),
+            number_of_submissions: nullToUndefined(partSettings?.number_of_submissions),
+            lab_interface: nullToUndefined(partSettings?.lab_interface),
+            databricks_maxusers: nullToUndefined(partSettings?.databricks_maxusers),
+            tags: nullToUndefined(partSettings?.tags),
           });
           logger.success(`Updated part ${partName}`);
         } catch (error) {

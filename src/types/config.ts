@@ -63,9 +63,9 @@ export type SubmissionFiltersObject = z.infer<typeof SubmissionFiltersObjectSche
  * Handles both array format (from API) and object format (from config).
  */
 export function normalizeSubmissionFilters(
-  filters: SubmissionFilters | undefined
+  filters: SubmissionFilters | null | undefined
 ): SubmissionFiltersObject | undefined {
-  if (filters === undefined) return undefined;
+  if (filters === undefined || filters === null) return undefined;
 
   // If it's an array, treat as include list
   if (Array.isArray(filters)) {
@@ -74,6 +74,14 @@ export function normalizeSubmissionFilters(
 
   // Already object format
   return filters;
+}
+
+/**
+ * Convert null to undefined for API compatibility.
+ * The Vocareum API doesn't accept null values, only undefined (omitted).
+ */
+export function nullToUndefined<T>(value: T | null | undefined): T | undefined {
+  return value === null ? undefined : value;
 }
 
 /**
@@ -93,45 +101,46 @@ export type LabInterface = z.infer<typeof LabInterfaceSchema>;
  * Part settings for Vocareum configuration
  *
  * All fields confirmed working via API (Feb 2026).
+ * Note: Many fields use .nullish() because API may return null values.
  */
 export const PartSettingsSchema = z
   .object({
     /** Include/exclude patterns for student submissions */
-    submission_filters: SubmissionFiltersSchema.optional(),
+    submission_filters: SubmissionFiltersSchema.nullish(),
     /** Enable cloud labs for this part (requires org permission) */
-    cloud_labs: z.boolean().optional(),
+    cloud_labs: z.boolean().nullish(),
     /** Enable instant AWS access for this part (requires org permission) */
-    instant_aws_access: z.boolean().optional(),
+    instant_aws_access: z.boolean().nullish(),
     /** Lab session length in minutes (e.g. "60" for 1 hour) */
-    session_length: z.string().optional(),
+    session_length: z.string().nullish(),
     /** Monthly dollar budget for cloud resources */
-    monthly_dollar: z.string().optional(),
+    monthly_dollar: z.string().nullish(),
     /** Monthly time budget for cloud resources (minutes) */
-    monthly_time: z.string().optional(),
+    monthly_time: z.string().nullish(),
     /** Total time budget for cloud resources (minutes) */
-    total_time: z.string().optional(),
+    total_time: z.string().nullish(),
     /** Total dollar budget for cloud resources */
-    total_dollar: z.string().optional(),
+    total_dollar: z.string().nullish(),
     /** Late submission penalty percentage (0-100) */
-    late_penalty_percent: z.number().optional(),
+    late_penalty_percent: z.number().nullish(),
     /** How late penalty is applied: "max score" or "student score" */
-    late_penalty_percent_rule: z.enum(['max score', 'student score']).optional(),
+    late_penalty_percent_rule: z.enum(['max score', 'student score']).nullish(),
     /** Part submission deadline (ISO 8601 date string) */
-    deadlinedate: z.string().optional(),
+    deadlinedate: z.string().nullish(),
     /** Behavior on end lab: "stop" or "terminate" */
-    endlab: z.enum(['stop', 'terminate']).optional(),
+    endlab: z.enum(['stop', 'terminate']).nullish(),
     /** Lab type name (e.g., "Visual Studio Code", "JupyterLab") */
-    labtype: z.string().optional(),
+    labtype: z.string().nullish(),
     /** Container image name (must be valid for the labtype) */
-    container_image: z.string().optional(),
+    container_image: z.string().nullish(),
     /** Maximum number of submissions allowed */
-    number_of_submissions: z.number().optional(),
+    number_of_submissions: z.number().nullish(),
     /** Lab interface configuration */
-    lab_interface: LabInterfaceSchema.optional(),
+    lab_interface: LabInterfaceSchema.nullish(),
     /** Maximum users for Databricks labs */
-    databricks_maxusers: z.number().optional(),
+    databricks_maxusers: z.number().nullish(),
     /** Tags for the part */
-    tags: z.array(z.string()).optional(),
+    tags: z.array(z.string()).nullish(),
   })
   .optional();
 
@@ -163,44 +172,46 @@ export type Part = z.infer<typeof PartSchema>;
  * Fields that DO NOT work via API (return "No valid parameters"):
  * - points, due_date
  * These must be set manually in Vocareum UI.
+ *
+ * Note: Many fields use .nullish() because API may return null values.
  */
 export const AssignmentSettingsSchema = z
   .object({
-    description: z.string().optional(),
+    description: z.string().nullish(),
     /** Disable student submissions for this assignment */
-    nosubmit: z.boolean().optional(),
+    nosubmit: z.boolean().nullish(),
     /** Publish the assignment to students */
-    publish: z.boolean().optional(),
+    publish: z.boolean().nullish(),
     /** Publish grades setting (string value) */
-    publish_grades: z.string().optional(),
+    publish_grades: z.string().nullish(),
     /** Enable automatic submission */
-    auto_submit: z.boolean().optional(),
+    auto_submit: z.boolean().nullish(),
     /** Grade immediately on submit */
-    grading_on_submit: z.boolean().optional(),
+    grading_on_submit: z.boolean().nullish(),
     /** Disable work area for students */
-    noworkarea: z.boolean().optional(),
+    noworkarea: z.boolean().nullish(),
     /** Exam mode: timed, scheduled, or timed_scheduled */
-    exam_mode: z.enum(['timed', 'scheduled', 'timed_scheduled']).optional(),
+    exam_mode: z.enum(['timed', 'scheduled', 'timed_scheduled']).nullish(),
     /** Exam duration in minutes */
-    exam_duration: z.number().optional(),
+    exam_duration: z.number().nullish(),
     /** Number of attempts allowed */
-    num_attempts: z.number().optional(),
+    num_attempts: z.number().nullish(),
     /** Show end exam button to students */
-    show_end_exam_button: z.boolean().optional(),
+    show_end_exam_button: z.boolean().nullish(),
     /** Copy starter code to student workspace on start */
-    copy_startercode: z.boolean().optional(),
+    copy_startercode: z.boolean().nullish(),
     /** Uncompress uploaded files */
-    uncompressupload: z.boolean().optional(),
+    uncompressupload: z.boolean().nullish(),
     /** Enable LTI integration */
-    lti_on: z.boolean().optional(),
+    lti_on: z.boolean().nullish(),
     /** Enable anonymous grading */
-    anonymous_grading: z.boolean().optional(),
+    anonymous_grading: z.boolean().nullish(),
     /** Grading visibility: all or assigned */
-    grading_visibility: z.enum(['all', 'assigned']).optional(),
+    grading_visibility: z.enum(['all', 'assigned']).nullish(),
     /** Send webhook on events */
-    send_webhook: z.boolean().optional(),
+    send_webhook: z.boolean().nullish(),
     /** Enable live code comments */
-    live_code_comments: z.boolean().optional(),
+    live_code_comments: z.boolean().nullish(),
   })
   .optional();
 

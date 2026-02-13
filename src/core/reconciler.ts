@@ -369,7 +369,7 @@ function detectPartSettingsChanged(
   if (s.databricks_maxusers !== undefined && s.databricks_maxusers !== (remotePart as unknown as Record<string, unknown>).databricks_maxusers) return true;
 
   // Compare submission filters (normalize both to object format)
-  if (s.submission_filters !== undefined) {
+  if (s.submission_filters !== undefined && s.submission_filters !== null) {
     const localFilters = normalizeSubmissionFilters(s.submission_filters);
     const remoteFilters = normalizeSubmissionFilters(remotePart.submission_filters);
     if (!remoteFilters) return true; // Config defines filters but remote has none
