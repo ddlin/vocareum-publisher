@@ -96,44 +96,35 @@ async function importAssignment(
 
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
-    logger.plain(`  Downloading part ${i + 1}/${parts.length}...`);
 
-    try {
-      // Download content for this part
-      const files = await downloadContent(client, courseId, assignmentId, part.id);
+    // Download content for this part
+    const files = await downloadContent(client, courseId, assignmentId, part.id);
+    const fileCount = Object.keys(files).length;
 
-      // Determine part path (use part name or index)
-      const partPath = parts.length === 1 ? '.' : `part${i + 1}`;
+    // Determine part path (use part name or index)
+    const partPath = parts.length === 1 ? '.' : `part${i + 1}`;
 
-      // Write files to local directory
+    // Write files to local directory if any were downloaded
+    if (fileCount > 0) {
       await writeFilesToDirectory(localPath, partPath, files, verbose);
+    }
 
-      // Create part config entry
-      const configPart: Part = {
-        part_id: part.id,
-        path: partPath,
-        name: part.name,
-        directories: detectDirectories(files),
-        settings: {},
-      };
+    // Create part config entry
+    const configPart: Part = {
+      part_id: part.id,
+      path: partPath,
+      name: part.name,
+      directories: fileCount > 0 ? detectDirectories(files) : ['startercode', 'scripts'],
+      settings: {},
+    };
 
-      configParts.push(configPart);
+    configParts.push(configPart);
 
-      logger.plain(`  Downloaded part ${i + 1}/${parts.length} (${Object.keys(files).length} files)`);
-    } catch (error) {
-      // If download fails (e.g., API limitation), create config entry without files
-      logger.warn(`  Could not download content for part ${part.name}: ${error instanceof Error ? error.message : 'Unknown'}`);
-
-      const partPath = parts.length === 1 ? '.' : `part${i + 1}`;
-      const configPart: Part = {
-        part_id: part.id,
-        path: partPath,
-        name: part.name,
-        directories: ['startercode', 'scripts'],
-        settings: {},
-      };
-
-      configParts.push(configPart);
+    // Report what was downloaded
+    if (fileCount > 0) {
+      logger.plain(`  Part ${i + 1}/${parts.length}: downloaded ${fileCount} file${fileCount === 1 ? '' : 's'}`);
+    } else {
+      logger.plain(`  Part ${i + 1}/${parts.length}: no content found`);
     }
   }
 

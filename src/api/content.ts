@@ -268,15 +268,6 @@ export function downloadContent(
       }
     }
 
-    if (Object.keys(downloaded).length === 0) {
-      throw new APIError(
-        attempts === 0
-          ? `No files found to download for part ${partId}`
-          : `Download endpoint did not return file contents for part ${partId}`,
-        501
-      );
-    }
-
     return downloaded;
   })();
 }
@@ -303,8 +294,8 @@ export async function listFiles(
       params: { dir: directory },
     });
     return response.files ?? [];
-  } catch (error) {
-    logger.warn(`Failed to list files or not supported: ${error instanceof Error ? error.message : 'Unknown'}`);
+  } catch {
+    // Silently return empty - API may not support file listing
     return [];
   }
 }

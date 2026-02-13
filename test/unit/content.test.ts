@@ -624,12 +624,11 @@ describe('downloadContent', () => {
       .mockResolvedValueOnce({ files: [] })
       .mockResolvedValueOnce({ files: [] });
 
-    await expect(
-      downloadContent(mockClient, 'c1', 'a1', 'p1')
-    ).rejects.toThrow('No files found to download for part p1');
+    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1');
+    expect(result).toEqual({});
   });
 
-  it('should throw specific message when files exist but content fails', async () => {
+  it('should return empty when files exist but content fails', async () => {
     requestMock
       .mockResolvedValueOnce({ files: [{ path: 'file.txt', size: 10 }] })
       .mockRejectedValueOnce(new Error('Download failed')) // file download fails
@@ -637,9 +636,8 @@ describe('downloadContent', () => {
       .mockResolvedValueOnce({ files: [] })
       .mockResolvedValueOnce({ files: [] });
 
-    await expect(
-      downloadContent(mockClient, 'c1', 'a1', 'p1')
-    ).rejects.toThrow('Download endpoint did not return file contents for part p1');
+    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1');
+    expect(result).toEqual({});
   });
 
   it('should skip individual file failures and continue', async () => {
