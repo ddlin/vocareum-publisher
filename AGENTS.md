@@ -41,19 +41,23 @@ course_id: 67890
 
 **Why:** Vocareum API returns all IDs as strings. Using numbers will cause comparison failures.
 
-### 2. **Content Upload Requires Multipart Form-Data**
+### 2. **Content Upload Uses Part Update with Base64 Zip**
 ```typescript
-// ✅ CORRECT - Use form-data library
-import FormData from 'form-data';
-const form = new FormData();
-form.append('type', 'startercode');
-form.append('file', content, { filename: 'main.py' });
+// ✅ CORRECT - Use part update endpoint with zipcontent
+await axios.put(
+  `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
+  {
+    name: 'Part 1',
+    content: [{ target: 'startercode', zipcontent: base64Zip, reset: 0 }],
+    update: 1
+  }
+);
 
-// ❌ WRONG - JSON payloads don't work
-axios.post('/upload', { file: content })
+// ❌ WRONG - Old multipart upload assumptions
+axios.post('/api/v2/upload', formData)
 ```
 
-**Why:** Vocareum API requires multipart/form-data for file uploads, not JSON.
+**Why:** Vocareum Postman docs + live testing confirm part `PUT` with `content[].zipcontent`.
 
 ### 3. **Parts Are Ordered by `seqnum` (String)**
 ```typescript
@@ -153,7 +157,7 @@ Phase 3: API Client
 ├── api/courses.ts
 ├── api/assignments.ts
 ├── api/parts.ts
-└── api/content.ts (multipart uploads!)
+└── api/content.ts (part PUT with zipcontent payload)
 
 Phase 4: Business Logic
 ├── core/mapper.ts (map parts by seqnum)

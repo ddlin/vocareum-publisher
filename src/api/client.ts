@@ -135,7 +135,7 @@ export class VocareumClient {
       baseURL: baseUrl,
       timeout: 30000,
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Token ${apiKey}`,
         'Content-Type': 'application/json',
       },
     });

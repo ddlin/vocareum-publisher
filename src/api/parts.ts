@@ -27,11 +27,12 @@ import type {
  */
 export async function listParts(
   client: VocareumClient,
+  courseId: string,
   assignmentId: string
 ): Promise<VocareumPartResponse[]> {
   const response = await client.request<PartsListResponse>({
     method: 'GET',
-    url: `/api/v2/assignments/${assignmentId}/parts`,
+    url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts`,
   });
 
   const parts = response.parts || [];

@@ -357,7 +357,7 @@ Constructor(apiKey: string, baseUrl?: string)
 - Initialize axios instance with:
   * baseURL
   * timeout: 30000ms
-  * headers: { 'Authorization': 'Bearer {apiKey}' }
+  * headers: { 'Authorization': 'Token {apiKey}' }
 
 CRITICAL: All IDs are strings, not numbers!
 
@@ -392,12 +392,12 @@ Extend VocareumClient with course methods.
 
 METHODS:
 1. async getCourse(courseId: string): Promise<Course>
-   - GET /v1/courses/{courseId}
+   - GET /api/v2/courses/{courseId}
    - Return course details
    - Throw NotFoundError if 404
 
 2. async updateCourse(courseId: string, settings: CourseSettings): Promise<Course>
-   - PUT /v1/courses/{courseId}
+   - PUT /api/v2/courses/{courseId}
    - Update course metadata
    - Return updated course
 
@@ -412,21 +412,23 @@ Implement src/api/assignments.ts for assignment operations.
 
 METHODS:
 1. async listAssignments(courseId: string): Promise<Assignment[]>
-   - GET /v1/courses/{courseId}/assignments
+   - GET /api/v2/courses/{courseId}/assignments
    - Return array of assignments
    - Cache result for performance (Map<courseId, Assignment[]>)
 
 2. async getAssignment(assignmentId: string): Promise<Assignment>
-   - GET /v1/assignments/{assignmentId}
+   - GET /api/v2/assignments/{assignmentId}
    - Return assignment details
 
 3. async copyAssignment(templateId: string): Promise<AssignmentCopyResponse>
-   - POST /v1/assignments/{templateId}/copy
+   - POST /api/v2/courses/{courseId}/assignments
+   - Body: { method: "copy", source: templateId, name: string }
+   - Poll GET /api/v2/transaction/{transactionId} until success
    - Return new assignment_id and parts array with seqnum
-   - CRITICAL: Verify seqnum is preserved in response
+   - CRITICAL: seqnum must be preserved in response
 
 4. async updateAssignment(assignmentId: string, settings: AssignmentSettings): Promise<Assignment>
-   - PUT /v1/assignments/{assignmentId}
+   - PUT /api/v2/assignments/{assignmentId}
    - Update assignment metadata
    - Support fields: name, due_date, description
 
@@ -440,17 +442,17 @@ Implement src/api/parts.ts for part operations.
 
 METHODS:
 1. async listParts(assignmentId: string): Promise<Part[]>
-   - GET /v1/assignments/{assignmentId}/parts
+   - GET /api/v2/courses/{courseId}/assignments/{assignmentId}/parts
    - Return parts with seqnum field
    - Filter out deleted parts (deleted: "1")
    - Sort by parseInt(seqnum) for correct ordering
 
 2. async getPart(partId: string): Promise<Part>
-   - GET /v1/parts/{partId}
+   - GET /api/v2/parts/{partId}
    - Return part details
 
 3. async updatePart(partId: string, settings: PartSettings): Promise<Part>
-   - PUT /v1/parts/{partId}
+   - PUT /api/v2/parts/{partId}
    - Update part metadata
 
 Use VocareumPartResponse type from types/api.ts.
@@ -461,7 +463,7 @@ Use VocareumPartResponse type from types/api.ts.
 ```
 Implement src/api/content.ts for file upload/download operations.
 
-CRITICAL: Content upload requires multipart/form-data format.
+CRITICAL: Content upload uses part update with base64 zipcontent.
 
 METHODS:
 1. async uploadContent(
@@ -472,13 +474,12 @@ METHODS:
      files: FileMap
    ): Promise<UploadResult>
    
-   - Endpoint: POST /v1/courses/{cid}/assignments/{aid}/parts/{pid}/files
-   - Use form-data library for multipart
-   - Parameters:
-     * type: directory ('startercode' | 'scripts' | 'docs' | 'data')
-     * file: file content (multipart field)
-   - Upload each file separately
-   - Preserve file paths in filename/filepath
+   - Endpoint: PUT /api/v2/courses/{cid}/assignments/{aid}/parts/{pid}
+   - Send JSON payload with:
+     * name: part name
+     * content: array of { target, zipcontent, reset }
+     * update: 1
+   - Package files by directory into zip, base64 encode as zipcontent
    - Return { succeeded[], failed[], directoryHash }
 
 2. async downloadContent(partId: string): Promise<FileMap>
@@ -498,24 +499,17 @@ METHODS:
 
 EXAMPLE uploadContent implementation:
 ```typescript
-import FormData from 'form-data';
-
 async uploadContent(...) {
-  for (const [filePath, content] of Object.entries(files)) {
-    const form = new FormData();
-    form.append('type', directory);
-    form.append('file', content, {
-      filename: path.basename(filePath),
-      filepath: filePath
-    });
-    
-    await this.request({
-      method: 'POST',
-      url: `/v1/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`,
-      data: form,
-      headers: form.getHeaders()
-    });
-  }
+  const zipcontent = await buildBase64Zip(files);
+  await this.request({
+    method: 'PUT',
+    url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
+    data: {
+      name: partName,
+      content: [{ target: directory, zipcontent, reset: 0 }],
+      update: 1
+    }
+  });
 }
 ```
 ```
@@ -1490,14 +1484,23 @@ describe('VocareumClient integration', () => {
   });
   
   it('should copy assignment and return new IDs', async () => {
-    mockServer.mock('POST', '/v1/assignments/999/copy', {
-      assignment_id: '123',
-      parts: [
-        { part_id: '456', seqnum: '0', name: 'Part 1' }
-      ]
+    mockServer.mock('POST', '/api/v2/courses/67890/assignments', {
+      status: 'success',
+      message: 'Started',
+      transactionid: '42'
+    });
+    mockServer.mock('GET', '/api/v2/transaction/42', {
+      status: 'success',
+      state: 'success',
+      objid: '123',
+      message: 'Assignment copy complete'
+    });
+    mockServer.mock('GET', '/api/v2/courses/67890/assignments/123/parts', {
+      status: 'success',
+      parts: [{ id: '456', seqnum: '0', name: 'Part 1', deleted: '0' }]
     });
     
-    const result = await client.copyAssignment('999');
+    const result = await client.copyAssignment('999', 'Copy Name', '67890');
     
     expect(result.assignment_id).toBe('123');
     expect(result.parts).toHaveLength(1);

@@ -44,3 +44,4 @@ export {
   validateId,
   SchemaValidationError,
 } from './validation';
+export { loadDotEnvIfPresent } from './env';

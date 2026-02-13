@@ -172,11 +172,20 @@ assignment_id: 12345
 
 The `auto_commit` option should only be used locally, never in CI/CD workflows.
 
+### API Contract Notes
+
+- Authentication header: `Authorization: Token <token>`
+- Base API path: `https://api.vocareum.com/api/v2/`
+- Assignment copy: `POST /api/v2/courses/{courseId}/assignments` with body:
+  - `{ "method": "copy", "source": "<templateAssignmentId>", "name": "<newName>" }`
+- Content updates: part `PUT` with `content[].zipcontent` (base64 zip), per Postman docs.
+
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `VOCAREUM_API_KEY` | API key for authentication |
+| `VOCAREUM_API_KEY` | API key for authentication (supported) |
+| `VOCAREUM_API_TOKEN` | API key for authentication (supported alias) |
 | `VOCAREUM_LOG_LEVEL` | Log level: ERROR, WARN, INFO, DEBUG, TRACE |
 
 ## Contributing

@@ -106,15 +106,16 @@ export function downloadContent(
  */
 export async function listFiles(
   client: VocareumClient,
+  courseId: string,
+  assignmentId: string,
   partId: string,
   directory: DirectoryType
 ): Promise<FileInfo[]> {
   try {
-    // Guessing endpoint
     const response = await client.request<{ files: FileInfo[] }>({
       method: 'GET',
-      url: `/api/v2/parts/${partId}/files`,
-      params: { type: directory }
+      url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`,
+      params: { dir: directory },
     });
     return response.files || [];
   } catch (error) {
@@ -136,6 +137,8 @@ export async function listFiles(
  */
 export async function deleteFile(
   client: VocareumClient,
+  courseId: string,
+  assignmentId: string,
   partId: string,
   directory: DirectoryType,
   filePath: string
@@ -143,11 +146,11 @@ export async function deleteFile(
   try {
     await client.request({
       method: 'DELETE',
-      url: `/api/v2/parts/${partId}/files`,
+      url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`,
       params: {
-        type: directory,
-        path: filePath
-      }
+        dir: directory,
+        filename: filePath,
+      },
     });
   } catch (error: unknown) {
     // Handle 404/405 gracefully as per requirements

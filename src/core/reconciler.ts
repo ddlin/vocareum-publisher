@@ -79,7 +79,7 @@ export async function reconcile(
     // If we are updating, we need to check parts
     if (assignmentActionType === 'update' && remoteAssignment) {
       // Fetch parts
-      const remoteParts = await listParts(client, remoteAssignment.id);
+      const remoteParts = await listParts(client, config.vocareum.course_id, remoteAssignment.id);
 
       // Map parts
       try {

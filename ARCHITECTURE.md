@@ -1601,8 +1601,10 @@ Commit changes? [Y/n]
 [DEBUG] API request: GET /courses/67890
 [DEBUG] Response: 200 OK (234ms)
 [TRACE] Found 5 assignments in course
-[DEBUG] API request: POST /assignments/99999/copy
-[DEBUG] Response: 201 Created (1.2s)
+[DEBUG] API request: POST /api/v2/courses/67890/assignments
+[DEBUG] Response: 202 Accepted (1.2s)
+[DEBUG] API request: GET /api/v2/transaction/42
+[DEBUG] Response: 200 OK (210ms)
 [TRACE] Calculating file checksums for 15 files
 [DEBUG] Checksum: abc123... (main.py)
 ```
@@ -2024,9 +2026,9 @@ gh release create v1.0.0 --notes "Release notes here"
 ## Open Technical Questions
 
 1. **Vocareum API Endpoints:** Need complete API documentation to finalize endpoint implementations
-2. **Authentication Method:** Confirm API key format and authentication header requirements
+2. **Authentication Method:** Confirmed `Authorization: Token <token>`
 3. **Rate Limiting:** What are the rate limits? How should we handle 429 responses?
-4. **Content Upload Format:** Does the API accept multipart form data, JSON with base64, or zip files?
+4. **Content Upload Format:** Confirmed part `PUT` with `content[].zipcontent` base64 zip payload
 5. **Content Download Format:** How is content returned during import? Zip, individual files, or structured JSON?
 6. **Part Ordering:** How are parts ordered in the API response? Is `position` field reliable?
 7. **Assignment Copy Behavior:** Does copying preserve all settings? Are there any limitations?

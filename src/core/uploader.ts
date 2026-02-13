@@ -108,7 +108,7 @@ export async function syncDirectory(
       logger.info('Syncing deletions...');
 
       // Get remote files
-      const remoteFiles = await listFiles(client, partId, directoryType);
+      const remoteFiles = await listFiles(client, courseId, assignmentId, partId, directoryType);
       const localFiles = await readLocalDirectory(localPath, options.excludePatterns);
       const localFileSet = new Set(Object.keys(localFiles));
 
@@ -121,7 +121,7 @@ export async function syncDirectory(
 
         for (const file of filesToDelete) {
           try {
-            await deleteFile(client, partId, directoryType, file.path);
+            await deleteFile(client, courseId, assignmentId, partId, directoryType, file.path);
             uploadResult.deleted.push(file.path);
             logger.debug(`Deleted: ${file.path}`);
           } catch (error) {
@@ -140,4 +140,3 @@ export async function syncDirectory(
 }
 
 export { readLocalDirectory as readDirectory };
-

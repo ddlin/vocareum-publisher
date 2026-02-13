@@ -8,6 +8,7 @@ import { loadConfig } from '../core/config';
 import { publish } from '../core/publisher';
 import { VocareumClient } from '../api/client';
 import { logger } from '../utils/logger';
+import { loadDotEnvIfPresent } from '../utils/env';
 import type { PublishOperationOptions } from '../types/state';
 
 export interface PublishCommandOptions extends PublishOperationOptions {
@@ -23,12 +24,13 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
   const configPath = options.config || 'vocareum.yaml';
 
   try {
+    loadDotEnvIfPresent();
     const config = await loadConfig(configPath);
 
     // API Key
-    const apiKey = process.env.VOCAREUM_API_KEY;
+    const apiKey = process.env.VOCAREUM_API_KEY || process.env.VOCAREUM_API_TOKEN;
     if (!apiKey) {
-      logger.error('VOCAREUM_API_KEY environment variable is required.');
+      logger.error('VOCAREUM_API_KEY (or VOCAREUM_API_TOKEN) environment variable is required.');
       process.exit(1);
     }
 

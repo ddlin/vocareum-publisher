@@ -12,6 +12,14 @@ import type {
   ApiAssignmentSettings,
   AssignmentsListResponse
 } from '../types/api';
+import { listParts } from './parts';
+
+interface TransactionResponse {
+  status: 'success';
+  state: 'pending' | 'success' | 'failed';
+  objid?: string;
+  message?: string;
+}
 
 /**
  * List all assignments in a course
@@ -64,16 +72,73 @@ export async function copyAssignment(
   name: string,
   courseId: string
 ): Promise<AssignmentCopyResponse> {
-  // Guessing endpoint: POST /api/v2/assignments/:templateId/copy
-  // Payload likely needs name and target course
-  return client.request<AssignmentCopyResponse>({
+  // Postman contract:
+  // POST /api/v2/courses/{courseId}/assignments
+  // { method: "copy", source: "{source-assignmentId}", name: "assignment copy" }
+  const response = await client.request<{
+    status: 'success';
+    message?: string;
+    transactionid?: string;
+    objid?: string;
+  }>({
     method: 'POST',
-    url: `/api/v2/assignments/${templateId}/copy`,
+    url: `/api/v2/courses/${courseId}/assignments`,
     data: {
+      method: 'copy',
+      source: templateId,
       name,
-      course_id: courseId
-    }
+    },
   });
+
+  let assignmentId = response.objid;
+
+  // Copy is async. Even when objid is present in initial response,
+  // it may be a placeholder (e.g., course id) until transaction completes.
+  if (response.transactionid) {
+    assignmentId = await waitForAssignmentObjId(client, response.transactionid);
+  }
+
+  if (!assignmentId) {
+    throw new Error('Assignment copy response did not include assignment ID');
+  }
+
+  // Parts are regenerated; fetch and return them sorted by seqnum.
+  const parts = await listParts(client, courseId, assignmentId);
+
+  return {
+    assignment_id: assignmentId,
+    parts: parts.map((p) => ({
+      part_id: p.id,
+      name: p.name,
+      seqnum: p.seqnum,
+    })),
+  };
+}
+
+async function waitForAssignmentObjId(
+  client: VocareumClient,
+  transactionId: string
+): Promise<string | undefined> {
+  const maxAttempts = 15;
+  const delayMs = 1000;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const txn = await client.request<TransactionResponse>({
+      method: 'GET',
+      url: `/api/v2/transaction/${transactionId}`,
+    });
+
+    if (txn.state === 'success') {
+      return txn.objid;
+    }
+    if (txn.state === 'failed') {
+      throw new Error(txn.message || `Copy assignment transaction failed: ${transactionId}`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  throw new Error(`Timed out waiting for assignment copy transaction: ${transactionId}`);
 }
 
 /**

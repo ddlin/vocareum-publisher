@@ -11,6 +11,7 @@
     "build": "tsc",
     "build:action": "tsc && cp action/action.yml dist/action/",
     "dev": "tsx src/index.ts",
+    "probe:api": "node scripts/probe-vocareum-api.mjs",
     "test": "vitest",
     "test:coverage": "vitest --coverage",
     "lint": "eslint src --ext .ts",

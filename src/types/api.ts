@@ -17,6 +17,14 @@ export interface VocareumCourseResponse {
 }
 
 /**
+ * Courses list/get API response
+ */
+export interface CoursesListResponse {
+  status: 'success';
+  courses: VocareumCourseResponse[];
+}
+
+/**
  * Assignment response from Vocareum API
  */
 export interface VocareumAssignmentResponse {

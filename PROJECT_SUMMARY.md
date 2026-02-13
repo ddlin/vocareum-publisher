@@ -112,10 +112,10 @@ An open-source CLI tool and GitHub Action that Vocareum customers can deploy to 
 - All resource IDs returned as strings, not numbers
 - Config must use string types: `assignment_id: "12345"`
 
-### 2. Content Upload Requires Multipart Form-Data
-- Endpoint: `POST /v1/courses/{cid}/assignments/{aid}/parts/{pid}/files`
-- Parameters: `type` (startercode/scripts/docs/data), `file` (multipart)
-- Cannot use simple JSON payloads
+### 2. Content Upload Uses Part Update with Base64 Zip
+- Endpoint: `PUT /api/v2/courses/{cid}/assignments/{aid}/parts/{pid}`
+- Parameters in JSON body: `content[]` with `target`, `zipcontent`, and `reset`
+- Use `zipcontent` (base64 zip) for deterministic directory updates
 
 ### 3. No Search Endpoint for Assignments
 - Must list all assignments and filter client-side
@@ -132,6 +132,11 @@ An open-source CLI tool and GitHub Action that Vocareum customers can deploy to 
 - Used for mapping template parts to config parts
 - Must parse to integer for sorting
 - Critical: seqnum must be preserved during copy
+
+### 6. Assignment Copy Is Course-Scoped and Asynchronous
+- Endpoint: `POST /api/v2/courses/{courseId}/assignments`
+- Body: `{ "method": "copy", "source": "{templateAssignmentId}", "name": "{newName}" }`
+- Response includes `transactionid`; poll `GET /api/v2/transaction/{id}` until `state: "success"` and use `objid` as final assignment ID
 
 ---
 
@@ -300,7 +305,7 @@ jobs:
 - Update config with new IDs
 
 **2. API Client (`api/client.ts`)**
-- HTTP client with multipart/form-data support
+- HTTP client with `Authorization: Token <token>` auth
 - Authentication and error handling
 - All IDs treated as strings
 
@@ -316,7 +321,7 @@ jobs:
 
 **5. Uploader (`core/uploader.ts`)**
 - Read files from directories
-- Upload via multipart/form-data
+- Upload via part `PUT` payload using `content[].zipcontent`
 - Parallel uploads with concurrency control
 
 **6. Mapper (`core/mapper.ts`)**
