@@ -69,6 +69,7 @@ export async function reconcile(
   const assignments: AssignmentAction[] = [];
   const orphanedInVocareum: OrphanedEntity[] = [];
   const staleInConfig: StaleAssignment[] = [];
+  const excludedAssignments = new Set(config.vocareum.excluded_assignments ?? []);
   const onMissingId = options.onMissingId ?? 'skip';
 
   // 3. Process Config Assignments
@@ -87,15 +88,20 @@ export async function reconcile(
         // Remove from map to track orphans
         remoteAssignmentMap.delete(configAssignment.assignment_id);
       } else {
-        // ID exists in config but not in Vocareum -> track as stale
-        logger.warn(`Assignment "${configAssignment.name}" (ID: ${configAssignment.assignment_id}) not found in Vocareum - may have been deleted`);
-        staleInConfig.push({
-          assignment_id: configAssignment.assignment_id,
-          name: configAssignment.name,
-          path: configAssignment.path,
-        });
-        assignmentActionType = 'error';
-        assignmentReason = 'Assignment ID not found in Vocareum (deleted?)';
+        if (excludedAssignments.has(configAssignment.assignment_id)) {
+          assignmentActionType = 'skip';
+          assignmentReason = 'Assignment ID is excluded from sync';
+        } else {
+          // ID exists in config but not in Vocareum -> track as stale
+          logger.warn(`Assignment "${configAssignment.name}" (ID: ${configAssignment.assignment_id}) not found in Vocareum - may have been deleted`);
+          staleInConfig.push({
+            assignment_id: configAssignment.assignment_id,
+            name: configAssignment.name,
+            path: configAssignment.path,
+          });
+          assignmentActionType = 'error';
+          assignmentReason = 'Assignment ID not found in Vocareum (deleted?)';
+        }
       }
     } else {
       // No ID in config - try name-based lookup first to prevent duplicate creation
@@ -227,7 +233,6 @@ export async function reconcile(
   }
 
   // 4. Identify Orphans (excluding those in excluded_assignments)
-  const excludedAssignments = new Set(config.vocareum.excluded_assignments ?? []);
   for (const [id, assignment] of remoteAssignmentMap) {
     if (!excludedAssignments.has(id)) {
       orphanedInVocareum.push({

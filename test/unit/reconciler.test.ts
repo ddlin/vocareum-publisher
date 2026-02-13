@@ -103,6 +103,30 @@ describe('reconcile options behavior', () => {
     expect(plan.assignments[0].reason).toContain('on_missing_id=abort');
   });
 
+  it('should skip stale assignment when its ID is in excluded_assignments', async () => {
+    const config: Config = {
+      ...baseConfig,
+      vocareum: {
+        ...baseConfig.vocareum,
+        excluded_assignments: ['asn-missing'],
+      },
+      assignments: [
+        {
+          ...baseConfig.assignments[0],
+          assignment_id: 'asn-missing',
+        },
+      ],
+    };
+
+    listAssignmentsMock.mockResolvedValue([]);
+
+    const plan = await reconcile(config, client, undefined);
+
+    expect(plan.assignments[0].type).toBe('skip');
+    expect(plan.assignments[0].reason).toBe('Assignment ID is excluded from sync');
+    expect(plan.staleInConfig).toEqual([]);
+  });
+
   it('should detect assignment metadata change when description differs', async () => {
     // Working fields: name, description
     // Note: points, published, due_date do NOT work via API

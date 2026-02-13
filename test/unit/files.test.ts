@@ -106,6 +106,19 @@ describe('File System Utilities', () => {
       expect(files['.hidden']).toBeUndefined();
     });
 
+    it('should exclude .gitkeep at root and nested paths', async () => {
+      await fs.mkdir(path.join(tempDir, 'nested'));
+      await fs.writeFile(path.join(tempDir, '.gitkeep'), '');
+      await fs.writeFile(path.join(tempDir, 'nested', '.gitkeep'), '');
+      await fs.writeFile(path.join(tempDir, 'nested', 'keep.txt'), 'keep');
+
+      const files = await readDirectory(tempDir, ['.gitkeep', '**/.gitkeep']);
+
+      expect(files['.gitkeep']).toBeUndefined();
+      expect(files[path.join('nested', '.gitkeep')]).toBeUndefined();
+      expect(files[path.join('nested', 'keep.txt')]).toBeDefined();
+    });
+
     it('should return empty object for non-existent directory', async () => {
       const files = await readDirectory(path.join(tempDir, 'nonexistent'));
       expect(Object.keys(files)).toHaveLength(0);

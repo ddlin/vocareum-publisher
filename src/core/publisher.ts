@@ -416,7 +416,7 @@ export async function publish(
               dir, // Directory type
               {
                 syncDeletes: options.syncDeletes,
-                excludePatterns: ['.gitkeep', ...(config.publish_options?.exclude_patterns ?? [])]
+                excludePatterns: ['.gitkeep', '**/.gitkeep', ...(config.publish_options?.exclude_patterns ?? [])]
               }
             );
 
