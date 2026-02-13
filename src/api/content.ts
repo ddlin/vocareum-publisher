@@ -224,7 +224,7 @@ export function downloadContent(
   partId: string
 ): Promise<FileMap> {
   return (async () => {
-    const directories: DirectoryType[] = ['startercode', 'scripts', 'docs', 'data'];
+    const directories: DirectoryType[] = ['startercode', 'scripts', 'docs', 'data', 'private', 'lib', 'asnlib'];
     const downloaded: FileMap = {};
     let attempts = 0;
 

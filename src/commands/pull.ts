@@ -107,7 +107,7 @@ async function importAssignment(
     // Determine directories to create
     const directories: DirectoryType[] = fileCount > 0
       ? detectDirectories(files)
-      : ['startercode', 'scripts'];
+      : ['startercode', 'scripts', 'docs', 'data'];
 
     // Write files to local directory if any were downloaded
     if (fileCount > 0) {
