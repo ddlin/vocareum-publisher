@@ -206,8 +206,10 @@ export async function reconcile(
 
   // 5. Calculate Summary
   const summary = {
+    coursesToUpdate: courseAction.type === 'update' ? 1 : 0,
     assignmentsToCreate: assignments.filter(a => a.type === 'create').length,
     assignmentsToUpdate: assignments.filter(a => a.type === 'update' && a.parts.some(p => p.type !== 'skip')).length,
+    assignmentsWithDiscoveredIds: assignments.filter(a => a.idDiscoveredByName === true).length,
     assignmentsToSkip: assignments.filter(a => a.type === 'skip' || (a.type === 'update' && a.parts.every(p => p.type === 'skip'))).length,
     partsToCreate: assignments.reduce((sum, a) => sum + (a.willCreate === true ? a.parts.length : 0), 0),
     partsToUpdate: assignments.reduce((sum, a) => sum + a.parts.filter(p => a.willCreate !== true && p.type === 'update').length, 0),
@@ -216,6 +218,7 @@ export async function reconcile(
 
   // Rough estimate
   summary.estimatedApiCalls =
+    summary.coursesToUpdate * 1 + // Course metadata update
     summary.assignmentsToCreate * (1 + 1) + // Copy + Update Config (approx)
     summary.partsToUpdate * 1; // Uploads handle concurrency but still calls
 
@@ -293,6 +296,12 @@ export function displayPlan(plan: ReconciliationPlan): void {
   logger.plain(`To Create: ${plan.summary.assignmentsToCreate} assignments`);
   logger.plain(`To Update: ${plan.summary.assignmentsToUpdate} assignments`);
   logger.plain(`To Skip:   ${plan.summary.assignmentsToSkip} assignments`);
+  if (plan.summary.coursesToUpdate > 0) {
+    logger.plain('Course:    metadata update required');
+  }
+  if (plan.summary.assignmentsWithDiscoveredIds > 0) {
+    logger.plain(`ID Sync:   ${plan.summary.assignmentsWithDiscoveredIds} assignment IDs discovered by name`);
+  }
   logger.plain(`Orphaned:  ${plan.orphanedInVocareum.length} in Vocareum`);
 
   if (plan.summary.assignmentsToCreate > 0) {

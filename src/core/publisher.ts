@@ -44,15 +44,28 @@ export async function publish(
   const plan = await reconcile(config, client, lastHistory);
 
   // 2. Display Plan (always show summary, verbose shows details)
+  const hasDiscoveredIds = plan.assignments.some((a) => a.idDiscoveredByName === true);
   const hasChanges = plan.summary.assignmentsToCreate > 0 ||
                      plan.summary.assignmentsToUpdate > 0 ||
-                     plan.summary.partsToUpdate > 0;
+                     plan.summary.partsToUpdate > 0 ||
+                     plan.summary.coursesToUpdate > 0 ||
+                     hasDiscoveredIds;
 
   if (options.verbose || options.dryRun) {
     displayPlan(plan);
   } else if (hasChanges) {
     // Show brief summary even without verbose
-    logger.info(`Found: ${plan.summary.assignmentsToCreate} to create, ${plan.summary.assignmentsToUpdate} to update, ${plan.summary.assignmentsToSkip} unchanged`);
+    const extras: string[] = [];
+    if (plan.summary.coursesToUpdate > 0) {
+      extras.push('course settings update');
+    }
+    if (hasDiscoveredIds) {
+      extras.push('assignment ID sync');
+    }
+    logger.info(
+      `Found: ${plan.summary.assignmentsToCreate} to create, ${plan.summary.assignmentsToUpdate} to update, ${plan.summary.assignmentsToSkip} unchanged` +
+      (extras.length > 0 ? ` (${extras.join(', ')})` : '')
+    );
   }
 
   // 3. Dry Run Check

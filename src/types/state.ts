@@ -96,8 +96,10 @@ export interface CourseAction {
  * Summary of reconciliation plan
  */
 export interface ReconciliationSummary {
+  coursesToUpdate: number;
   assignmentsToCreate: number;
   assignmentsToUpdate: number;
+  assignmentsWithDiscoveredIds: number;
   assignmentsToSkip: number;
   partsToCreate: number;
   partsToUpdate: number;
