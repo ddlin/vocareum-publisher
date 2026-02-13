@@ -33,6 +33,8 @@ export interface VocareumAssignmentResponse {
   name: string;
   description?: string;
   due_date?: string;
+  points?: string;
+  published?: string; // "0" or "1"
   deleted: string; // "0" or "1"
 }
 
@@ -47,6 +49,7 @@ export interface VocareumPartResponse {
   courseid: string;
   assignmentid: string;
   name: string;
+  description?: string;
   seqnum: string; // Sequence number as string: "0", "1", "2"
   deleted: string; // "0" or "1"
   part_url?: string;
@@ -57,6 +60,10 @@ export interface VocareumPartResponse {
   monthly_time?: string;
   total_time?: string;
   total_dollar?: string;
+  submission_filters?: {
+    include?: string[];
+    exclude?: string[];
+  };
 }
 
 /**
@@ -105,6 +112,8 @@ export interface ApiAssignmentSettings {
   name?: string;
   description?: string;
   due_date?: string;
+  points?: string;
+  published?: boolean;
 }
 
 /**
@@ -113,6 +122,17 @@ export interface ApiAssignmentSettings {
 export interface ApiPartSettings {
   name?: string;
   description?: string;
+  submission_filters?: {
+    include?: string[];
+    exclude?: string[];
+  };
+  cloud_labs?: boolean;
+  instant_aws_access?: boolean;
+  session_length?: string;
+  monthly_dollar?: string;
+  monthly_time?: string;
+  total_time?: string;
+  total_dollar?: string;
 }
 
 /**

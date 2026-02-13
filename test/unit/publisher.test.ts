@@ -195,6 +195,128 @@ describe('publish', () => {
       name: 'Lab 1',
       description: 'New description',
       due_date: '2026-12-31T23:59:00Z',
+      points: undefined,
+      published: undefined,
+    });
+  });
+
+  it('should send all assignment settings including points and published', async () => {
+    const assignment = {
+      ...config.assignments[0],
+      assignment_id: 'asn-1',
+      settings: {
+        description: 'Updated description',
+        due_date: '2026-12-31T23:59:00Z',
+        points: '100',
+        published: true,
+      },
+    };
+
+    const plan: ReconciliationPlan = {
+      config,
+      course: { type: 'skip' },
+      assignments: [
+        {
+          type: 'update',
+          assignment,
+          parts: [],
+          assignmentMetadataChanged: true,
+        },
+      ],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 0,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+    };
+    reconcileMock.mockResolvedValue(plan);
+    updateAssignmentMock.mockResolvedValue({ id: 'asn-1' });
+
+    const result = await publish(config, client, baseOptions);
+
+    expect(result.success).toBe(true);
+    expect(updateAssignmentMock).toHaveBeenCalledWith(client, 'asn-1', {
+      name: 'Lab 1',
+      description: 'Updated description',
+      due_date: '2026-12-31T23:59:00Z',
+      points: '100',
+      published: true,
+    });
+  });
+
+  it('should send all part settings when part metadata changed', async () => {
+    const assignment = {
+      ...config.assignments[0],
+      assignment_id: 'asn-1',
+      parts: [
+        {
+          part_id: 'part-1',
+          path: 'part1',
+          name: 'Updated Part',
+          settings: {
+            description: 'Part description',
+            cloud_labs: true,
+            session_length: '3600',
+            submission_filters: { include: ['*.py'], exclude: ['*.pyc'] },
+          },
+        },
+      ],
+    };
+
+    const plan: ReconciliationPlan = {
+      config,
+      course: { type: 'skip' },
+      assignments: [
+        {
+          type: 'update',
+          assignment,
+          parts: [
+            {
+              type: 'update',
+              part: assignment.parts[0],
+              contentChanged: false,
+              metadataChanged: true,
+              reason: 'Settings changed',
+            },
+          ],
+          assignmentMetadataChanged: false,
+        },
+      ],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 1,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+    };
+    reconcileMock.mockResolvedValue(plan);
+    updatePartMock.mockResolvedValue({ id: 'part-1' });
+
+    const result = await publish(config, client, baseOptions);
+
+    expect(result.success).toBe(true);
+    expect(updatePartMock).toHaveBeenCalledWith(client, 'part-1', {
+      name: 'Updated Part',
+      description: 'Part description',
+      cloud_labs: true,
+      session_length: '3600',
+      submission_filters: { include: ['*.py'], exclude: ['*.pyc'] },
+      instant_aws_access: undefined,
+      monthly_dollar: undefined,
+      monthly_time: undefined,
+      total_time: undefined,
+      total_dollar: undefined,
     });
   });
 

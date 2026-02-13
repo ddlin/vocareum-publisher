@@ -305,6 +305,8 @@ export async function publish(
             name: action.assignment.name,
             description: action.assignment.settings?.description,
             due_date: action.assignment.settings?.due_date,
+            points: action.assignment.settings?.points,
+            published: action.assignment.settings?.published,
           });
           logger.success(`Updated assignment metadata: ${action.assignment.name}`);
         } catch (error) {
@@ -340,22 +342,33 @@ export async function publish(
         continue;
       }
 
-      // Update part metadata if needed
+      // Update part metadata/settings if needed
       if (partAction.metadataChanged && !action.willCreate) {
         const partName = partAction.part.name ?? partAction.part.settings?.name;
-        if (partName) {
-          try {
-            logger.info(`Updating part metadata: ${partName}`);
-            await updatePart(client, partId, { name: partName });
-            logger.success(`Updated part ${partName}`);
-          } catch (error) {
-            logger.error(`Failed to update part metadata for ${partId}`, { error });
-            result.failed.push({ type: 'part', id: partId, error });
-            result.success = false;
-            if (abortOnError) {
-              shouldAbort = true;
-              break assignmentLoop;
-            }
+        const partSettings = partAction.part.settings;
+        try {
+          const displayName = partName ?? partAction.part.path;
+          logger.info(`Updating part settings: ${displayName}`);
+          await updatePart(client, partId, {
+            name: partName,
+            description: partSettings?.description,
+            submission_filters: partSettings?.submission_filters,
+            cloud_labs: partSettings?.cloud_labs,
+            instant_aws_access: partSettings?.instant_aws_access,
+            session_length: partSettings?.session_length,
+            monthly_dollar: partSettings?.monthly_dollar,
+            monthly_time: partSettings?.monthly_time,
+            total_time: partSettings?.total_time,
+            total_dollar: partSettings?.total_dollar,
+          });
+          logger.success(`Updated part ${displayName}`);
+        } catch (error) {
+          logger.error(`Failed to update part settings for ${partId}`, { error });
+          result.failed.push({ type: 'part', id: partId, error });
+          result.success = false;
+          if (abortOnError) {
+            shouldAbort = true;
+            break assignmentLoop;
           }
         }
       }
