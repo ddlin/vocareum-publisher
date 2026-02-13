@@ -49,3 +49,9 @@ examples/test-course*/
 
 # Claude Code
 .claude/
+
+# Internal AI/development artifacts (not useful to end users)
+AGENTS.md
+AI_IMPLEMENTATION_PROMPTS.md
+PRD.md
+PROJECT_SUMMARY.md
