@@ -119,6 +119,8 @@ export interface ReconciliationPlan {
   assignments: AssignmentAction[];
   summary: ReconciliationSummary;
   orphanedInVocareum: OrphanedEntity[];
+  /** Assignments in config but deleted from Vocareum */
+  staleInConfig: StaleAssignment[];
 }
 
 /**
@@ -182,6 +184,15 @@ export interface OrphanedEntity {
   id: string;
   name: string;
   message: string;
+}
+
+/**
+ * Stale assignment in config (deleted from Vocareum)
+ */
+export interface StaleAssignment {
+  assignment_id: string;
+  name: string;
+  path: string;
 }
 
 /**

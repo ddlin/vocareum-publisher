@@ -177,6 +177,28 @@ export async function updateConfig(configPath: string, updates: ConfigUpdates): 
     currentConfig.vocareum.excluded_assignments = merged;
   }
 
+  if (updates.remove_assignments !== undefined) {
+    // Remove assignments by path
+    const pathsToRemove = new Set(updates.remove_assignments);
+    currentConfig.assignments = currentConfig.assignments.filter(
+      a => !pathsToRemove.has(a.path)
+    );
+  }
+
+  if (updates.reset_assignment_ids !== undefined) {
+    // Reset assignment and part IDs by path
+    const pathsToReset = new Set(updates.reset_assignment_ids);
+    for (const assignment of currentConfig.assignments) {
+      if (pathsToReset.has(assignment.path)) {
+        assignment.assignment_id = null;
+        assignment.create_from_template = true;
+        for (const part of assignment.parts) {
+          part.part_id = null;
+        }
+      }
+    }
+  }
+
   // 3. Write back
   const yamlStr = yaml.dump(currentConfig, {
     indent: 2,

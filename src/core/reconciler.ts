@@ -12,6 +12,7 @@ import type {
   AssignmentAction,
   PartAction,
   OrphanedEntity,
+  StaleAssignment,
   CourseAction
 } from '../types/state';
 import { VocareumClient } from '../api/client';
@@ -67,6 +68,7 @@ export async function reconcile(
 
   const assignments: AssignmentAction[] = [];
   const orphanedInVocareum: OrphanedEntity[] = [];
+  const staleInConfig: StaleAssignment[] = [];
   const onMissingId = options.onMissingId ?? 'skip';
 
   // 3. Process Config Assignments
@@ -85,10 +87,15 @@ export async function reconcile(
         // Remove from map to track orphans
         remoteAssignmentMap.delete(configAssignment.assignment_id);
       } else {
-        // ID exists in config but not in Vocareum -> Error or Re-create?
-        // Standard behavior: Error, user needs to fix config or clear ID to re-create
-        logger.error(`Assignment ${configAssignment.name} has ID ${configAssignment.assignment_id} but not found in Vocareum`);
+        // ID exists in config but not in Vocareum -> track as stale
+        logger.warn(`Assignment "${configAssignment.name}" (ID: ${configAssignment.assignment_id}) not found in Vocareum - may have been deleted`);
+        staleInConfig.push({
+          assignment_id: configAssignment.assignment_id,
+          name: configAssignment.name,
+          path: configAssignment.path,
+        });
         assignmentActionType = 'error';
+        assignmentReason = 'Assignment ID not found in Vocareum (deleted?)';
       }
     } else {
       // No ID in config - try name-based lookup first to prevent duplicate creation
@@ -257,7 +264,8 @@ export async function reconcile(
     course: courseAction,
     assignments,
     summary,
-    orphanedInVocareum
+    orphanedInVocareum,
+    staleInConfig
   };
 }
 

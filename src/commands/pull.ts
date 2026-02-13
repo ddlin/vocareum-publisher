@@ -29,9 +29,12 @@ interface PullSummary {
   imported: number;
   excluded: number;
   skipped: number;
+  removed: number;
+  reset: number;
 }
 
 type PullAction = 'import' | 'exclude' | 'skip';
+type StaleAction = 'exclude' | 'remove' | 'reset' | 'skip';
 
 /**
  * Convert assignment name to directory-safe slug
@@ -240,99 +243,167 @@ export async function pullCommand(options: PullOptions): Promise<void> {
 
     const client = new VocareumClient(apiKey, config.vocareum.api_base_url);
 
-    logger.info('Scanning for orphaned assignments...');
+    logger.info('Scanning for assignment sync issues...');
 
-    // Run reconciliation to find orphans
+    // Run reconciliation to find orphans and stale assignments
     const plan = await reconcile(config, client);
 
-    if (plan.orphanedInVocareum.length === 0) {
-      logger.success('No orphaned assignments found.');
+    const hasOrphans = plan.orphanedInVocareum.length > 0;
+    const hasStale = plan.staleInConfig.length > 0;
+
+    if (!hasOrphans && !hasStale) {
+      logger.success('No sync issues found.');
       return;
     }
 
-    logger.info(`Found ${plan.orphanedInVocareum.length} orphaned assignment(s) in Vocareum.`);
-    logger.newline();
-
-    // Track what we do with each orphan
+    // Track what we do
     const summary: PullSummary = {
       imported: 0,
       excluded: 0,
       skipped: 0,
+      removed: 0,
+      reset: 0,
     };
 
     const newAssignments: Partial<Assignment>[] = [];
     const newExclusions: string[] = [];
+    const assignmentsToRemove: string[] = [];  // assignment paths to remove
+    const assignmentsToReset: string[] = [];   // assignment paths to reset IDs
 
-    // Process each orphan
-    for (let i = 0; i < plan.orphanedInVocareum.length; i++) {
-      const orphan = plan.orphanedInVocareum[i];
-
-      logger.plain(`[${i + 1}/${plan.orphanedInVocareum.length}] ${orphan.name} (ID: ${orphan.id})`);
-
-      let action: PullAction = 'skip';
-
-      if (nonInteractive) {
-        // In non-interactive mode, skip all orphans
-        action = 'skip';
-        logger.plain('  Skipped (non-interactive mode)');
-      } else {
-        // Interactive mode - ask user what to do
-        const choice = await promptChoice('What would you like to do?', [
-          'Import to local repository',
-          'Exclude (hide from future scans)',
-          'Skip (do nothing)',
-        ]);
-
-        if (choice === 'Import to local repository') {
-          action = 'import';
-        } else if (choice === 'Exclude (hide from future scans)') {
-          action = 'exclude';
-        } else {
-          action = 'skip';
-        }
-      }
-
-      if (action === 'import') {
-        // Get directory name from user
-        const defaultSlug = slugify(orphan.name);
-        const suggestedName = await getUniqueDirectoryName('.', defaultSlug);
-
-        const dirName = await prompt('Local directory name:', suggestedName);
-        const finalDirName = await getUniqueDirectoryName('.', dirName || suggestedName);
-
-        try {
-          const assignment = await importAssignment(
-            client,
-            config.vocareum.course_id,
-            orphan,
-            finalDirName,
-            verbose
-          );
-
-          newAssignments.push(assignment);
-          summary.imported++;
-          logger.success(`Imported "${orphan.name}" to ${finalDirName}/`);
-        } catch (error) {
-          logger.error(`Failed to import: ${error instanceof Error ? error.message : 'Unknown'}`);
-          summary.skipped++;
-        }
-      } else if (action === 'exclude') {
-        newExclusions.push(orphan.id);
-        summary.excluded++;
-        logger.success(`Excluded "${orphan.name}" from orphan detection`);
-      } else {
-        summary.skipped++;
-        logger.plain('  Skipped');
-      }
-
+    // Process orphaned assignments (exist in Vocareum but not in config)
+    if (hasOrphans) {
+      logger.info(`Found ${plan.orphanedInVocareum.length} orphaned assignment(s) in Vocareum.`);
       logger.newline();
+
+      for (let i = 0; i < plan.orphanedInVocareum.length; i++) {
+        const orphan = plan.orphanedInVocareum[i];
+
+        logger.plain(`[${i + 1}/${plan.orphanedInVocareum.length}] ${orphan.name} (ID: ${orphan.id})`);
+
+        let action: PullAction = 'skip';
+
+        if (nonInteractive) {
+          action = 'skip';
+          logger.plain('  Skipped (non-interactive mode)');
+        } else {
+          const choice = await promptChoice('What would you like to do?', [
+            'Import to local repository',
+            'Exclude (hide from future scans)',
+            'Skip (do nothing)',
+          ]);
+
+          if (choice === 'Import to local repository') {
+            action = 'import';
+          } else if (choice === 'Exclude (hide from future scans)') {
+            action = 'exclude';
+          } else {
+            action = 'skip';
+          }
+        }
+
+        if (action === 'import') {
+          const defaultSlug = slugify(orphan.name);
+          const suggestedName = await getUniqueDirectoryName('.', defaultSlug);
+
+          const dirName = await prompt('Local directory name:', suggestedName);
+          const finalDirName = await getUniqueDirectoryName('.', dirName || suggestedName);
+
+          try {
+            const assignment = await importAssignment(
+              client,
+              config.vocareum.course_id,
+              orphan,
+              finalDirName,
+              verbose
+            );
+
+            newAssignments.push(assignment);
+            summary.imported++;
+            logger.success(`Imported "${orphan.name}" to ${finalDirName}/`);
+          } catch (error) {
+            logger.error(`Failed to import: ${error instanceof Error ? error.message : 'Unknown'}`);
+            summary.skipped++;
+          }
+        } else if (action === 'exclude') {
+          newExclusions.push(orphan.id);
+          summary.excluded++;
+          logger.success(`Excluded "${orphan.name}" from orphan detection`);
+        } else {
+          summary.skipped++;
+          logger.plain('  Skipped');
+        }
+
+        logger.newline();
+      }
+    }
+
+    // Process stale assignments (exist in config but deleted from Vocareum)
+    if (hasStale) {
+      logger.info(`Found ${plan.staleInConfig.length} stale assignment(s) in config (deleted from Vocareum).`);
+      logger.newline();
+
+      for (let i = 0; i < plan.staleInConfig.length; i++) {
+        const stale = plan.staleInConfig[i];
+
+        logger.plain(`[${i + 1}/${plan.staleInConfig.length}] ${stale.name} (ID: ${stale.assignment_id}, path: ${stale.path})`);
+
+        let action: StaleAction = 'skip';
+
+        if (nonInteractive) {
+          action = 'skip';
+          logger.plain('  Skipped (non-interactive mode)');
+        } else {
+          const choice = await promptChoice('This assignment was deleted from Vocareum. What would you like to do?', [
+            'Reset ID (allow re-creation from template)',
+            'Remove from config',
+            'Exclude (keep in config but skip during sync)',
+            'Skip (do nothing)',
+          ]);
+
+          if (choice === 'Reset ID (allow re-creation from template)') {
+            action = 'reset';
+          } else if (choice === 'Remove from config') {
+            action = 'remove';
+          } else if (choice === 'Exclude (keep in config but skip during sync)') {
+            action = 'exclude';
+          } else {
+            action = 'skip';
+          }
+        }
+
+        if (action === 'reset') {
+          assignmentsToReset.push(stale.path);
+          summary.reset++;
+          logger.success(`Reset ID for "${stale.name}" - will be re-created on next publish`);
+        } else if (action === 'remove') {
+          assignmentsToRemove.push(stale.path);
+          summary.removed++;
+          logger.success(`Removed "${stale.name}" from config`);
+        } else if (action === 'exclude') {
+          newExclusions.push(stale.assignment_id);
+          summary.excluded++;
+          logger.success(`Excluded "${stale.name}" from sync`);
+        } else {
+          summary.skipped++;
+          logger.plain('  Skipped');
+        }
+
+        logger.newline();
+      }
     }
 
     // Update config if we made any changes
-    if (newAssignments.length > 0 || newExclusions.length > 0) {
+    const hasChanges = newAssignments.length > 0 ||
+                       newExclusions.length > 0 ||
+                       assignmentsToRemove.length > 0 ||
+                       assignmentsToReset.length > 0;
+
+    if (hasChanges) {
       await updateConfig(configPath, {
         assignments: newAssignments.length > 0 ? newAssignments : undefined,
         excluded_assignments: newExclusions.length > 0 ? newExclusions : undefined,
+        remove_assignments: assignmentsToRemove.length > 0 ? assignmentsToRemove : undefined,
+        reset_assignment_ids: assignmentsToReset.length > 0 ? assignmentsToReset : undefined,
       });
 
       logger.info('Updated vocareum.yaml');
@@ -343,6 +414,8 @@ export async function pullCommand(options: PullOptions): Promise<void> {
     logger.info('Summary:');
     logger.plain(`  Imported: ${summary.imported}`);
     logger.plain(`  Excluded: ${summary.excluded}`);
+    logger.plain(`  Removed:  ${summary.removed}`);
+    logger.plain(`  Reset:    ${summary.reset}`);
     logger.plain(`  Skipped:  ${summary.skipped}`);
 
   } catch (error) {

@@ -302,4 +302,8 @@ export interface ConfigUpdates {
   publish_history?: PublishHistory[];
   publish_options?: Partial<PublishOptions>;
   excluded_assignments?: string[];
+  /** Assignment paths to remove from config */
+  remove_assignments?: string[];
+  /** Assignment paths to reset IDs (clear assignment_id and part_ids) */
+  reset_assignment_ids?: string[];
 }
