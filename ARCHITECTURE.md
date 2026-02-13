@@ -530,6 +530,13 @@ interface VocareumConfig {
   };
 }
 
+interface AssignmentSettings {
+  due_date?: string;        // ISO 8601 date string
+  description?: string;
+  points?: string;          // Total points / grade weight
+  published?: boolean;      // Whether visible to students
+}
+
 interface Assignment {
   assignment_id: string | null;
   name: string;
@@ -538,6 +545,22 @@ interface Assignment {
   create_from_template?: boolean;
   settings?: AssignmentSettings;
   parts: Part[];
+}
+
+interface PartSettings {
+  name?: string;
+  description?: string;
+  submission_filters?: {    // Include/exclude patterns (passed to rsync)
+    include?: string[];
+    exclude?: string[];
+  };
+  cloud_labs?: boolean;
+  instant_aws_access?: boolean;
+  session_length?: string;  // Lab session length (e.g. "3600")
+  monthly_dollar?: string;  // Monthly dollar budget
+  monthly_time?: string;    // Monthly time budget
+  total_time?: string;      // Total time budget
+  total_dollar?: string;    // Total dollar budget
 }
 
 interface Part {

@@ -85,10 +85,20 @@ assignments:
   - assignment_id: "11111"
     name: "Lab 1: Introduction"
     path: "lab1-intro"
+    settings:                       # Optional assignment settings
+      due_date: "2025-03-15T23:59:00Z"
+      description: "Introduction to the course"
+      points: "100"
+      published: true
     parts:
       - part_id: "22222"
         path: "part1"
         name: "Part 1: Setup"
+        settings:                   # Optional part settings
+          description: "Setup your environment"
+          submission_filters:
+            include: ["*.py"]
+            exclude: ["*.pyc"]
   - assignment_id: null
     name: "Lab 2: Classification"
     assignment_name_for_lookup: "Lab 2: Classification"  # Optional name-based ID discovery
@@ -97,6 +107,9 @@ assignments:
       - part_id: null
         path: "part1"
         name: "Part 1: Implementation"
+        settings:
+          cloud_labs: true
+          session_length: "3600"
 
 publish_options:
   on_missing_id: "skip"
