@@ -36,11 +36,24 @@ export async function reconcile(
 ): Promise<ReconciliationPlan> {
   logger.info('Fetching current state from Vocareum...');
 
-  // 1. Fetch Course
-  await getCourse(client, config.vocareum.course_id);
-  const courseAction: CourseAction = {
-    type: 'skip', // Update course settings logic if needed
-  };
+  // 1. Fetch Course and compare settings
+  const remoteCourse = await getCourse(client, config.vocareum.course_id);
+  let courseAction: CourseAction = { type: 'skip' };
+
+  // Check if course settings need updating
+  const configCourseSettings = config.vocareum.course_settings;
+  if (configCourseSettings !== undefined) {
+    const needsUpdate =
+      (configCourseSettings.name !== undefined && configCourseSettings.name !== remoteCourse.name) ||
+      (configCourseSettings.description !== undefined && configCourseSettings.description !== remoteCourse.description);
+
+    if (needsUpdate) {
+      courseAction = {
+        type: 'update',
+        reason: 'Course settings differ from config',
+      };
+    }
+  }
 
   // 2. Fetch Assignments
   const remoteAssignments = await listAssignments(client, config.vocareum.course_id);
@@ -57,8 +70,10 @@ export async function reconcile(
   for (const configAssignment of config.assignments) {
     let assignmentActionType: 'create' | 'update' | 'skip' | 'error' = 'skip';
     let remoteAssignment = null;
+    let idDiscoveredByName = false;
 
     if (configAssignment.assignment_id !== undefined && configAssignment.assignment_id !== null) {
+      // Lookup by explicit ID
       remoteAssignment = remoteAssignmentMap.get(configAssignment.assignment_id);
       if (remoteAssignment) {
         assignmentActionType = 'update';
@@ -71,7 +86,23 @@ export async function reconcile(
         assignmentActionType = 'error';
       }
     } else {
-      assignmentActionType = 'create';
+      // No ID in config - try name-based lookup first to prevent duplicate creation
+      const lookupName = configAssignment.assignment_name_for_lookup ?? configAssignment.name;
+      const foundByName = Array.from(remoteAssignmentMap.values()).find(
+        (a) => a.name === lookupName
+      );
+
+      if (foundByName) {
+        logger.info(`Found existing assignment "${lookupName}" (ID: ${foundByName.id}) - will update instead of create`);
+        remoteAssignment = foundByName;
+        assignmentActionType = 'update';
+        idDiscoveredByName = true;
+        // Update config object with discovered ID (will be persisted later)
+        configAssignment.assignment_id = foundByName.id;
+        remoteAssignmentMap.delete(foundByName.id);
+      } else {
+        assignmentActionType = 'create';
+      }
     }
 
     const partActions: PartAction[] = [];
@@ -80,6 +111,9 @@ export async function reconcile(
     if (assignmentActionType === 'update' && remoteAssignment) {
       // Fetch parts
       const remoteParts = await listParts(client, config.vocareum.course_id, remoteAssignment.id);
+
+      // Create map of remote part ID -> name for metadata comparison
+      const remotePartNameMap = new Map(remoteParts.map(p => [p.id, p.name]));
 
       // Map parts
       try {
@@ -96,13 +130,26 @@ export async function reconcile(
             lastPublishHistory
           );
 
-          if (changedDirs.length > 0) {
+          // Check for metadata changes (name)
+          const remoteName = remotePartNameMap.get(mapping.apiPartId);
+          const configName = configPart.name ?? configPart.settings?.name;
+          const metadataChanged = configName !== undefined && configName !== remoteName;
+
+          if (changedDirs.length > 0 || metadataChanged) {
+            const reasons: string[] = [];
+            if (changedDirs.length > 0) {
+              reasons.push(`Content: ${changedDirs.join(', ')}`);
+            }
+            if (metadataChanged) {
+              reasons.push(`Name: "${remoteName}" → "${configName}"`);
+            }
             partActions.push({
               type: 'update',
               part: configPart,
-              contentChanged: true,
-              changedDirectories: changedDirs,
-              reason: `Changed: ${changedDirs.join(', ')}`
+              contentChanged: changedDirs.length > 0,
+              changedDirectories: changedDirs.length > 0 ? changedDirs : undefined,
+              metadataChanged,
+              reason: reasons.join('; ')
             });
           } else {
             partActions.push({
@@ -142,7 +189,8 @@ export async function reconcile(
       assignment: configAssignment,
       parts: partActions,
       willCreate: assignmentActionType === 'create',
-      templateId: config.vocareum.template_assignment_id
+      templateId: config.vocareum.template_assignment_id,
+      idDiscoveredByName,
     });
   }
 

@@ -61,11 +61,22 @@ export const AssignmentSchema = z.object({
   name: z.string(),
   path: z.string(),
   create_from_template: z.boolean().optional().default(false),
+  /** Optional name to search for in Vocareum when assignment_id is null.
+   *  Used to prevent duplicate creation in CI/CD environments. */
+  assignment_name_for_lookup: z.string().optional(),
   settings: AssignmentSettingsSchema,
   parts: z.array(PartSchema),
 });
 
 export type Assignment = z.infer<typeof AssignmentSchema>;
+
+/**
+ * Course settings schema that can be updated via API
+ */
+export const CourseSettingsConfigSchema = z.object({
+  name: z.string().optional(),
+  description: z.string().optional(),
+}).optional();
 
 /**
  * Vocareum connection configuration
@@ -76,6 +87,8 @@ export const VocareumConfigSchema = z.object({
   course_id: z.string(),
   template_assignment_id: z.string().optional(),
   api_base_url: z.string().optional().default('https://api.vocareum.com'),
+  /** Optional course settings to sync */
+  course_settings: CourseSettingsConfigSchema,
 });
 
 export type VocareumConfig = z.infer<typeof VocareumConfigSchema>;

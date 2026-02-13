@@ -10,11 +10,14 @@ import type { PublishResult, PublishOperationOptions } from '../types/state';
 import { VocareumClient } from '../api/client';
 import { reconcile, displayPlan } from './reconciler';
 import { copyAssignment } from '../api/assignments';
+import { updateCourse } from '../api/courses';
+import { updatePart } from '../api/parts';
 import { mapParts } from './mapper';
 import { syncDirectory } from './uploader';
 import { updateConfig } from './config';
 import { commitChanges, getCommitSha, getGitUserName } from '../utils/git';
 import { logger } from '../utils/logger';
+import { promptConfirm } from '../utils/prompts';
 
 /**
  * Execute publish workflow
@@ -40,9 +43,16 @@ export async function publish(
   logger.info('Analyzing changes...');
   const plan = await reconcile(config, client, lastHistory);
 
-  // 2. Display Plan
+  // 2. Display Plan (always show summary, verbose shows details)
+  const hasChanges = plan.summary.assignmentsToCreate > 0 ||
+                     plan.summary.assignmentsToUpdate > 0 ||
+                     plan.summary.partsToUpdate > 0;
+
   if (options.verbose || options.dryRun) {
     displayPlan(plan);
+  } else if (hasChanges) {
+    // Show brief summary even without verbose
+    logger.info(`Found: ${plan.summary.assignmentsToCreate} to create, ${plan.summary.assignmentsToUpdate} to update, ${plan.summary.assignmentsToSkip} unchanged`);
   }
 
   // 3. Dry Run Check
@@ -59,8 +69,37 @@ export async function publish(
     };
   }
 
-  // Confirm? command layer handles interactive confirmation.
-  // Publisher assumes we are go.
+  // 4. No changes check
+  if (!hasChanges) {
+    logger.success('No changes detected. Everything is up to date.');
+    return {
+      success: true,
+      created: [],
+      updated: [],
+      skipped: [],
+      failed: [],
+      contentState: { ...lastHistory?.content_state },
+      summary: 'No changes to publish'
+    };
+  }
+
+  // 5. Interactive confirmation (unless --non-interactive or CI)
+  if (options.nonInteractive !== true) {
+    logger.newline();
+    const confirmed = await promptConfirm('Proceed with publish?', true);
+    if (!confirmed) {
+      logger.warn('Publish cancelled by user.');
+      return {
+        success: true,
+        created: [],
+        updated: [],
+        skipped: [],
+        failed: [],
+        contentState: { ...lastHistory?.content_state },
+        summary: 'Cancelled by user'
+      };
+    }
+  }
 
   logger.info('Executing publish...');
 
@@ -77,7 +116,23 @@ export async function publish(
   const configUpdates: Config['assignments'] = [];
   let configChanged = false;
 
-  // 4. Creation (Assignments)
+  // 4. Course Updates
+  if (plan.course.type === 'update' && config.vocareum.course_settings) {
+    try {
+      logger.info('Updating course settings...');
+      await updateCourse(client, config.vocareum.course_id, {
+        name: config.vocareum.course_settings.name,
+        description: config.vocareum.course_settings.description,
+      });
+      logger.success('Course settings updated');
+    } catch (error) {
+      logger.error(`Failed to update course settings: ${error instanceof Error ? error.message : 'Unknown'}`);
+      result.failed.push({ type: 'assignment', id: 'course', error });
+      result.success = false;
+    }
+  }
+
+  // 5. Creation (Assignments)
   for (const action of plan.assignments) {
     if (action.type === 'create' && action.willCreate) {
       if (!action.templateId) {
@@ -149,6 +204,12 @@ export async function publish(
       // For phase 4 we might skip metadata update or implement
       // Let's assume metadata update is implicit or skipped for now
       result.updated.push({ type: 'assignment', id: action.assignment.assignment_id! });
+
+      // If ID was discovered via name lookup, we need to persist it to config
+      if (action.idDiscoveredByName === true) {
+        configUpdates.push(action.assignment);
+        configChanged = true;
+      }
     }
 
     // 5. Parts & Content
@@ -168,9 +229,20 @@ export async function publish(
         continue;
       }
 
-      // Update part metadata if 'update'
-      if (partAction.type === 'update' && !action.willCreate) {
-        // Implement part metadata update if needed
+      // Update part metadata if needed
+      if (partAction.metadataChanged && !action.willCreate) {
+        const partName = partAction.part.name ?? partAction.part.settings?.name;
+        if (partName) {
+          try {
+            logger.info(`Updating part metadata: ${partName}`);
+            await updatePart(client, partId, { name: partName });
+            logger.success(`Updated part ${partName}`);
+          } catch (error) {
+            logger.error(`Failed to update part metadata for ${partId}`, { error });
+            result.failed.push({ type: 'part', id: partId, error });
+            result.success = false;
+          }
+        }
       }
 
       // Upload Content

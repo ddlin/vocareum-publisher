@@ -65,6 +65,8 @@ export interface PartAction {
   part: Part;
   contentChanged: boolean;
   changedDirectories?: DirectoryType[];
+  /** True when part metadata (name) differs from remote and needs updating */
+  metadataChanged?: boolean;
   reason?: string;
 }
 
@@ -78,6 +80,8 @@ export interface AssignmentAction {
   reason?: string;
   willCreate?: boolean;
   templateId?: string;
+  /** True when assignment_id was discovered via name lookup and should be persisted */
+  idDiscoveredByName?: boolean;
 }
 
 /**

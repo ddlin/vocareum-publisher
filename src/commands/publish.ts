@@ -43,9 +43,13 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
     }
 
     // Merge options with config defaults
+    // In CI, always run non-interactive
+    const nonInteractive = options.nonInteractive ?? isCI();
+
     const publishOptions: PublishOperationOptions = {
       dryRun: options.dryRun ?? false,
       verbose: options.verbose ?? false,
+      nonInteractive,
       autoCommit,
       syncDeletes: options.syncDeletes ?? config.publish_options?.sync_deletes ?? false,
       configPath,
