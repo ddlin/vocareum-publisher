@@ -95,20 +95,22 @@ describe('reconcile options behavior', () => {
     expect(plan.assignments[0].reason).toContain('on_missing_id=abort');
   });
 
-  it('should detect assignment metadata change when points differ', async () => {
+  it('should detect assignment metadata change when description differs', async () => {
+    // Working fields: name, description
+    // Note: points, published, due_date do NOT work via API
     const config: Config = {
       ...baseConfig,
       assignments: [
         {
           ...baseConfig.assignments[0],
           assignment_id: 'asn-1',
-          settings: { points: '100' },
+          settings: { description: 'New description' },
         },
       ],
     };
 
     listAssignmentsMock.mockResolvedValue([
-      { id: 'asn-1', name: 'Lab 1', deleted: '0', points: '50' },
+      { id: 'asn-1', name: 'Lab 1', deleted: '0', description: 'Old description' },
     ]);
 
     const plan = await reconcile(config, client, undefined);
@@ -116,20 +118,20 @@ describe('reconcile options behavior', () => {
     expect(plan.assignments[0].assignmentMetadataChanged).toBe(true);
   });
 
-  it('should detect assignment metadata change when published differs', async () => {
+  it('should detect assignment metadata change when name differs', async () => {
     const config: Config = {
       ...baseConfig,
       assignments: [
         {
           ...baseConfig.assignments[0],
           assignment_id: 'asn-1',
-          settings: { published: true },
+          name: 'Lab 1 Updated',
         },
       ],
     };
 
     listAssignmentsMock.mockResolvedValue([
-      { id: 'asn-1', name: 'Lab 1', deleted: '0', published: '0' },
+      { id: 'asn-1', name: 'Lab 1', deleted: '0' },
     ]);
 
     const plan = await reconcile(config, client, undefined);
@@ -137,29 +139,30 @@ describe('reconcile options behavior', () => {
     expect(plan.assignments[0].assignmentMetadataChanged).toBe(true);
   });
 
-  it('should not flag assignment metadata changed when published matches', async () => {
+  it('should not flag assignment metadata changed when description matches', async () => {
     const config: Config = {
       ...baseConfig,
       assignments: [
         {
           ...baseConfig.assignments[0],
           assignment_id: 'asn-1',
-          settings: { published: true },
+          settings: { description: 'Same description' },
         },
       ],
     };
 
     listAssignmentsMock.mockResolvedValue([
-      { id: 'asn-1', name: 'Lab 1', deleted: '0', published: '1' },
+      { id: 'asn-1', name: 'Lab 1', deleted: '0', description: 'Same description' },
     ]);
 
     const plan = await reconcile(config, client, undefined);
 
-    // No name change, no other metadata change
+    // No name change, no description change
     expect(plan.assignments[0].assignmentMetadataChanged).toBe(false);
   });
 
-  it('should detect part metadata change when description differs', async () => {
+  it('should detect part metadata change when session_length differs', async () => {
+    // Working part fields: name, session_length, submission_filters, cloud_labs (if org permits)
     const config: Config = {
       ...baseConfig,
       assignments: [
@@ -171,7 +174,7 @@ describe('reconcile options behavior', () => {
               part_id: 'part-1',
               path: 'part1',
               directories: ['startercode', 'scripts', 'docs', 'data'],
-              settings: { description: 'New description' },
+              settings: { session_length: '3600' },
             },
           ],
         },
@@ -182,7 +185,7 @@ describe('reconcile options behavior', () => {
       { id: 'asn-1', name: 'Lab 1', deleted: '0' },
     ]);
     listPartsMock.mockResolvedValue([
-      { id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0', description: 'Old description' },
+      { id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0', session_length: '240' },
     ]);
 
     const plan = await reconcile(config, client, undefined);

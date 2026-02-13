@@ -41,6 +41,7 @@ export const DirectoryTypeSchema = z.enum([
 export const SubmissionFiltersSchema = z.object({
   include: z.array(z.string()).optional(),
   exclude: z.array(z.string()).optional(),
+  list: z.array(z.string()).optional(),  // Explicit file list
 });
 
 export type SubmissionFilters = z.infer<typeof SubmissionFiltersSchema>;
@@ -89,15 +90,23 @@ export type Part = z.infer<typeof PartSchema>;
 
 /**
  * Assignment settings for Vocareum configuration
+ *
+ * Confirmed working fields (Feb 2026 API probes):
+ * - description, nosubmit, auto_submit, grading_on_submit
+ *
+ * Fields that DO NOT work via API (return "No valid parameters"):
+ * - published, points, due_date
+ * These must be set manually in Vocareum UI.
  */
 export const AssignmentSettingsSchema = z
   .object({
-    due_date: z.string().optional(),
     description: z.string().optional(),
-    /** Total points / grade weight for the assignment */
-    points: z.string().optional(),
-    /** Whether the assignment is published and visible to students */
-    published: z.boolean().optional(),
+    /** Disable student submissions for this assignment */
+    nosubmit: z.boolean().optional(),
+    /** Enable automatic submission */
+    auto_submit: z.boolean().optional(),
+    /** Grade immediately on submit */
+    grading_on_submit: z.boolean().optional(),
   })
   .optional();
 

@@ -202,6 +202,68 @@ POST /api/v2/courses/{courseId}/assignments
 
 Live-tested on `courseId=201303` with `source=5137423`: copy returned `202`, transaction progressed `pending → success`, final `objid` contained the new assignment ID.
 
+### 7.1 Assignment and part settings update contracts (CONFIRMED via live probes)
+
+**Date confirmed:** February 13, 2026
+
+**Critical finding:** Direct endpoints (`/api/v2/assignments/{id}`, `/api/v2/parts/{id}`)
+return 400 Invalid Request. Use **course-scoped** endpoints instead.
+
+#### Assignment settings update
+
+**Endpoint:** `PUT /api/v2/courses/{courseId}/assignments/{assignmentId}`
+
+**Fields that WORK (return 202 with transactionid):**
+- `name` — assignment display name (string)
+- `description` — assignment description (string)
+- `nosubmit` — disable student submissions (boolean)
+- `auto_submit` — automatic submission (boolean)
+- `grading_on_submit` — grade immediately on submit (boolean)
+
+**Fields that DO NOT WORK:**
+- `published` — returns "No valid parameters to update the assignment"
+- `points` — returns "No valid parameters to update the assignment"
+- `due_date` — returns "No valid parameters to update the assignment"
+- `gradespublished` — returns "No valid parameters to update the assignment"
+
+**Note:** Publishing assignments and setting points/due dates appears to require
+a different endpoint or workflow not yet documented.
+
+#### Part settings update
+
+**Endpoint:** `PUT /api/v2/courses/{courseId}/assignments/{assignmentId}/parts/{partId}`
+
+**Fields that WORK (return 202 with transactionid):**
+- `name` — part display name (string, **required** for most update requests)
+- `submission_filters` — student submission filters (object)
+  - `include` — array of glob patterns (e.g. `["*.py", "*.txt"]`)
+  - `exclude` — array of glob patterns (e.g. `["*.pyc", "__pycache__"]`)
+  - `list` — explicit file list (array of filenames)
+- `session_length` — lab session length in seconds (string, e.g. `"3600"`)
+- `monthly_dollar` — monthly dollar budget for cloud resources (string)
+- `monthly_time` — monthly time budget for cloud resources (string)
+- `total_time` — total time budget for cloud resources (string)
+- `total_dollar` — total dollar budget for cloud resources (string)
+
+**Fields that require org permissions:**
+- `cloud_labs` — returns "Cloud not allowed for the org" if org lacks cloud feature
+- `instant_aws_access` — likely same restriction as cloud_labs
+
+**Important behaviors:**
+1. Updates are asynchronous — response includes `transactionid`
+2. Rapid successive requests may fail with "The previous corresponding API request
+   is not yet complete" — implement retry with backoff
+3. `name` field appears to be required for part updates (missing it causes errors)
+4. Verify updates by polling GET endpoint after transaction completes
+
+#### GET endpoints for reading current state
+
+- `GET /api/v2/courses/{courseId}/assignments/{assignmentId}` — returns assignment details
+- `GET /api/v2/courses/{courseId}/assignments/{assignmentId}/parts/{partId}` — returns part details
+
+Response includes all fields shown above plus read-only fields like `id`, `courseid`,
+`deleted`, `masterid`, `create_method`, `labtype`, `container_image`, etc.
+
 ## Data Contract Observations
 
 ### 1. ID typing inconsistency risk

@@ -159,7 +159,7 @@ describe('publish', () => {
     const assignment = {
       ...config.assignments[0],
       assignment_id: 'asn-1',
-      settings: { description: 'New description', due_date: '2026-12-31T23:59:00Z' },
+      settings: { description: 'New description' },
     };
 
     const plan: ReconciliationPlan = {
@@ -186,29 +186,32 @@ describe('publish', () => {
       orphanedInVocareum: [],
     };
     reconcileMock.mockResolvedValue(plan);
-    updateAssignmentMock.mockResolvedValue({ id: 'asn-1' });
+    updateAssignmentMock.mockResolvedValue(undefined);
 
     const result = await publish(config, client, baseOptions);
 
     expect(result.success).toBe(true);
-    expect(updateAssignmentMock).toHaveBeenCalledWith(client, 'asn-1', {
+    // API now uses course-scoped endpoint: updateAssignment(client, courseId, assignmentId, settings)
+    expect(updateAssignmentMock).toHaveBeenCalledWith(client, '201303', 'asn-1', {
       name: 'Lab 1',
       description: 'New description',
-      due_date: '2026-12-31T23:59:00Z',
-      points: undefined,
-      published: undefined,
+      nosubmit: undefined,
+      auto_submit: undefined,
+      grading_on_submit: undefined,
     });
   });
 
-  it('should send all assignment settings including points and published', async () => {
+  it('should send all working assignment settings', async () => {
+    // Note: due_date, points, published do NOT work via API (return "No valid parameters")
+    // Working fields: name, description, nosubmit, auto_submit, grading_on_submit
     const assignment = {
       ...config.assignments[0],
       assignment_id: 'asn-1',
       settings: {
         description: 'Updated description',
-        due_date: '2026-12-31T23:59:00Z',
-        points: '100',
-        published: true,
+        nosubmit: false,
+        auto_submit: true,
+        grading_on_submit: true,
       },
     };
 
@@ -236,21 +239,25 @@ describe('publish', () => {
       orphanedInVocareum: [],
     };
     reconcileMock.mockResolvedValue(plan);
-    updateAssignmentMock.mockResolvedValue({ id: 'asn-1' });
+    updateAssignmentMock.mockResolvedValue(undefined);
 
     const result = await publish(config, client, baseOptions);
 
     expect(result.success).toBe(true);
-    expect(updateAssignmentMock).toHaveBeenCalledWith(client, 'asn-1', {
+    // API now uses course-scoped endpoint: updateAssignment(client, courseId, assignmentId, settings)
+    expect(updateAssignmentMock).toHaveBeenCalledWith(client, '201303', 'asn-1', {
       name: 'Lab 1',
       description: 'Updated description',
-      due_date: '2026-12-31T23:59:00Z',
-      points: '100',
-      published: true,
+      nosubmit: false,
+      auto_submit: true,
+      grading_on_submit: true,
     });
   });
 
   it('should send all part settings when part metadata changed', async () => {
+    // Note: name is REQUIRED for part updates
+    // Working fields: name, submission_filters, session_length, cloud_labs (if org permits),
+    // monthly_dollar, monthly_time, total_time, total_dollar
     const assignment = {
       ...config.assignments[0],
       assignment_id: 'asn-1',
@@ -260,7 +267,6 @@ describe('publish', () => {
           path: 'part1',
           name: 'Updated Part',
           settings: {
-            description: 'Part description',
             cloud_labs: true,
             session_length: '3600',
             submission_filters: { include: ['*.py'], exclude: ['*.pyc'] },
@@ -301,14 +307,14 @@ describe('publish', () => {
       orphanedInVocareum: [],
     };
     reconcileMock.mockResolvedValue(plan);
-    updatePartMock.mockResolvedValue({ id: 'part-1' });
+    updatePartMock.mockResolvedValue(undefined);
 
     const result = await publish(config, client, baseOptions);
 
     expect(result.success).toBe(true);
-    expect(updatePartMock).toHaveBeenCalledWith(client, 'part-1', {
-      name: 'Updated Part',
-      description: 'Part description',
+    // API now uses course-scoped endpoint: updatePart(client, courseId, assignmentId, partId, settings)
+    expect(updatePartMock).toHaveBeenCalledWith(client, '201303', 'asn-1', 'part-1', {
+      name: 'Updated Part',  // Required for all part updates
       cloud_labs: true,
       session_length: '3600',
       submission_filters: { include: ['*.py'], exclude: ['*.pyc'] },

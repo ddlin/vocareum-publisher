@@ -95,6 +95,288 @@ async function main() {
         name: 'Probe Copy',
       },
     },
+    // === Assignment Settings Update Probes ===
+    // Test various field combinations to discover which are accepted
+    {
+      name: 'asn-settings-name-only',
+      method: 'PUT',
+      path: `/api/v2/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { name: 'Test Assignment Name' },
+    },
+    {
+      name: 'asn-settings-description',
+      method: 'PUT',
+      path: `/api/v2/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { description: 'Test description' },
+    },
+    {
+      name: 'asn-settings-points',
+      method: 'PUT',
+      path: `/api/v2/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { points: '100' },
+    },
+    {
+      name: 'asn-settings-grade',
+      method: 'PUT',
+      path: `/api/v2/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { grade: '100' },
+    },
+    {
+      name: 'asn-settings-maxgrade',
+      method: 'PUT',
+      path: `/api/v2/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { maxgrade: '100' },
+    },
+    {
+      name: 'asn-settings-published',
+      method: 'PUT',
+      path: `/api/v2/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { published: true },
+    },
+    {
+      name: 'asn-settings-visible',
+      method: 'PUT',
+      path: `/api/v2/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { visible: true },
+    },
+    {
+      name: 'asn-settings-active',
+      method: 'PUT',
+      path: `/api/v2/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { active: true },
+    },
+    {
+      name: 'asn-settings-status',
+      method: 'PUT',
+      path: `/api/v2/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { status: 'active' },
+    },
+    {
+      name: 'asn-settings-due_date',
+      method: 'PUT',
+      path: `/api/v2/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { due_date: '2026-12-31T23:59:00Z' },
+    },
+    {
+      name: 'asn-settings-duedate',
+      method: 'PUT',
+      path: `/api/v2/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { duedate: '2026-12-31T23:59:00Z' },
+    },
+    {
+      name: 'asn-settings-update-flag',
+      method: 'PUT',
+      path: `/api/v2/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { name: 'Test Name', update: 1 },
+    },
+    // === Part Settings Update Probes ===
+    {
+      name: 'part-settings-name-only',
+      method: 'PUT',
+      path: `/api/v2/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test Part Name' },
+    },
+    {
+      name: 'part-settings-description',
+      method: 'PUT',
+      path: `/api/v2/parts/${partId ?? 'PART_ID'}`,
+      body: { description: 'Test part description' },
+    },
+    {
+      name: 'part-settings-update-flag',
+      method: 'PUT',
+      path: `/api/v2/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test Part', update: 1 },
+    },
+    {
+      name: 'part-settings-cloud_labs',
+      method: 'PUT',
+      path: `/api/v2/parts/${partId ?? 'PART_ID'}`,
+      body: { cloud_labs: true },
+    },
+    {
+      name: 'part-settings-cloudlabs',
+      method: 'PUT',
+      path: `/api/v2/parts/${partId ?? 'PART_ID'}`,
+      body: { cloudlabs: true },
+    },
+    {
+      name: 'part-settings-session_length',
+      method: 'PUT',
+      path: `/api/v2/parts/${partId ?? 'PART_ID'}`,
+      body: { session_length: '3600' },
+    },
+    {
+      name: 'part-settings-sessionlength',
+      method: 'PUT',
+      path: `/api/v2/parts/${partId ?? 'PART_ID'}`,
+      body: { sessionlength: '3600' },
+    },
+    {
+      name: 'part-settings-submission_filters',
+      method: 'PUT',
+      path: `/api/v2/parts/${partId ?? 'PART_ID'}`,
+      body: { submission_filters: { include: ['*.py'], exclude: ['*.pyc'] } },
+    },
+    // Test GET endpoints for assignment/part to see what fields are returned
+    {
+      name: 'asn-get-single',
+      method: 'GET',
+      path: `/api/v2/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+    },
+    {
+      name: 'part-get-single',
+      method: 'GET',
+      path: `/api/v2/parts/${partId ?? 'PART_ID'}`,
+    },
+    // === Course-scoped assignment/part endpoints (alternative paths) ===
+    {
+      name: 'asn-course-scoped-get',
+      method: 'GET',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+    },
+    {
+      name: 'asn-course-scoped-put-name',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { name: 'Test Assignment Name' },
+    },
+    {
+      name: 'asn-course-scoped-put-update',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { name: 'Test Assignment Name', update: 1 },
+    },
+    {
+      name: 'asn-course-scoped-put-published',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { published: true, update: 1 },
+    },
+    {
+      name: 'asn-course-scoped-put-points',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { points: '100', update: 1 },
+    },
+    {
+      name: 'asn-course-scoped-put-description',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { description: 'Test description', update: 1 },
+    },
+    {
+      name: 'part-course-scoped-get',
+      method: 'GET',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+    },
+    {
+      name: 'part-course-scoped-put-name',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test Part Name' },
+    },
+    {
+      name: 'part-course-scoped-put-update',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test Part Name', update: 1 },
+    },
+    {
+      name: 'part-course-scoped-put-description',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { description: 'Test part description', update: 1 },
+    },
+    // Empty body variants
+    {
+      name: 'asn-course-scoped-put-empty',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: {},
+    },
+    {
+      name: 'part-course-scoped-put-empty',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: {},
+    },
+    // === Test actual fields from GET response ===
+    // Assignment fields (from GET response)
+    {
+      name: 'asn-put-nosubmit',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { nosubmit: true },
+    },
+    {
+      name: 'asn-put-auto_submit',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { auto_submit: true },
+    },
+    {
+      name: 'asn-put-grading_on_submit',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { grading_on_submit: false },
+    },
+    {
+      name: 'asn-put-gradespublished',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}`,
+      body: { gradespublished: true },
+    },
+    // Part fields (from GET response)
+    {
+      name: 'part-put-cloud_labs-bool',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', cloud_labs: true },
+    },
+    {
+      name: 'part-put-session_length',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', session_length: '3600' },
+    },
+    {
+      name: 'part-put-instant_aws',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', instant_aws_access: true },
+    },
+    {
+      name: 'part-put-submission_filters',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', submission_filters: ['*.py'] },
+    },
+    {
+      name: 'part-put-labtype',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', labtype: 'Visual Studio Code' },
+    },
+    {
+      name: 'part-put-monthly_dollar',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', monthly_dollar: '10' },
+    },
+    {
+      name: 'part-put-total_time',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', total_time: '600' },
+    },
+    // Test name-only for parts again (separate to avoid rate limit)
+    {
+      name: 'part-put-name-only-v2',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Part 1 Updated' },
+    },
   ];
 
   console.log(`Base URL: ${baseUrl}`);

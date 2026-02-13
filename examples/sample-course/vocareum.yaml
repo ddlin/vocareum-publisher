@@ -12,20 +12,24 @@ assignments:
     name: "Lab 1: Introduction to Python"
     path: "lab1-intro"
     settings:
-      due_date: "2025-03-15T23:59:00Z"
+      # Confirmed working fields (Feb 2026):
       description: "Introduction to Python programming"
-      points: "100"
-      published: true
+      # nosubmit: false
+      # auto_submit: false
+      # grading_on_submit: true
+      # NOTE: due_date, points, published DO NOT work via API
+      # These must be set manually in Vocareum UI
     parts:
       - part_id: "22222"  # Replace with actual ID
         path: "part1"
         name: "Part 1: Hello World"
         directories: ["startercode", "scripts", "docs"]
         settings:
-          description: "Write your first Python program"
+          # Confirmed working fields (Feb 2026):
           submission_filters:
             include: ["*.py", "*.txt"]
             exclude: ["*.pyc", "__pycache__"]
+          # session_length: "3600"  # seconds
 
   # New assignment (will be created from template)
   - assignment_id: null
@@ -33,24 +37,21 @@ assignments:
     path: "lab2-analysis"
     create_from_template: true
     settings:
-      due_date: "2025-03-22T23:59:00Z"
       description: "Data analysis with pandas"
-      points: "150"
     parts:
       - part_id: null
         path: "part1"
         name: "Part 1: Data Loading"
         directories: ["startercode", "scripts", "data"]
         settings:
-          description: "Load and clean a dataset"
-          cloud_labs: true
+          # cloud_labs requires org permission - may fail if not enabled
+          # cloud_labs: true
           session_length: "3600"
       - part_id: null
         path: "part2"
         name: "Part 2: Visualization"
         directories: ["startercode", "scripts"]
-        settings:
-          description: "Create data visualizations"
+        settings: {}
 
 publish_options:
   on_missing_id: "skip"

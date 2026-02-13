@@ -120,16 +120,13 @@ export async function reconcile(
 
     // If we are updating, we need to check parts
     if (assignmentActionType === 'update' && remoteAssignment) {
+      // Check for changes in fields that can be updated via API
+      // Working fields: name, description, nosubmit, auto_submit, grading_on_submit
+      // NOT working: due_date, points, published (return "No valid parameters")
       assignmentMetadataChanged =
         configAssignment.name !== remoteAssignment.name ||
         (configAssignment.settings?.description !== undefined &&
-          configAssignment.settings.description !== remoteAssignment.description) ||
-        (configAssignment.settings?.due_date !== undefined &&
-          configAssignment.settings.due_date !== remoteAssignment.due_date) ||
-        (configAssignment.settings?.points !== undefined &&
-          configAssignment.settings.points !== remoteAssignment.points) ||
-        (configAssignment.settings?.published !== undefined &&
-          configAssignment.settings.published !== (remoteAssignment.published === '1'));
+          configAssignment.settings.description !== remoteAssignment.description);
 
       // Fetch parts
       const remoteParts = await listParts(client, config.vocareum.course_id, remoteAssignment.id);
@@ -270,6 +267,15 @@ export async function reconcile(
  * Only settings explicitly defined in the config are compared; undefined
  * config values are treated as "do not change" and never trigger an update.
  */
+/**
+ * Detect if part settings have changed between config and remote
+ *
+ * Working fields (Feb 2026 API probes):
+ * - name, submission_filters, session_length, monthly_dollar, monthly_time, total_time, total_dollar
+ *
+ * Conditional fields (require org permissions):
+ * - cloud_labs, instant_aws_access
+ */
 function detectPartSettingsChanged(
   configPart: Part,
   remotePart?: VocareumPartResponse
@@ -282,7 +288,7 @@ function detectPartSettingsChanged(
   const s = configPart.settings;
   if (!s) return false;
 
-  if (s.description !== undefined && s.description !== remotePart.description) return true;
+  // cloud_labs and instant_aws_access may fail if org doesn't have cloud permissions
   if (s.cloud_labs !== undefined && s.cloud_labs !== remotePart.cloud_labs) return true;
   if (s.instant_aws_access !== undefined && s.instant_aws_access !== remotePart.instant_aws_access) return true;
   if (s.session_length !== undefined && s.session_length !== remotePart.session_length) return true;
@@ -297,6 +303,7 @@ function detectPartSettingsChanged(
     if (!remoteFilters) return true; // Config defines filters but remote has none
     if (JSON.stringify(s.submission_filters.include ?? []) !== JSON.stringify(remoteFilters.include ?? [])) return true;
     if (JSON.stringify(s.submission_filters.exclude ?? []) !== JSON.stringify(remoteFilters.exclude ?? [])) return true;
+    if (JSON.stringify(s.submission_filters.list ?? []) !== JSON.stringify((remoteFilters as { list?: string[] }).list ?? [])) return true;
   }
 
   return false;

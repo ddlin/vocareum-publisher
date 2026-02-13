@@ -301,12 +301,12 @@ export async function publish(
 
       if (action.assignmentMetadataChanged === true && action.assignment.assignment_id) {
         try {
-          await updateAssignment(client, action.assignment.assignment_id, {
+          await updateAssignment(client, workingConfig.vocareum.course_id, action.assignment.assignment_id, {
             name: action.assignment.name,
             description: action.assignment.settings?.description,
-            due_date: action.assignment.settings?.due_date,
-            points: action.assignment.settings?.points,
-            published: action.assignment.settings?.published,
+            nosubmit: action.assignment.settings?.nosubmit,
+            auto_submit: action.assignment.settings?.auto_submit,
+            grading_on_submit: action.assignment.settings?.grading_on_submit,
           });
           logger.success(`Updated assignment metadata: ${action.assignment.name}`);
         } catch (error) {
@@ -344,14 +344,19 @@ export async function publish(
 
       // Update part metadata/settings if needed
       if (partAction.metadataChanged && !action.willCreate) {
-        const partName = partAction.part.name ?? partAction.part.settings?.name;
+        // name is REQUIRED for part updates
+        const partName = partAction.part.name ?? partAction.part.settings?.name ?? partAction.part.path;
         const partSettings = partAction.part.settings;
+        const assignmentId = action.assignment.assignment_id;
+        if (!assignmentId) {
+          logger.error(`Cannot update part ${partName}: assignment has no ID`);
+          result.failed.push({ type: 'part', id: partId, error: 'Assignment has no ID' });
+          continue;
+        }
         try {
-          const displayName = partName ?? partAction.part.path;
-          logger.info(`Updating part settings: ${displayName}`);
-          await updatePart(client, partId, {
-            name: partName,
-            description: partSettings?.description,
+          logger.info(`Updating part settings: ${partName}`);
+          await updatePart(client, workingConfig.vocareum.course_id, assignmentId, partId, {
+            name: partName,  // Required for all part updates
             submission_filters: partSettings?.submission_filters,
             cloud_labs: partSettings?.cloud_labs,
             instant_aws_access: partSettings?.instant_aws_access,
@@ -361,7 +366,7 @@ export async function publish(
             total_time: partSettings?.total_time,
             total_dollar: partSettings?.total_dollar,
           });
-          logger.success(`Updated part ${displayName}`);
+          logger.success(`Updated part ${partName}`);
         } catch (error) {
           logger.error(`Failed to update part settings for ${partId}`, { error });
           result.failed.push({ type: 'part', id: partId, error });
