@@ -104,9 +104,17 @@ async function importAssignment(
     // Determine part path (use part name or index)
     const partPath = parts.length === 1 ? '.' : `part${i + 1}`;
 
+    // Determine directories to create
+    const directories: DirectoryType[] = fileCount > 0
+      ? detectDirectories(files)
+      : ['startercode', 'scripts'];
+
     // Write files to local directory if any were downloaded
     if (fileCount > 0) {
       await writeFilesToDirectory(localPath, partPath, files, verbose);
+    } else {
+      // Create empty directory structure
+      await createEmptyPartStructure(localPath, partPath, directories);
     }
 
     // Create part config entry
@@ -114,7 +122,7 @@ async function importAssignment(
       part_id: part.id,
       path: partPath,
       name: part.name,
-      directories: fileCount > 0 ? detectDirectories(files) : ['startercode', 'scripts'],
+      directories,
       settings: {},
     };
 
@@ -124,7 +132,7 @@ async function importAssignment(
     if (fileCount > 0) {
       logger.plain(`  Part ${i + 1}/${parts.length}: downloaded ${fileCount} file${fileCount === 1 ? '' : 's'}`);
     } else {
-      logger.plain(`  Part ${i + 1}/${parts.length}: no content found`);
+      logger.plain(`  Part ${i + 1}/${parts.length}: created empty structure`);
     }
   }
 
@@ -158,6 +166,25 @@ function detectDirectories(files: FileMap): DirectoryType[] {
   }
 
   return dirs.size > 0 ? Array.from(dirs) : ['startercode', 'scripts'];
+}
+
+/**
+ * Create empty directory structure for a part when no content is downloaded
+ */
+async function createEmptyPartStructure(
+  assignmentPath: string,
+  partPath: string,
+  directories: DirectoryType[]
+): Promise<void> {
+  for (const dir of directories) {
+    const dirPath = partPath === '.'
+      ? path.join(assignmentPath, dir)
+      : path.join(assignmentPath, partPath, dir);
+    await ensureDirectory(dirPath);
+
+    // Create .gitkeep to ensure empty dirs are tracked
+    await writeFile(path.join(dirPath, '.gitkeep'), '');
+  }
 }
 
 /**
