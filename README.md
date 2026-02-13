@@ -169,21 +169,31 @@ vocareum-publish --verbose           # Detailed logging
 
 ### Pull Command
 
-The `pull` command helps you manage orphaned assignments - assignments that exist in Vocareum but not in your local configuration. This is useful when:
+The `pull` command helps you manage assignment sync issues:
 
+1. **Orphaned assignments** - exist in Vocareum but not in your local config
+2. **Stale assignments** - exist in your config but were deleted from Vocareum
+
+This is useful when:
 - You've created assignments directly in the Vocareum UI
 - You're onboarding an existing course to Git-based management
-- Assignments were created by another team member
+- Assignments were created or deleted by another team member
 
 ```bash
 vocareum-publish pull                # Interactive mode
 vocareum-publish pull --verbose      # Show detailed output
-vocareum-publish pull --non-interactive  # Skip all orphans
+vocareum-publish pull --non-interactive  # Skip all issues
 ```
 
-For each orphaned assignment, you can:
+**For orphaned assignments** (in Vocareum, not in config):
 - **Import**: Download content and add to your local repository
 - **Exclude**: Hide from future scans (add to `excluded_assignments`)
+- **Skip**: Do nothing
+
+**For stale assignments** (in config, deleted from Vocareum):
+- **Reset ID**: Clear assignment_id to allow re-creation from template
+- **Remove**: Delete the assignment from config entirely
+- **Exclude**: Keep in config but skip during sync
 - **Skip**: Do nothing
 
 Example workflow:
@@ -191,28 +201,31 @@ Example workflow:
 ```
 $ vocareum-publish pull
 
-Scanning for orphaned assignments...
-Found 2 orphaned assignment(s) in Vocareum.
+ℹ Scanning for assignment sync issues...
+ℹ Found 1 orphaned assignment(s) in Vocareum.
 
-[1/2] Lab 3: Advanced Topics (ID: 555666)
+[1/1] Lab 3: Advanced Topics (ID: 555666)
 ? What would you like to do? Import to local repository
-? Local directory name: (lab-3-advanced-topics) lab3-advanced
-  Downloading part 1/2...
-  Downloaded part 1/2 (5 files)
-  Downloading part 2/2...
-  Downloaded part 2/2 (3 files)
+? Local directory name: lab3-advanced
+  Part 1/2: downloaded 5 files
+  Part 2/2: downloaded 3 files
 ✓ Imported "Lab 3: Advanced Topics" to lab3-advanced/
 
-[2/2] Old Assignment (ID: 777888)
-? What would you like to do? Exclude (hide from future scans)
-✓ Excluded "Old Assignment" from orphan detection
+ℹ Found 1 stale assignment(s) in config (deleted from Vocareum).
+
+[1/1] Old Lab (ID: 777888, path: old-lab)
+? This assignment was deleted from Vocareum. What would you like to do?
+  Reset ID (allow re-creation from template)
+✓ Reset ID for "Old Lab" - will be re-created on next publish
 
 Summary:
   Imported: 1
-  Excluded: 1
+  Excluded: 0
+  Removed:  0
+  Reset:    1
   Skipped:  0
 
-Updated vocareum.yaml
+ℹ Updated vocareum.yaml
 ```
 
 ## GitHub Action

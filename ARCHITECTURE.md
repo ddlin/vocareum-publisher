@@ -236,14 +236,16 @@ async function fixValidationIssues(
 
 ### 9. Pull Command Module (`commands/pull.ts`)
 
-**Purpose:** Import or exclude orphaned assignments from Vocareum.
+**Purpose:** Manage assignment sync issues between local config and Vocareum.
 
 **Key Responsibilities:**
-- Scan Vocareum for orphaned assignments (exist remotely but not in config)
-- Interactive prompts to import or exclude each orphan
+- Scan for orphaned assignments (exist in Vocareum but not in config)
+- Scan for stale assignments (exist in config but deleted from Vocareum)
+- Interactive prompts to handle each issue
 - Download assignment content and create local directory structure
 - Add imported assignments to config
 - Add excluded assignment IDs to `excluded_assignments` list
+- Reset or remove stale assignments from config
 
 **Public API:**
 ```typescript
@@ -365,12 +367,12 @@ async function getUniqueDirectoryName(basePath: string, desiredName: string): Pr
 }
 ```
 
-**Orphan Filtering:**
+**Orphan and Stale Detection:**
 
-The reconciler filters out excluded assignments when identifying orphans:
+The reconciler tracks both orphans and stale assignments:
 
 ```typescript
-// In reconciler.ts
+// Orphans: in Vocareum but not in config (filtered by excluded_assignments)
 const excludedAssignments = new Set(config.vocareum.excluded_assignments ?? []);
 for (const [id, assignment] of remoteAssignmentMap) {
   if (!excludedAssignments.has(id)) {
@@ -382,7 +384,21 @@ for (const [id, assignment] of remoteAssignmentMap) {
     });
   }
 }
+
+// Stale: in config with ID but deleted from Vocareum
+if (configAssignment.assignment_id && !remoteAssignmentMap.has(configAssignment.assignment_id)) {
+  staleInConfig.push({
+    assignment_id: configAssignment.assignment_id,
+    name: configAssignment.name,
+    path: configAssignment.path,
+  });
+}
 ```
+
+**Stale Assignment Actions:**
+- **Reset ID**: Clear `assignment_id` and set `create_from_template: true`
+- **Remove**: Delete assignment from config entirely
+- **Exclude**: Add to `excluded_assignments` to skip during sync
 
 ---
 
@@ -933,9 +949,12 @@ function isRetryable(error: any): boolean {
 **Public API:**
 ```typescript
 export interface ReconciliationPlan {
+  config: Config;
   course: CourseAction;
   assignments: AssignmentAction[];
   summary: ReconciliationSummary;
+  orphanedInVocareum: OrphanedEntity[];  // In Vocareum but not in config
+  staleInConfig: StaleAssignment[];       // In config but deleted from Vocareum
 }
 
 export interface ReconciliationSummary {
