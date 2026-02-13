@@ -8,7 +8,7 @@ import { loadConfig } from '../core/config';
 import { publish } from '../core/publisher';
 import { VocareumClient } from '../api/client';
 import { logger } from '../utils/logger';
-import { loadDotEnvIfPresent } from '../utils/env';
+import { loadDotEnvIfPresent, isCI } from '../utils/env';
 import type { PublishOperationOptions } from '../types/state';
 
 export interface PublishCommandOptions extends PublishOperationOptions {
@@ -36,10 +36,9 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
 
     const client = new VocareumClient(apiKey, config.vocareum.api_base_url);
 
-    const isCiRuntime = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
     const requestedAutoCommit = options.autoCommit ?? config.publish_options?.auto_commit ?? false;
-    const autoCommit = isCiRuntime ? false : requestedAutoCommit;
-    if (isCiRuntime && requestedAutoCommit) {
+    const autoCommit = isCI() ? false : requestedAutoCommit;
+    if (isCI() && requestedAutoCommit) {
       logger.warn('Auto-commit is disabled in CI/CD environments.');
     }
 

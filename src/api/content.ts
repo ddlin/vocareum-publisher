@@ -26,7 +26,11 @@ interface TransactionResponse {
 const PART_UPDATE_POLL_MAX_ATTEMPTS = 30;
 const PART_UPDATE_POLL_DELAY_MS = 1000;
 
-function crc32(buffer: Buffer): number {
+/**
+ * Calculate CRC32 checksum for ZIP file integrity
+ * @internal Exported for testing
+ */
+export function crc32(buffer: Buffer): number {
   let crc = 0xffffffff;
   for (let i = 0; i < buffer.length; i++) {
     crc ^= buffer[i];
@@ -38,13 +42,22 @@ function crc32(buffer: Buffer): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function createZipBuffer(files: FileMap): Buffer {
+/**
+ * Create a ZIP buffer from a map of files
+ * @internal Exported for testing
+ */
+export function createZipBuffer(files: FileMap): Buffer {
+  const entries = Object.entries(files);
+  if (entries.length === 0) {
+    throw new Error('Cannot create ZIP: no files provided');
+  }
+
   const localParts: Buffer[] = [];
   const centralParts: Buffer[] = [];
   let offset = 0;
   let fileCount = 0;
 
-  for (const [relativePath, content] of Object.entries(files)) {
+  for (const [relativePath, content] of entries) {
     const normalizedPath = relativePath.replace(/\\/g, '/');
     const nameBuffer = Buffer.from(normalizedPath, 'utf8');
     const dataBuffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
@@ -105,11 +118,19 @@ function createZipBuffer(files: FileMap): Buffer {
   return Buffer.concat([...localParts, centralDirectory, endOfCentralDirectory]);
 }
 
-async function waitForPartUpdateTransaction(
+/**
+ * Poll transaction endpoint until part update completes
+ * @internal Exported for testing
+ */
+export async function waitForPartUpdateTransaction(
   client: VocareumClient,
-  transactionId: string
+  transactionId: string,
+  options: { maxAttempts?: number; delayMs?: number } = {}
 ): Promise<void> {
-  for (let attempt = 0; attempt < PART_UPDATE_POLL_MAX_ATTEMPTS; attempt++) {
+  const maxAttempts = options.maxAttempts ?? PART_UPDATE_POLL_MAX_ATTEMPTS;
+  const delayMs = options.delayMs ?? PART_UPDATE_POLL_DELAY_MS;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const txn = await client.request<TransactionResponse>({
       method: 'GET',
       url: `/api/v2/transaction/${transactionId}`,
@@ -124,11 +145,11 @@ async function waitForPartUpdateTransaction(
       );
     }
 
-    await new Promise((resolve) => setTimeout(resolve, PART_UPDATE_POLL_DELAY_MS));
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
 
   throw new APIError(
-    `Timed out waiting for part update transaction (txn=${transactionId})`
+    `Timed out after ${maxAttempts * delayMs}ms waiting for part update (txn=${transactionId})`
   );
 }
 
@@ -176,13 +197,15 @@ export async function uploadContent(
   if (response.transactionid !== undefined && response.transactionid !== '') {
     await waitForPartUpdateTransaction(client, response.transactionid);
   } else if (response.state === 'failed') {
-    throw new APIError(response.message ?? 'Part update failed');
+    throw new APIError(
+      response.message ?? `Part update failed (part=${partId}, dir=${directory})`
+    );
   }
 
   return {
     succeeded: filePaths,
     failed: [],
-    directoryHash: 'calculated_externally',
+    directoryHash: '', // Calculated by uploader after upload
   };
 }
 
