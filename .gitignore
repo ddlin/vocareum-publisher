@@ -44,5 +44,8 @@ temp/
 # Don't commit API keys or sensitive config
 vocareum-api-key.txt
 
+# Test courses with real IDs
+examples/test-course*/
+
 # Claude Code
 .claude/
