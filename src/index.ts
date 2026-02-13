@@ -18,6 +18,7 @@ program
 import { initCommand, InitOptions } from './commands/init';
 import { newCommand } from './commands/new';
 import { publishCommand, PublishCommandOptions } from './commands/publish';
+import { pullCommand, PullOptions } from './commands/pull';
 import { ValidateOptions } from './commands/validate';
 import { FixOptions } from './commands/fix';
 import { logger } from './utils/logger';
@@ -79,6 +80,22 @@ program
       await fixCommand(options);
     } catch (error) {
       logger.error(`Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      process.exit(1);
+    }
+  });
+
+// Pull command - handle orphaned assignments
+program
+  .command('pull')
+  .description('Import or exclude orphaned assignments from Vocareum')
+  .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
+  .option('--non-interactive', 'Skip all orphans without prompting')
+  .option('--verbose', 'Show detailed output')
+  .action(async (options: PullOptions) => {
+    try {
+      await pullCommand(options);
+    } catch (error) {
+      logger.error(`Pull failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       process.exit(1);
     }
   });

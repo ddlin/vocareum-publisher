@@ -219,14 +219,17 @@ export async function reconcile(
     });
   }
 
-  // 4. Identify Orphans
+  // 4. Identify Orphans (excluding those in excluded_assignments)
+  const excludedAssignments = new Set(config.vocareum.excluded_assignments ?? []);
   for (const [id, assignment] of remoteAssignmentMap) {
-    orphanedInVocareum.push({
-      type: 'assignment',
-      id,
-      name: assignment.name,
-      message: 'Exists in Vocareum but not in local configuration'
-    });
+    if (!excludedAssignments.has(id)) {
+      orphanedInVocareum.push({
+        type: 'assignment',
+        id,
+        name: assignment.name,
+        message: 'Exists in Vocareum but not in local configuration'
+      });
+    }
   }
 
   // 5. Calculate Summary

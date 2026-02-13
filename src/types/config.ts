@@ -213,6 +213,8 @@ export const VocareumConfigSchema = z.object({
   api_base_url: z.string().optional().default('https://api.vocareum.com'),
   /** Optional course settings to sync */
   course_settings: CourseSettingsConfigSchema,
+  /** Assignment IDs to exclude from orphan detection (hidden from pull scans) */
+  excluded_assignments: z.array(z.string()).optional().default([]),
 });
 
 export type VocareumConfig = z.infer<typeof VocareumConfigSchema>;
@@ -299,4 +301,5 @@ export interface ConfigUpdates {
   assignments?: Partial<Assignment>[];
   publish_history?: PublishHistory[];
   publish_options?: Partial<PublishOptions>;
+  excluded_assignments?: string[];
 }

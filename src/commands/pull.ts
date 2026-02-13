@@ -1,0 +1,334 @@
+/**
+ * Pull Command
+ *
+ * Interactively handle orphaned assignments (exist in Vocareum but not in local config).
+ * Users can import (download content + add to config) or exclude (add to exclusion list).
+ */
+
+import * as path from 'path';
+import { loadConfig, updateConfig } from '../core/config';
+import { reconcile } from '../core/reconciler';
+import { VocareumClient } from '../api/client';
+import { listParts } from '../api/parts';
+import { downloadContent } from '../api/content';
+import { logger } from '../utils/logger';
+import { loadDotEnvIfPresent, isCI } from '../utils/env';
+import { prompt, promptChoice } from '../utils/prompts';
+import { pathExists, ensureDirectory, writeFile } from '../utils/files';
+import type { Assignment, Part, DirectoryType } from '../types/config';
+import type { OrphanedEntity } from '../types/state';
+import type { FileMap } from '../types/api';
+
+export interface PullOptions {
+  config?: string;
+  nonInteractive?: boolean;
+  verbose?: boolean;
+}
+
+interface PullSummary {
+  imported: number;
+  excluded: number;
+  skipped: number;
+}
+
+type PullAction = 'import' | 'exclude' | 'skip';
+
+/**
+ * Convert assignment name to directory-safe slug
+ *
+ * @param name - Assignment name
+ * @returns Slugified name suitable for directory
+ */
+export function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')  // Replace non-alphanumeric with hyphens
+    .replace(/^-+|-+$/g, '')       // Trim leading/trailing hyphens
+    .replace(/--+/g, '-');         // Collapse multiple hyphens
+}
+
+/**
+ * Get a unique directory name, appending -2, -3, etc. if needed
+ *
+ * @param basePath - Base directory path
+ * @param desiredName - Desired directory name
+ * @returns Unique directory name
+ */
+export async function getUniqueDirectoryName(basePath: string, desiredName: string): Promise<string> {
+  let name = desiredName;
+  let suffix = 1;
+
+  while (await pathExists(path.join(basePath, name))) {
+    suffix++;
+    name = `${desiredName}-${suffix}`;
+  }
+
+  return name;
+}
+
+/**
+ * Import an assignment from Vocareum to local repository
+ *
+ * @param client - Vocareum API client
+ * @param courseId - Course ID
+ * @param orphan - Orphaned assignment to import
+ * @param localPath - Local directory name for the assignment
+ * @param verbose - Enable verbose logging
+ * @returns Assignment entry for config
+ */
+async function importAssignment(
+  client: VocareumClient,
+  courseId: string,
+  orphan: OrphanedEntity,
+  localPath: string,
+  verbose: boolean
+): Promise<Assignment> {
+  const assignmentId = orphan.id;
+
+  // Get parts for this assignment
+  const parts = await listParts(client, courseId, assignmentId);
+
+  if (verbose) {
+    logger.debug(`Found ${parts.length} parts for assignment ${orphan.name}`);
+  }
+
+  const configParts: Part[] = [];
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    logger.plain(`  Downloading part ${i + 1}/${parts.length}...`);
+
+    try {
+      // Download content for this part
+      const files = await downloadContent(client, courseId, assignmentId, part.id);
+
+      // Determine part path (use part name or index)
+      const partPath = parts.length === 1 ? '.' : `part${i + 1}`;
+
+      // Write files to local directory
+      await writeFilesToDirectory(localPath, partPath, files, verbose);
+
+      // Create part config entry
+      const configPart: Part = {
+        part_id: part.id,
+        path: partPath,
+        name: part.name,
+        directories: detectDirectories(files),
+        settings: {},
+      };
+
+      configParts.push(configPart);
+
+      logger.plain(`  Downloaded part ${i + 1}/${parts.length} (${Object.keys(files).length} files)`);
+    } catch (error) {
+      // If download fails (e.g., API limitation), create config entry without files
+      logger.warn(`  Could not download content for part ${part.name}: ${error instanceof Error ? error.message : 'Unknown'}`);
+
+      const partPath = parts.length === 1 ? '.' : `part${i + 1}`;
+      const configPart: Part = {
+        part_id: part.id,
+        path: partPath,
+        name: part.name,
+        directories: ['startercode', 'scripts'],
+        settings: {},
+      };
+
+      configParts.push(configPart);
+    }
+  }
+
+  // Create assignment config entry
+  const assignment: Assignment = {
+    assignment_id: assignmentId,
+    name: orphan.name,
+    path: localPath,
+    create_from_template: false,
+    settings: {},
+    parts: configParts,
+  };
+
+  return assignment;
+}
+
+/**
+ * Detect which directory types exist in the downloaded files
+ */
+function detectDirectories(files: FileMap): DirectoryType[] {
+  const dirs = new Set<DirectoryType>();
+
+  for (const filePath of Object.keys(files)) {
+    const parts = filePath.split('/');
+    if (parts.length > 0) {
+      const dir = parts[0] as DirectoryType;
+      if (['startercode', 'scripts', 'docs', 'data', 'lib', 'asnlib'].includes(dir)) {
+        dirs.add(dir);
+      }
+    }
+  }
+
+  return dirs.size > 0 ? Array.from(dirs) : ['startercode', 'scripts'];
+}
+
+/**
+ * Write downloaded files to local directory structure
+ */
+async function writeFilesToDirectory(
+  assignmentPath: string,
+  partPath: string,
+  files: FileMap,
+  verbose: boolean
+): Promise<void> {
+  const createdDirs = new Set<string>();
+
+  for (const [relativePath, content] of Object.entries(files)) {
+    // File path format from downloadContent: "{dirType}/{filePath}"
+    // We want: "{assignmentPath}/{partPath}/{dirType}/{filePath}"
+    const targetPath = partPath === '.'
+      ? path.join(assignmentPath, relativePath)
+      : path.join(assignmentPath, partPath, relativePath);
+
+    await ensureDirectory(path.dirname(targetPath));
+    await writeFile(targetPath, content);
+
+    // Track created directories for logging
+    const dirPath = path.dirname(targetPath);
+    if (!createdDirs.has(dirPath)) {
+      createdDirs.add(dirPath);
+      if (verbose) {
+        logger.debug(`Created ${dirPath}/`);
+      }
+    }
+  }
+}
+
+/**
+ * Execute the pull command
+ */
+export async function pullCommand(options: PullOptions): Promise<void> {
+  const configPath = options.config ?? 'vocareum.yaml';
+  const nonInteractive = options.nonInteractive ?? isCI();
+  const verbose = options.verbose ?? false;
+
+  try {
+    loadDotEnvIfPresent();
+    const config = await loadConfig(configPath);
+
+    // API Key - support both env var names
+    const apiKey = process.env.VOCAREUM_API_KEY ?? process.env.VOCAREUM_API_TOKEN;
+    if (apiKey === undefined || apiKey === '') {
+      logger.error('VOCAREUM_API_KEY (or VOCAREUM_API_TOKEN) environment variable is required.');
+      process.exit(1);
+    }
+
+    const client = new VocareumClient(apiKey, config.vocareum.api_base_url);
+
+    logger.info('Scanning for orphaned assignments...');
+
+    // Run reconciliation to find orphans
+    const plan = await reconcile(config, client);
+
+    if (plan.orphanedInVocareum.length === 0) {
+      logger.success('No orphaned assignments found.');
+      return;
+    }
+
+    logger.info(`Found ${plan.orphanedInVocareum.length} orphaned assignment(s) in Vocareum.`);
+    logger.newline();
+
+    // Track what we do with each orphan
+    const summary: PullSummary = {
+      imported: 0,
+      excluded: 0,
+      skipped: 0,
+    };
+
+    const newAssignments: Partial<Assignment>[] = [];
+    const newExclusions: string[] = [];
+
+    // Process each orphan
+    for (let i = 0; i < plan.orphanedInVocareum.length; i++) {
+      const orphan = plan.orphanedInVocareum[i];
+
+      logger.plain(`[${i + 1}/${plan.orphanedInVocareum.length}] ${orphan.name} (ID: ${orphan.id})`);
+
+      let action: PullAction = 'skip';
+
+      if (nonInteractive) {
+        // In non-interactive mode, skip all orphans
+        action = 'skip';
+        logger.plain('  Skipped (non-interactive mode)');
+      } else {
+        // Interactive mode - ask user what to do
+        const choice = await promptChoice('What would you like to do?', [
+          'Import to local repository',
+          'Exclude (hide from future scans)',
+          'Skip (do nothing)',
+        ]);
+
+        if (choice === 'Import to local repository') {
+          action = 'import';
+        } else if (choice === 'Exclude (hide from future scans)') {
+          action = 'exclude';
+        } else {
+          action = 'skip';
+        }
+      }
+
+      if (action === 'import') {
+        // Get directory name from user
+        const defaultSlug = slugify(orphan.name);
+        const suggestedName = await getUniqueDirectoryName('.', defaultSlug);
+
+        const dirName = await prompt('Local directory name:', suggestedName);
+        const finalDirName = await getUniqueDirectoryName('.', dirName || suggestedName);
+
+        try {
+          const assignment = await importAssignment(
+            client,
+            config.vocareum.course_id,
+            orphan,
+            finalDirName,
+            verbose
+          );
+
+          newAssignments.push(assignment);
+          summary.imported++;
+          logger.success(`Imported "${orphan.name}" to ${finalDirName}/`);
+        } catch (error) {
+          logger.error(`Failed to import: ${error instanceof Error ? error.message : 'Unknown'}`);
+          summary.skipped++;
+        }
+      } else if (action === 'exclude') {
+        newExclusions.push(orphan.id);
+        summary.excluded++;
+        logger.success(`Excluded "${orphan.name}" from orphan detection`);
+      } else {
+        summary.skipped++;
+        logger.plain('  Skipped');
+      }
+
+      logger.newline();
+    }
+
+    // Update config if we made any changes
+    if (newAssignments.length > 0 || newExclusions.length > 0) {
+      await updateConfig(configPath, {
+        assignments: newAssignments.length > 0 ? newAssignments : undefined,
+        excluded_assignments: newExclusions.length > 0 ? newExclusions : undefined,
+      });
+
+      logger.info('Updated vocareum.yaml');
+    }
+
+    // Print summary
+    logger.newline();
+    logger.info('Summary:');
+    logger.plain(`  Imported: ${summary.imported}`);
+    logger.plain(`  Excluded: ${summary.excluded}`);
+    logger.plain(`  Skipped:  ${summary.skipped}`);
+
+  } catch (error) {
+    logger.error(`Pull failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    process.exit(1);
+  }
+}

@@ -170,6 +170,13 @@ export async function updateConfig(configPath: string, updates: ConfigUpdates): 
     };
   }
 
+  if (updates.excluded_assignments !== undefined) {
+    // Merge new exclusions with existing, avoiding duplicates
+    const existing = currentConfig.vocareum.excluded_assignments ?? [];
+    const merged = [...new Set([...existing, ...updates.excluded_assignments])];
+    currentConfig.vocareum.excluded_assignments = merged;
+  }
+
   // 3. Write back
   const yamlStr = yaml.dump(currentConfig, {
     indent: 2,

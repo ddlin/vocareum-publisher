@@ -234,6 +234,158 @@ async function fixValidationIssues(
 
 ---
 
+### 9. Pull Command Module (`commands/pull.ts`)
+
+**Purpose:** Import or exclude orphaned assignments from Vocareum.
+
+**Key Responsibilities:**
+- Scan Vocareum for orphaned assignments (exist remotely but not in config)
+- Interactive prompts to import or exclude each orphan
+- Download assignment content and create local directory structure
+- Add imported assignments to config
+- Add excluded assignment IDs to `excluded_assignments` list
+
+**Public API:**
+```typescript
+export interface PullOptions {
+  config?: string;
+  nonInteractive?: boolean;
+  verbose?: boolean;
+}
+
+export async function pullCommand(options: PullOptions): Promise<void>
+
+// Utility functions (exported for testing)
+export function slugify(name: string): string
+export async function getUniqueDirectoryName(basePath: string, desiredName: string): Promise<string>
+```
+
+**Implementation:**
+```typescript
+async function pullCommand(options: PullOptions): Promise<void> {
+  const config = await loadConfig(options.config ?? 'vocareum.yaml');
+  const client = new VocareumClient(apiKey, config.vocareum.api_base_url);
+
+  // Run reconciliation to find orphans
+  const plan = await reconcile(config, client);
+
+  if (plan.orphanedInVocareum.length === 0) {
+    logger.success('No orphaned assignments found.');
+    return;
+  }
+
+  const newAssignments: Assignment[] = [];
+  const newExclusions: string[] = [];
+
+  for (const orphan of plan.orphanedInVocareum) {
+    if (options.nonInteractive) {
+      // Skip in non-interactive mode
+      continue;
+    }
+
+    const choice = await promptChoice('What would you like to do?', [
+      'Import to local repository',
+      'Exclude (hide from future scans)',
+      'Skip (do nothing)',
+    ]);
+
+    if (choice === 'Import to local repository') {
+      const defaultSlug = slugify(orphan.name);
+      const dirName = await prompt('Local directory name:', defaultSlug);
+      const uniqueDirName = await getUniqueDirectoryName('.', dirName);
+
+      const assignment = await importAssignment(client, config.vocareum.course_id, orphan, uniqueDirName);
+      newAssignments.push(assignment);
+    } else if (choice === 'Exclude (hide from future scans)') {
+      newExclusions.push(orphan.id);
+    }
+  }
+
+  // Update config with new assignments and exclusions
+  await updateConfig(options.config ?? 'vocareum.yaml', {
+    assignments: newAssignments,
+    excluded_assignments: newExclusions,
+  });
+}
+
+async function importAssignment(
+  client: VocareumClient,
+  courseId: string,
+  orphan: OrphanedEntity,
+  localPath: string
+): Promise<Assignment> {
+  // Get parts for this assignment
+  const parts = await listParts(client, courseId, orphan.id);
+  const configParts: Part[] = [];
+
+  for (const part of parts) {
+    // Download content
+    const files = await downloadContent(client, courseId, orphan.id, part.id);
+
+    // Write files to local directory
+    await writeFilesToDirectory(localPath, part.path, files);
+
+    configParts.push({
+      part_id: part.id,
+      path: part.path,
+      name: part.name,
+      directories: detectDirectories(files),
+      settings: {},
+    });
+  }
+
+  return {
+    assignment_id: orphan.id,
+    name: orphan.name,
+    path: localPath,
+    create_from_template: false,
+    settings: {},
+    parts: configParts,
+  };
+}
+
+function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/--+/g, '-');
+}
+
+async function getUniqueDirectoryName(basePath: string, desiredName: string): Promise<string> {
+  let name = desiredName;
+  let suffix = 1;
+
+  while (await pathExists(path.join(basePath, name))) {
+    suffix++;
+    name = `${desiredName}-${suffix}`;
+  }
+
+  return name;
+}
+```
+
+**Orphan Filtering:**
+
+The reconciler filters out excluded assignments when identifying orphans:
+
+```typescript
+// In reconciler.ts
+const excludedAssignments = new Set(config.vocareum.excluded_assignments ?? []);
+for (const [id, assignment] of remoteAssignmentMap) {
+  if (!excludedAssignments.has(id)) {
+    orphanedInVocareum.push({
+      type: 'assignment',
+      id,
+      name: assignment.name,
+      message: 'Exists in Vocareum but not in local configuration'
+    });
+  }
+}
+```
+
+---
+
 ## Overview
 
 This document describes the technical architecture for the Vocareum Publisher tool, including system design, module structure, API interactions, data flows, and implementation considerations.
@@ -305,6 +457,7 @@ vocareum-publisher/
 │   ├── commands/                   # Command implementations
 │   │   ├── init.ts                # Init command (fresh + import)
 │   │   ├── publish.ts             # Main publish command
+│   │   ├── pull.ts                # Pull orphaned assignments from Vocareum
 │   │   ├── validate.ts            # Validate config/structure
 │   │   └── inspect.ts             # Inspect template/course
 │   │
@@ -524,6 +677,7 @@ interface VocareumConfig {
   course_id: string;
   template_assignment_id: string;
   api_base_url?: string;
+  excluded_assignments?: string[];  // Assignment IDs to hide from orphan detection
   course_settings?: {
     name?: string;
     description?: string;
@@ -1390,7 +1544,74 @@ Mapping result:
 └──────────────────┘
 ```
 
-### 3. Publish Flow
+### 3. Pull Flow
+
+```
+┌─────────────┐
+│ User runs   │
+│ pull        │
+└──────┬──────┘
+       │
+       v
+┌──────────────────┐
+│ Load & validate  │
+│ vocareum.yaml    │
+└──────┬───────────┘
+       │
+       v
+┌──────────────────┐
+│ Reconcile:       │
+│ find orphaned    │
+│ assignments      │
+└──────┬───────────┘
+       │
+       v
+┌──────────────────┐
+│ For each orphan: │
+│ prompt user      │
+│ action           │
+└──────┬───────────┘
+       │
+       ├───[Import]────────────┐
+       │                       v
+       │              ┌──────────────────┐
+       │              │ Download content │
+       │              │ from Vocareum    │
+       │              └──────┬───────────┘
+       │                     │
+       │                     v
+       │              ┌──────────────────┐
+       │              │ Create local     │
+       │              │ directories      │
+       │              │ + write files    │
+       │              └──────┬───────────┘
+       │                     │
+       │<────────────────────┘
+       │
+       ├───[Exclude]───────────┐
+       │                       v
+       │              ┌──────────────────┐
+       │              │ Add ID to        │
+       │              │ excluded_        │
+       │              │ assignments      │
+       │              └──────┬───────────┘
+       │                     │
+       │<────────────────────┘
+       │
+       v
+┌──────────────────┐
+│ Update           │
+│ vocareum.yaml    │
+│ with changes     │
+└──────┬───────────┘
+       │
+       v
+┌──────────────────┐
+│ Display summary  │
+└──────────────────┘
+```
+
+### 4. Publish Flow
 
 ```
 ┌─────────────┐

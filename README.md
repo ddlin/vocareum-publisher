@@ -77,6 +77,9 @@ vocareum:
   org_id: "12345"
   course_id: "67890"
   template_assignment_id: "99999"
+  excluded_assignments:       # Assignment IDs to hide from orphan detection
+    - "111222"
+    - "333444"
   course_settings:            # Optional course metadata sync
     name: "Intro to ML"
     description: "Spring section"
@@ -150,6 +153,7 @@ publish_history:
 | `vocareum-publish new <path>` | Create new assignment structure |
 | `vocareum-publish validate` | Validate configuration and structure |
 | `vocareum-publish fix` | Interactively fix validation issues |
+| `vocareum-publish pull` | Import or exclude orphaned assignments from Vocareum |
 | `vocareum-publish` | Publish to Vocareum |
 
 ### Publish Options
@@ -161,6 +165,54 @@ vocareum-publish --force-all         # Re-upload everything
 vocareum-publish --sync-deletes      # Delete files not in Git (experimental)
 vocareum-publish --non-interactive   # Skip confirmation prompt
 vocareum-publish --verbose           # Detailed logging
+```
+
+### Pull Command
+
+The `pull` command helps you manage orphaned assignments - assignments that exist in Vocareum but not in your local configuration. This is useful when:
+
+- You've created assignments directly in the Vocareum UI
+- You're onboarding an existing course to Git-based management
+- Assignments were created by another team member
+
+```bash
+vocareum-publish pull                # Interactive mode
+vocareum-publish pull --verbose      # Show detailed output
+vocareum-publish pull --non-interactive  # Skip all orphans
+```
+
+For each orphaned assignment, you can:
+- **Import**: Download content and add to your local repository
+- **Exclude**: Hide from future scans (add to `excluded_assignments`)
+- **Skip**: Do nothing
+
+Example workflow:
+
+```
+$ vocareum-publish pull
+
+Scanning for orphaned assignments...
+Found 2 orphaned assignment(s) in Vocareum.
+
+[1/2] Lab 3: Advanced Topics (ID: 555666)
+? What would you like to do? Import to local repository
+? Local directory name: (lab-3-advanced-topics) lab3-advanced
+  Downloading part 1/2...
+  Downloaded part 1/2 (5 files)
+  Downloading part 2/2...
+  Downloaded part 2/2 (3 files)
+✓ Imported "Lab 3: Advanced Topics" to lab3-advanced/
+
+[2/2] Old Assignment (ID: 777888)
+? What would you like to do? Exclude (hide from future scans)
+✓ Excluded "Old Assignment" from orphan detection
+
+Summary:
+  Imported: 1
+  Excluded: 1
+  Skipped:  0
+
+Updated vocareum.yaml
 ```
 
 ## GitHub Action
