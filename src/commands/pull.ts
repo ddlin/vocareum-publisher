@@ -203,16 +203,30 @@ function comparePartSettings(
 
 /**
  * Detect settings drift for all assignments in config
+ *
+ * @param config - Configuration with assignments
+ * @param client - Vocareum API client
+ * @param skipAssignmentIds - Assignment IDs to skip (stale or excluded)
  */
 async function detectSettingsDrift(
-  config: { assignments: Assignment[]; vocareum: { course_id: string } },
-  client: VocareumClient
+  config: { assignments: Assignment[]; vocareum: { course_id: string; excluded_assignments?: string[] } },
+  client: VocareumClient,
+  skipAssignmentIds: Set<string>
 ): Promise<AssignmentSettingsDrift[]> {
   const driftList: AssignmentSettingsDrift[] = [];
+
+  // Also skip excluded assignments from config
+  const excludedIds = new Set(config.vocareum.excluded_assignments ?? []);
 
   for (const assignment of config.assignments) {
     // Skip assignments without IDs (not yet created in Vocareum)
     if (!assignment.assignment_id) continue;
+
+    // Skip stale assignments (already identified as deleted)
+    if (skipAssignmentIds.has(assignment.assignment_id)) continue;
+
+    // Skip excluded assignments
+    if (excludedIds.has(assignment.assignment_id)) continue;
 
     try {
       // Fetch full assignment details
@@ -539,8 +553,9 @@ export async function pullCommand(options: PullOptions): Promise<void> {
     // Run reconciliation to find orphans and stale assignments
     const plan = await reconcile(config, client);
 
-    // Detect settings drift
-    const settingsDrift = await detectSettingsDrift(config, client);
+    // Detect settings drift (skip stale assignments that are already identified as deleted)
+    const staleAssignmentIds = new Set(plan.staleInConfig.map(s => s.assignment_id));
+    const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds);
 
     const hasOrphans = plan.orphanedInVocareum.length > 0;
     const hasStale = plan.staleInConfig.length > 0;
