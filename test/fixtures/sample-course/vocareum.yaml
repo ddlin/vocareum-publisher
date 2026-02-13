@@ -1,0 +1,21 @@
+version: "1.0"
+
+vocareum:
+  org_id: "12345"
+  course_id: "67890"
+  template_assignment_id: "99999"
+
+assignments:
+  - assignment_id: "11111"
+    name: "Lab 1: Introduction"
+    path: "lab1"
+    parts:
+      - part_id: "22222"
+        path: "part1"
+        name: "Part 1: Hello World"
+
+publish_options:
+  on_missing_id: "skip"
+  auto_commit: false
+
+publish_history: []

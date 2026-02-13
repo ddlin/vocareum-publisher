@@ -50,15 +50,8 @@ examples/test-course*/
 # Claude Code
 .claude/
 
-# Internal documentation (not for public repo)
+# Internal AI/development artifacts (not useful to end users)
 AGENTS.md
 AI_IMPLEMENTATION_PROMPTS.md
-ARCHITECTURE.md
 PRD.md
 PROJECT_SUMMARY.md
-
-# Development-only directories (not for public repo)
-scripts/
-docs/
-test/
-examples/
