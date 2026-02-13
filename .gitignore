@@ -49,3 +49,16 @@ examples/test-course*/
 
 # Claude Code
 .claude/
+
+# Internal documentation (not for public repo)
+AGENTS.md
+AI_IMPLEMENTATION_PROMPTS.md
+ARCHITECTURE.md
+PRD.md
+PROJECT_SUMMARY.md
+
+# Development-only directories (not for public repo)
+scripts/
+docs/
+test/
+examples/
