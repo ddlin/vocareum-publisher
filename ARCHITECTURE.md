@@ -636,7 +636,9 @@ export class VocareumClient {
   ): Promise<void>
 }
 
-type DirectoryType = 'startercode' | 'scripts' | 'docs' | 'data';
+// Part-level: startercode, scripts, lib, asnlib, docs
+// Course-level: course, data, docs, scripts, private, startercode
+type DirectoryType = 'startercode' | 'scripts' | 'docs' | 'data' | 'lib' | 'asnlib' | 'private' | 'course';
 
 interface FileMap {
   [relativePath: string]: Buffer | string;

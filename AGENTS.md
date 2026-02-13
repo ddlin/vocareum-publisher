@@ -418,7 +418,7 @@ const sorted = parts.sort(...);
  * @param courseId - Course ID (string, not number!)
  * @param assignmentId - Assignment ID
  * @param partId - Part ID
- * @param directory - Directory type: startercode, scripts, docs, or data
+ * @param directory - Directory type: startercode, scripts, lib, asnlib, docs, data, private, or course
  * @param files - Map of relative paths to file contents
  * @returns Upload result with succeeded/failed files and directory hash
  * 
@@ -608,10 +608,12 @@ Config[2] → API part with seqnum="2"
 
 ### 3. Change Detection via Hashes
 Only changed directories are uploaded:
-- Hash each directory (startercode, scripts, docs, data)
+- Hash each configured directory (startercode, scripts, lib, asnlib, docs, data, private, course)
 - Store hashes in vocareum.yaml publish_history
 - Compare current hash to last publish
 - Upload only if hash changed
+- Uses `reset: 1` to clear directory before upload (ensures exact Git state)
+- All files in directory uploaded together as single ZIP
 
 ### 4. State Management for CI/CD
 vocareum.yaml stores ALL state:

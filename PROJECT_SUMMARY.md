@@ -27,7 +27,15 @@ An open-source CLI tool and GitHub Action that Vocareum customers can deploy to 
 ### 1. Repository Structure: One Repo Per Course
 - Each course repository contains multiple assignments
 - Each assignment has multiple parts
-- Standard directory structure: `startercode/`, `scripts/`, `docs/`, `data/` (optional per part)
+- Standard directory structure per part (all optional, configurable):
+  - `startercode/` - Student-visible starter code
+  - `scripts/` - Grading scripts
+  - `lib/` - Grading libraries (hidden from students)
+  - `asnlib/` - Assignment libraries
+  - `docs/` - Documentation
+  - `data/` - Datasets
+  - `private/` - Private course files
+  - `course/` - Course-level shared files
 - All configuration in `vocareum.yaml`
 
 ### 2. Creation Workflow: Local Only
@@ -122,6 +130,8 @@ An open-source CLI tool and GitHub Action that Vocareum customers can deploy to 
 - Endpoint: `PUT /api/v2/courses/{cid}/assignments/{aid}/parts/{pid}`
 - Parameters in JSON body: `content[]` with `target`, `zipcontent`, and `reset`
 - Use `zipcontent` (base64 zip) for deterministic directory updates
+- Uses `reset: 1` to clear directory before upload (ensures exact Git state)
+- All files in a directory are uploaded together as a single ZIP
 
 ### 3. No Search Endpoint for Assignments
 - Must list all assignments and filter client-side
@@ -143,6 +153,12 @@ An open-source CLI tool and GitHub Action that Vocareum customers can deploy to 
 - Endpoint: `POST /api/v2/courses/{courseId}/assignments`
 - Body: `{ "method": "copy", "source": "{templateAssignmentId}", "name": "{newName}" }`
 - Response includes `transactionid`; poll `GET /api/v2/transaction/{id}` until `state: "success"` and use `objid` as final assignment ID
+- Timeout: 60 seconds (30 attempts × 2 second intervals)
+
+### 7. ID Discovery and Recovery
+- If assignment copy times out locally but succeeds on server, name-based lookup recovers the ID
+- Part IDs are discovered by seqnum mapping when missing
+- Discovered IDs are automatically persisted to `vocareum.yaml`
 
 ---
 

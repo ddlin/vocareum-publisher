@@ -43,8 +43,10 @@ Add your files to the generated directory structure:
 ```
 lab1-intro/
 ├── part1/
-│   ├── startercode/   # Student-visible files
+│   ├── startercode/   # Student-visible starter code
 │   ├── scripts/       # Grading scripts
+│   ├── lib/           # Grading libraries (hidden from students)
+│   ├── asnlib/        # Assignment libraries
 │   ├── docs/          # Documentation
 │   └── data/          # Datasets
 ```
@@ -165,12 +167,36 @@ course-repo/
 ├── vocareum.yaml         # Configuration
 ├── lab1-intro/
 │   └── part1/
-│       ├── startercode/  # Student code
+│       ├── startercode/  # Student-visible starter code
 │       ├── scripts/      # Grading scripts
+│       ├── lib/          # Grading libraries (hidden)
+│       ├── asnlib/       # Assignment libraries
 │       ├── docs/         # Documentation
 │       └── data/         # Datasets
 └── lab2-analysis/
     └── ...
+```
+
+### Supported Directory Types
+
+| Directory | Description |
+|-----------|-------------|
+| `startercode` | Student-visible starter files |
+| `scripts` | Grading and setup scripts |
+| `lib` | Grading libraries (hidden from students) |
+| `asnlib` | Assignment libraries |
+| `docs` | Documentation files |
+| `data` | Datasets and resources |
+| `private` | Private course files |
+| `course` | Course-level shared files |
+
+Configure which directories to sync per part:
+
+```yaml
+parts:
+  - part_id: "123"
+    path: "part1"
+    directories: ["startercode", "scripts", "lib"]  # Only sync these
 ```
 
 ## Important Notes
@@ -209,9 +235,19 @@ The `auto_commit` option should only be used locally. In CI/CD it is force-disab
 - Base API path: `https://api.vocareum.com/api/v2/`
 - Assignment copy: `POST /api/v2/courses/{courseId}/assignments` with body:
   - `{ "method": "copy", "source": "<templateAssignmentId>", "name": "<newName>" }`
-- Content updates: part `PUT` with `content[].zipcontent` (base64 zip).
-- Part updates may return `transactionid`; publisher polls `GET /api/v2/transaction/{id}`.
-- Failed publish runs are stored in `publish_history` with `status: failed` and `failed[]` entries.
+  - Polls transaction endpoint for up to 60 seconds until complete
+- Content updates: part `PUT` with `content[].zipcontent` (base64 zip)
+  - Uses `reset: 1` to clear directory before upload (ensures exact Git state)
+  - All files in directory uploaded together as a single ZIP
+- Part updates may return `transactionid`; publisher polls `GET /api/v2/transaction/{id}`
+- Failed publish runs are stored in `publish_history` with `status: failed` and `failed[]` entries
+
+### ID Discovery
+
+When an assignment or part ID is missing from config but exists in Vocareum:
+- Assignment IDs are discovered by name lookup (prevents duplicate creation)
+- Part IDs are discovered by seqnum mapping
+- Discovered IDs are automatically saved to `vocareum.yaml`
 
 ## Environment Variables
 
