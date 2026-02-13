@@ -1,7 +1,7 @@
 # Vocareum API Findings
 
-Date: February 13, 2026  
-Repository: `voc-github-actions`  
+Date: February 13, 2026
+Repository: `voc-github-actions`
 Purpose: Internal reference for implementation + external feedback to Vocareum team.
 
 ## Scope of Testing
@@ -14,7 +14,7 @@ We ran live API probes against:
 - Sample assignment: `5137423`
 - Sample part: `5137424`
 
-Testing covered endpoint discovery, auth behavior, response shape, and request contract probing for read/write operations.
+Testing covered endpoint discovery, auth behavior, response shape, request contract probing, and live upload/copy verification.
 
 ## Confirmed Findings
 
@@ -51,83 +51,156 @@ Testing covered endpoint discovery, auth behavior, response shape, and request c
   - Missing both -> `400` with: `Parameter dir or filename must be specified`
   - Unknown filename -> `400` with: `specified source does not exist <filename>`
   - Unknown dir -> `400` with: `<dir> doesn't exist`
+- File listing with `?dir=<directory>` returns `{ files: FileInfo[] }` where each `FileInfo` has `path`, `size`, and optionally `modifiedAt`.
+- Single file download with `?dir=<directory>&filename=<path>` returns file content (format varies — may be raw string, buffer, or object with `content`/`data`/`file`/`base64` field).
 
-## Unresolved / Not Yet Confirmed
+### 5. Content upload contract (confirmed and implemented)
 
-### 1. Upload contract
+Upload uses the **part update endpoint**, not a separate file upload route.
 
-We tested multiple candidate upload patterns, including:
+**Endpoint:**
+
+```
+PUT /api/v2/courses/{courseId}/assignments/{assignmentId}/parts/{partId}
+```
+
+**Headers:**
+
+```
+Authorization: Token <token>
+Content-Type: application/json
+```
+
+**Body:**
+
+```json
+{
+  "update": 1,
+  "content": [
+    {
+      "target": "<directory>",
+      "zipcontent": "<base64-encoded-zip>",
+      "reset": 1
+    }
+  ]
+}
+```
+
+**Field details:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `update` | `number` | Yes | Must be `1` to signal content update |
+| `content` | `array` | Yes | Array of directory upload objects |
+| `content[].target` | `string` | Yes | Directory type (see below) |
+| `content[].zipcontent` | `string` | Yes* | Base64-encoded ZIP archive of files |
+| `content[].url` | `string` | No | Alternative: URL to fetch ZIP from |
+| `content[].reset` | `number` | No | `1` = clear directory before writing, `0` = append/overwrite |
+
+**Supported `target` values (by scope):**
+
+- Part-level: `startercode`, `scripts`, `docs`, `data`, `lib`, `asnlib`
+- Course-level: `course`, `data`, `docs`, `scripts`, `private`, `startercode`
+
+**Response behavior:**
+
+- Synchronous success: `{ status: "success" }`
+- Asynchronous processing: `{ status: "success", transactionid: "<id>" }` — requires polling (see section 5.1)
+- Direct failure: `{ status: "success", state: "failed", message: "..." }`
+
+**Implementation decision:** We use `zipcontent` (base64 ZIP) with `reset: 1` for every upload. This ensures the remote directory exactly matches the local Git state (no leftover files from previous uploads). Files are packaged using a custom ZIP builder that produces standard ZIP format with CRC32 checksums, UTF-8 filenames, and Unix-normalized paths.
+
+**Upload timeout:** 60 seconds (configurable at client level).
+
+### 5.1 Transaction polling for async uploads
+
+Some uploads return a `transactionid` instead of completing synchronously. The client must poll until completion.
+
+**Endpoint:**
+
+```
+GET /api/v2/transaction/{transactionId}
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "state": "pending" | "success" | "failed",
+  "message": "optional error detail"
+}
+```
+
+**Polling behavior:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Poll interval | 1000ms | Time between polls |
+| Max attempts | 30 | Maximum polls before timeout |
+| Effective timeout | 30s | Max wait before throwing |
+
+**State transitions:**
+
+- `pending` → keep polling
+- `success` → upload complete, stop polling
+- `failed` → throw error with `message` (or default message if absent)
+- Timeout → throw error after `maxAttempts * delayMs` milliseconds
+
+### 5.2 Upload endpoint discovery history
+
+Before discovering the correct contract via the Vocareum Postman collection, we tested several candidate patterns that all returned `400 Invalid Request`:
 
 - `POST /api/v2/upload` (multipart + JSON variants)
-- `POST/PUT/PATCH /api/v2/courses/{cid}/assignments/{aid}/parts/{pid}/files` with combinations of:
-  - `type`, `dir`, `filename`
-  - raw body vs multipart
-  - assignment/course/part IDs in body or query
+- `POST/PUT/PATCH .../parts/{pid}/files` with `type`, `dir`, `filename` combinations
+- Raw body vs multipart form data
 
-All tested variants returned:
+These are **not** the correct upload contract. The correct approach is the part PUT endpoint documented above.
 
-- `400` with `Invalid Request`
+### 6. File deletion (experimental)
 
-Result: upload endpoint *path likely exists*, but exact payload contract remains undocumented/unclear from black-box probing.
+```
+DELETE /api/v2/courses/{cid}/assignments/{aid}/parts/{pid}/files?dir={directory}&filename={filePath}
+```
 
-### 1.1 Postman-documented upload/update contract (provided by team)
+**Observed behavior:**
 
-Per Vocareum Postman example, file/content updates are done via:
+- Endpoint may not be supported on all Vocareum deployments.
+- Returns `404` or `405` when not available.
+- Our implementation handles these gracefully (logs warning, continues).
 
-- `PUT /api/v2/courses/{courseId}/assignments/{assignmentId}/parts/{partId}`
-- Header:
-  - `Authorization: Token <token>`
-  - `Content-Type: application/json`
-- Body includes:
-  - `name` (part name)
-  - `content` (array)
-  - `update` flag
+**Current usage:** Optional, controlled by `syncDeletes` flag. When enabled, our tool lists remote files, compares with local, and deletes remote-only files. However, since we use `reset: 1` on uploads, the directory is cleared server-side before writing — so explicit deletion is typically redundant for files within uploaded directories.
 
-`content[]` item fields:
+### 7. Assignment copy contract (confirmed via live test)
 
-- `target` (required directory target)
-- `url` (optional source URL for zip content)
-- `zipcontent` (optional base64 zip archive)
-- `reset` (`0` = append/write, `1` = clear target then write)
+**Endpoint:**
 
-Observed target sets in provided Postman notes:
+```
+POST /api/v2/courses/{courseId}/assignments
+```
 
-- `lib | asnlib | docs | scripts | startercode`
-- `course | data | docs | scripts | private | startercode`
+**Body:**
 
-Project decision: use `zipcontent` (base64 zip) for deterministic Git -> Vocareum uploads.
+```json
+{
+  "method": "copy",
+  "source": "<source-assignment-id>",
+  "name": "<new assignment name>"
+}
+```
 
-### 2. Historical invalid copy variants (for reference)
+**Response:**
 
-Before reading Postman collection details, we tested several copy endpoint guesses:
+- `202`, `status=success`, `message=Started`, with `transactionid`
+- Poll `GET /api/v2/transaction/{transactionid}` until `success`
+- On success, `objid` contains the new assignment ID
 
-- `POST /api/v2/assignments/{template_id}/copy`
-- `POST /api/v2/courses/{cid}/assignments/{template_id}/copy`
+**Important nuance:**
 
-These returned `400 Invalid Request` and are not the correct contract.
+- Initial copy response may include an `objid` placeholder (observed as course ID), not final assignment ID.
+- Client should always poll when `transactionid` is present and trust `objid` from the completed transaction.
 
-### 2.1 Confirmed assignment copy contract (Postman + live test)
-
-Confirmed request:
-
-- `POST /api/v2/courses/{courseId}/assignments`
-- Body:
-  - `method: "copy"`
-  - `source: "<source-assignment-id>"`
-  - `name: "<new assignment name>"`
-
-Live-tested on `courseId=201303` with `source=5137423`:
-
-- Initial response: `202`, `status=success`, `message=Started`, with `transactionid`.
-- Transaction endpoint:
-  - `GET /api/v2/transaction/{transactionid}`
-  - progresses `pending -> success`
-  - on success returns final copied assignment id in `objid`.
-
-Important nuance:
-
-- Initial copy response may include an `objid` placeholder (observed as course id), not final assignment id.
-- Client should always poll transaction when `transactionid` is present and trust `objid` from transaction success.
+Live-tested on `courseId=201303` with `source=5137423`: copy returned `202`, transaction progressed `pending → success`, final `objid` contained the new assignment ID.
 
 ## Data Contract Observations
 
@@ -135,7 +208,7 @@ Important nuance:
 
 - Most API docs/assumptions indicate IDs are strings.
 - In assignment list responses, `part_ids` were observed as numeric values.
-- We should normalize IDs to strings in our tool to avoid comparison bugs.
+- We normalize all IDs to strings in our tool to avoid comparison bugs.
 
 ### 2. Content-Type inconsistency
 
@@ -148,16 +221,36 @@ Important nuance:
   - `400` + `Invalid Request`
 - This makes integration significantly harder and increases trial-and-error.
 
+### 4. Download response format inconsistency
+
+- File download responses vary by file type and server behavior:
+  - Sometimes raw string content
+  - Sometimes a Buffer
+  - Sometimes a JSON object with `content`, `data`, `file`, or `base64` fields
+- Our implementation attempts all known response shapes and falls back gracefully.
+
 ## Implementation Decisions We Applied
 
 Based on confirmed behavior, this project now uses:
 
 - `Authorization: Token <token>`
 - `api/v2` route family
-- parts route with course scope:
+- Parts route with course scope:
   - `/api/v2/courses/{cid}/assignments/{aid}/parts`
-- files list/delete route with course+assignment+part scope and `dir`/`filename` params:
-  - `/api/v2/courses/{cid}/assignments/{aid}/parts/{pid}/files`
+- Content upload via part PUT:
+  - `PUT /api/v2/courses/{cid}/assignments/{aid}/parts/{pid}`
+  - With `content[].zipcontent` (base64 ZIP) and `reset: 1`
+- Transaction polling:
+  - `GET /api/v2/transaction/{txnId}`
+  - 30-attempt max, 1s interval
+- File listing:
+  - `GET /api/v2/courses/{cid}/assignments/{aid}/parts/{pid}/files?dir=<dir>`
+- File download:
+  - `GET /api/v2/courses/{cid}/assignments/{aid}/parts/{pid}/files?dir=<dir>&filename=<path>`
+- File deletion (experimental):
+  - `DELETE /api/v2/courses/{cid}/assignments/{aid}/parts/{pid}/files?dir=<dir>&filename=<path>`
+- Assignment copy:
+  - `POST /api/v2/courses/{cid}/assignments` with `method: "copy"`, `source`, `name`
 
 ## Feedback for Vocareum Team (Recommended Improvements)
 
@@ -184,20 +277,22 @@ Based on confirmed behavior, this project now uses:
 
 - JSON responses should consistently return `Content-Type: application/json`.
 
-### 5. Clarify upload and copy API contracts
+### 5. Clarify upload API contract publicly
 
-- Upload:
-  - canonical endpoint (appears to be part `PUT`, not separate file endpoint)
-  - explicit schema for `content[]` objects and `target` enum by lab type
-  - max file size and limits
-  - per-directory semantics (`startercode/scripts/docs/data`)
-  - exact semantics for `reset` and `update`
-- Copy:
-  - canonical route
-  - required payload fields
-  - expected response structure (new assignment ID + part IDs)
+- The `PUT /parts/{pid}` with `content[].zipcontent` payload is non-obvious.
+- Documenting this clearly would save significant integration effort:
+  - Exact schema for `content[]` objects
+  - Valid `target` values per lab type and scope
+  - Max file/payload size limits
+  - Exact semantics of `reset` (0 vs 1) and `update` flags
+  - Whether multiple `content[]` entries in a single request are supported
 
-### 6. Improve status code usage
+### 6. Standardize download response format
+
+- File download via `GET .../files?dir=...&filename=...` returns different shapes depending on context.
+- A consistent format (e.g., always base64 in a JSON wrapper, or always raw bytes with Content-Disposition) would simplify clients.
+
+### 7. Improve status code usage
 
 - Distinguish:
   - `401` invalid token
@@ -205,18 +300,12 @@ Based on confirmed behavior, this project now uses:
   - `404` missing resource
   - `422` validation failure
 
-### 7. Add minimal endpoint introspection
+### 8. Add minimal endpoint introspection
 
 - A version/capabilities endpoint would allow safer client auto-detection:
   - supported features (copy/upload/delete/list)
   - API version
   - auth mode
-
-## Next Recommended Steps for Our Project
-
-1. Validate upload and copy contracts using official Vocareum API examples or direct support guidance.
-2. Add integration tests that run against a dedicated sandbox course.
-3. Keep API adapter isolated so endpoint contract changes are localized.
 
 ## Reproducible curl Probes
 
@@ -282,46 +371,64 @@ curl -sS "$BASE/api/v2/courses/$CID/assignments/$AID/parts" \
 curl -sS "$BASE/api/v2/courses/$CID/assignments/$AID/parts/$PID/files" \
   -H "Authorization: Token $TOKEN"
 
-# Expected: 400 "<dir> doesn't exist" (if dir is missing server-side)
+# List files in a directory
 curl -sS "$BASE/api/v2/courses/$CID/assignments/$AID/parts/$PID/files?dir=startercode" \
   -H "Authorization: Token $TOKEN"
 
-# Expected: 400 "specified source does not exist <filename>" (if file not present)
-curl -sS "$BASE/api/v2/courses/$CID/assignments/$AID/parts/$PID/files?filename=main.py" \
+# Download specific file
+curl -sS "$BASE/api/v2/courses/$CID/assignments/$AID/parts/$PID/files?dir=startercode&filename=main.py" \
   -H "Authorization: Token $TOKEN"
 ```
 
-### 5. Unresolved write contracts (documented failures)
+### 5. Content upload (confirmed working contract)
 
 ```bash
-# Upload candidate (all tested variants currently return 400 Invalid Request)
-curl -sS -X POST "$BASE/api/v2/upload" \
-  -H "Authorization: Token $TOKEN" \
-  -F "courseid=$CID" \
-  -F "assignmentid=$AID" \
-  -F "partid=$PID" \
-  -F "type=startercode" \
-  -F "file=@./probe.txt;filename=probe.txt"
+# Step 1: Create a ZIP archive and base64-encode it
+echo "print('hello from probe')" > /tmp/probe_main.py
+cd /tmp && zip probe_upload.zip probe_main.py && cd -
+ZIP_B64=$(base64 -w 0 /tmp/probe_upload.zip)
 
-# Copy candidate (currently returns 400 Invalid Request in tested variants)
+# Step 2: Upload via part PUT
+curl -sS -X PUT "$BASE/api/v2/courses/$CID/assignments/$AID/parts/$PID" \
+  -H "Authorization: Token $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"update\": 1,
+    \"content\": [
+      {
+        \"target\": \"startercode\",
+        \"zipcontent\": \"$ZIP_B64\",
+        \"reset\": 1
+      }
+    ]
+  }"
+
+# Step 3: If response contains transactionid, poll until complete
+# TXN_ID="<transactionid from step 2>"
+# curl -sS "$BASE/api/v2/transaction/$TXN_ID" \
+#   -H "Authorization: Token $TOKEN"
+```
+
+### 6. Assignment copy (confirmed working)
+
+```bash
+# Initiate copy
 curl -sS -X POST "$BASE/api/v2/courses/$CID/assignments" \
   -H "Authorization: Token $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"method":"copy","source":"'"$AID"'","name":"Probe Copy"}'
 
-# Postman-documented update/content pattern (to validate with real payload)
-curl -sS -X PUT "$BASE/api/v2/courses/$CID/assignments/$AID/parts/$PID" \
-  -H "Authorization: Token $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Part-1",
-    "content": [
-      {
-        "target": "docs",
-        "zipcontent": "<base64-zip-bytes>",
-        "reset": 1
-      }
-    ],
-    "update": 1
-  }'
+# Poll transaction (replace TXN_ID with transactionid from response)
+# curl -sS "$BASE/api/v2/transaction/$TXN_ID" \
+#   -H "Authorization: Token $TOKEN"
+```
+
+### 7. File deletion (experimental)
+
+```bash
+# Delete a specific file from a directory
+curl -sS -X DELETE "$BASE/api/v2/courses/$CID/assignments/$AID/parts/$PID/files?dir=startercode&filename=probe_main.py" \
+  -H "Authorization: Token $TOKEN"
+
+# Note: may return 404 or 405 if endpoint is not available
 ```
