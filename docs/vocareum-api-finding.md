@@ -139,6 +139,48 @@ PUT /api/v2/courses/{cid}/assignments/{aid}/parts/{pid}
 
 **Recommendation:** Return as integers, or document the string format clearly.
 
+### `submission_filters` format varies
+
+API responses return `submission_filters` in array format:
+```json
+"submission_filters": ["*.py", "*.txt"]
+```
+
+But the update endpoint accepts object format:
+```json
+"submission_filters": { "include": ["*.py"], "exclude": ["*.pyc"] }
+```
+
+**Impact:** Clients must normalize between formats when reading then writing.
+
+**Recommendation:** Accept both formats on write, or standardize on one format.
+
+### Null vs undefined in responses and requests
+
+API responses return `null` for unset optional fields:
+```json
+{ "container_image": null, "labtype": null }
+```
+
+But update requests reject `null` values - must omit the field entirely (undefined).
+
+**Impact:** Clients must filter out null values before sending updates, or get validation errors.
+
+**Recommendation:** Either:
+- Accept `null` on updates (treat as "clear this field")
+- Return absent fields as undefined (omit from response) instead of null
+
+### Field presence inconsistent
+
+When reading assignment/part settings, some unset fields are:
+- Completely absent from response (undefined)
+- Present with `null` value
+- Present with empty string `""`
+
+**Impact:** Comparison logic must treat null, undefined, and absent as equivalent to avoid false positives.
+
+**Recommendation:** Standardize on one representation for "unset" (suggest: omit field entirely).
+
 ---
 
 ## Documentation Gaps
@@ -178,6 +220,8 @@ PUT /api/v2/courses/{cid}/assignments/{aid}/parts/{pid}
 | Medium | Standardize ID types as strings |
 | Medium | Standardize JSON Content-Type headers |
 | Medium | Document which fields work via API vs UI-only |
+| Medium | Standardize null handling (accept null on updates or omit from responses) |
+| Medium | Standardize `submission_filters` format (array vs object) |
 | Low | Add capabilities/introspection endpoint |
 | Low | Standardize file download response format |
 
@@ -195,6 +239,9 @@ PUT /api/v2/courses/{cid}/assignments/{aid}/parts/{pid}
 | File download format varies | Try multiple response shapes, fallback gracefully |
 | Rate limiting on rapid requests | Retry with exponential backoff |
 | Async operations | Poll `/api/v2/transaction/{id}` until complete |
+| `submission_filters` format varies | `normalizeSubmissionFilters()` converts array to object format |
+| Null values in responses | `nullToUndefined()` helper filters nulls before API calls |
+| Null/undefined comparison | `settingsDiffer()` treats null and undefined as equivalent |
 
 ---
 

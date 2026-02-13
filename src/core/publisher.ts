@@ -7,6 +7,8 @@
 import * as path from 'path';
 import type { Config, PublishHistory } from '../types/config';
 import { normalizeSubmissionFilters, nullToUndefined } from '../types/config';
+import type { PartSettings } from '../types/config';
+import type { ApiPartSettings } from '../types/api';
 import type { PublishResult, PublishOperationOptions } from '../types/state';
 import { VocareumClient } from '../api/client';
 import { reconcile, displayPlan } from './reconciler';
@@ -19,6 +21,62 @@ import { updateConfig } from './config';
 import { commitChanges, getCommitSha, getGitUserName } from '../utils/git';
 import { logger } from '../utils/logger';
 import { promptConfirm } from '../utils/prompts';
+
+function isHttp400(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const maybeResponse = error as { response?: { status?: number } };
+  return maybeResponse.response?.status === 400;
+}
+
+function sanitizeSubmissionFilters(
+  filters: ReturnType<typeof normalizeSubmissionFilters>
+): ApiPartSettings['submission_filters'] | undefined {
+  if (!filters) return undefined;
+  const include = filters.include?.filter((v) => v.length > 0);
+  const exclude = filters.exclude?.filter((v) => v.length > 0);
+  const list = filters.list?.filter((v) => v.length > 0);
+  if ((!include || include.length === 0) && (!exclude || exclude.length === 0) && (!list || list.length === 0)) {
+    return undefined;
+  }
+  return { include, exclude, list };
+}
+
+function buildPartSettingsPayload(
+  partName: string,
+  partSettings: PartSettings | undefined,
+  mode: 'full' | 'safe'
+): ApiPartSettings {
+  const normalizedFilters = sanitizeSubmissionFilters(normalizeSubmissionFilters(partSettings?.submission_filters));
+  const base: ApiPartSettings = {
+    name: partName,
+    submission_filters: normalizedFilters,
+    session_length: nullToUndefined(partSettings?.session_length),
+    monthly_dollar: nullToUndefined(partSettings?.monthly_dollar),
+    monthly_time: nullToUndefined(partSettings?.monthly_time),
+    total_time: nullToUndefined(partSettings?.total_time),
+    total_dollar: nullToUndefined(partSettings?.total_dollar),
+  };
+
+  if (mode === 'safe') {
+    return base;
+  }
+
+  return {
+    ...base,
+    cloud_labs: nullToUndefined(partSettings?.cloud_labs),
+    instant_aws_access: nullToUndefined(partSettings?.instant_aws_access),
+    late_penalty_percent: nullToUndefined(partSettings?.late_penalty_percent),
+    late_penalty_percent_rule: nullToUndefined(partSettings?.late_penalty_percent_rule),
+    deadlinedate: nullToUndefined(partSettings?.deadlinedate),
+    endlab: nullToUndefined(partSettings?.endlab),
+    labtype: nullToUndefined(partSettings?.labtype),
+    container_image: nullToUndefined(partSettings?.container_image),
+    number_of_submissions: nullToUndefined(partSettings?.number_of_submissions),
+    lab_interface: nullToUndefined(partSettings?.lab_interface),
+    databricks_maxusers: nullToUndefined(partSettings?.databricks_maxusers),
+    tags: nullToUndefined(partSettings?.tags),
+  };
+}
 
 /**
  * Execute publish workflow
@@ -371,27 +429,17 @@ export async function publish(
         }
         try {
           logger.info(`Updating part settings: ${partName}`);
-          await updatePart(client, workingConfig.vocareum.course_id, assignmentId, partId, {
-            name: partName,  // Required for all part updates
-            submission_filters: normalizeSubmissionFilters(partSettings?.submission_filters),
-            cloud_labs: nullToUndefined(partSettings?.cloud_labs),
-            instant_aws_access: nullToUndefined(partSettings?.instant_aws_access),
-            session_length: nullToUndefined(partSettings?.session_length),
-            monthly_dollar: nullToUndefined(partSettings?.monthly_dollar),
-            monthly_time: nullToUndefined(partSettings?.monthly_time),
-            total_time: nullToUndefined(partSettings?.total_time),
-            total_dollar: nullToUndefined(partSettings?.total_dollar),
-            late_penalty_percent: nullToUndefined(partSettings?.late_penalty_percent),
-            late_penalty_percent_rule: nullToUndefined(partSettings?.late_penalty_percent_rule),
-            deadlinedate: nullToUndefined(partSettings?.deadlinedate),
-            endlab: nullToUndefined(partSettings?.endlab),
-            labtype: nullToUndefined(partSettings?.labtype),
-            container_image: nullToUndefined(partSettings?.container_image),
-            number_of_submissions: nullToUndefined(partSettings?.number_of_submissions),
-            lab_interface: nullToUndefined(partSettings?.lab_interface),
-            databricks_maxusers: nullToUndefined(partSettings?.databricks_maxusers),
-            tags: nullToUndefined(partSettings?.tags),
-          });
+          const fullPayload = buildPartSettingsPayload(partName, partSettings, 'full');
+          try {
+            await updatePart(client, workingConfig.vocareum.course_id, assignmentId, partId, fullPayload);
+          } catch (error) {
+            if (!isHttp400(error)) {
+              throw error;
+            }
+            logger.warn(`Part settings update rejected for ${partId}; retrying with safe subset`);
+            const safePayload = buildPartSettingsPayload(partName, partSettings, 'safe');
+            await updatePart(client, workingConfig.vocareum.course_id, assignmentId, partId, safePayload);
+          }
           logger.success(`Updated part ${partName}`);
         } catch (error) {
           logger.error(`Failed to update part settings for ${partId}`, { error });

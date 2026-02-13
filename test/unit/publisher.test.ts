@@ -359,4 +359,77 @@ describe('publish', () => {
     expect(passedConfig.assignments).toHaveLength(1);
     expect(passedConfig.assignments[0].path).toBe('lab2');
   });
+
+  it('should retry part settings update with safe payload after 400', async () => {
+    const assignment = {
+      ...config.assignments[0],
+      assignment_id: 'asn-1',
+      parts: [
+        {
+          part_id: 'part-1',
+          path: 'part1',
+          name: 'Part 1',
+          settings: {
+            cloud_labs: false,
+            session_length: '3600',
+            submission_filters: { include: ['*.py'], exclude: [] },
+          },
+        },
+      ],
+    };
+
+    const plan: ReconciliationPlan = {
+      config,
+      course: { type: 'skip' },
+      assignments: [
+        {
+          type: 'update',
+          assignment,
+          parts: [
+            {
+              type: 'update',
+              part: assignment.parts[0],
+              contentChanged: false,
+              metadataChanged: true,
+              reason: 'Settings changed',
+            },
+          ],
+          assignmentMetadataChanged: false,
+        },
+      ],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 1,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+      staleInConfig: [],
+    };
+    reconcileMock.mockResolvedValue(plan);
+    updatePartMock
+      .mockRejectedValueOnce({ response: { status: 400 } })
+      .mockResolvedValueOnce(undefined);
+
+    const result = await publish(config, client, baseOptions);
+
+    expect(result.success).toBe(true);
+    expect(updatePartMock).toHaveBeenCalledTimes(2);
+    expect(updatePartMock.mock.calls[0][4]).toMatchObject({
+      name: 'Part 1',
+      cloud_labs: false,
+      session_length: '3600',
+      submission_filters: { include: ['*.py'], exclude: [], list: undefined },
+    });
+    expect(updatePartMock.mock.calls[1][4]).toMatchObject({
+      name: 'Part 1',
+      session_length: '3600',
+      submission_filters: { include: ['*.py'], exclude: [], list: undefined },
+    });
+    expect(updatePartMock.mock.calls[1][4].cloud_labs).toBeUndefined();
+  });
 });
