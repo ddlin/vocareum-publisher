@@ -940,10 +940,12 @@ function isRetryable(error: any): boolean {
 **Purpose:** Compare local configuration with Vocareum state to determine required actions.
 
 **Key Responsibilities:**
-- Fetch current state from Vocareum
+- Fetch current state from Vocareum (list assignments and parts)
+- Fetch full details for each assignment/part being compared (for accurate settings comparison)
 - Compare with local configuration
 - Generate action plan (create/update/skip)
-- Detect conflicts and missing entities
+- Detect orphaned assignments (in Vocareum but not in config)
+- Detect stale assignments (in config but deleted from Vocareum)
 - Estimate API call count
 
 **Public API:**
@@ -997,6 +999,22 @@ export async function reconcile(
 
 export function displayPlan(plan: ReconciliationPlan): void
 ```
+
+**Settings Comparison:**
+
+For accurate settings comparison, the reconciler fetches full details for each assignment and part:
+
+```typescript
+// For each assignment being updated
+const fullAssignment = await getAssignment(client, courseId, assignmentId);
+const metadataChanged = detectAssignmentSettingsChanged(configAssignment, fullAssignment);
+
+// For each part being updated
+const fullPart = await getPart(client, courseId, assignmentId, partId);
+const partMetadataChanged = detectPartSettingsChanged(configPart, fullPart);
+```
+
+This ensures we compare against all available settings fields, not just those returned by list endpoints.
 
 **Change Detection:**
 ```typescript
