@@ -80,6 +80,7 @@ export async function newCommand(assignmentPath: string | undefined): Promise<vo
     name: name,
     path: assignmentDir,
     assignment_id: null as string | null, // New, so no ID
+    create_from_template: true,
     parts: parts.map(p => ({
       path: p,
       part_id: null as string | null,

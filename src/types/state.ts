@@ -82,6 +82,8 @@ export interface AssignmentAction {
   templateId?: string;
   /** True when assignment_id was discovered via name lookup and should be persisted */
   idDiscoveredByName?: boolean;
+  /** True when assignment metadata differs from remote and needs updating */
+  assignmentMetadataChanged?: boolean;
 }
 
 /**
@@ -206,6 +208,8 @@ export interface PublishOperationOptions {
   nonInteractive?: boolean;
   autoCommit?: boolean;
   syncDeletes?: boolean;
+  onMissingId?: 'skip' | 'abort';
+  abortOnError?: boolean;
   configPath?: string;
   assignment?: string;
   part?: string;

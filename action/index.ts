@@ -20,10 +20,13 @@ async function run(): Promise<void> {
 
     const configFile = core.getInput('config-file') || 'vocareum.yaml';
     const dryRun = core.getBooleanInput('dry-run');
+    const nonInteractive = core.getBooleanInput('non-interactive');
     const syncDeletes = core.getBooleanInput('sync-deletes');
-    const autoCommit = core.getBooleanInput('auto-commit');
+    const requestedAutoCommit = core.getBooleanInput('auto-commit');
     const verbose = core.getBooleanInput('verbose');
     const assignmentValues = core.getInput('assignment');
+    const partValues = core.getInput('part');
+    const forceAll = core.getBooleanInput('force-all');
 
     // 2. Configure Logger
     // We rely on standard console output which Actions captures.
@@ -36,39 +39,21 @@ async function run(): Promise<void> {
     const client = new VocareumClient(apiKey, config.vocareum.api_base_url);
 
     // 4. Construct Options
+    if (requestedAutoCommit) {
+      logger.warn('Auto-commit is disabled in GitHub Actions runtime.');
+    }
+
     const options: PublishOperationOptions = {
       dryRun,
+      nonInteractive,
       syncDeletes,
-      autoCommit,
+      autoCommit: false,
+      configPath: configFile,
+      assignment: assignmentValues || undefined,
+      part: partValues || undefined,
+      forceAll,
       verbose,
     };
-
-    // Filter assignments if specific one requested
-    // Since publish() processes everything in config, we might need to filter the config itself?
-    // OR we relies on `reconcile` to filter?
-    // `reconcile` iterates `config.assignments`.
-    // If I modify `config.assignments` here to only include the requested one, `reconcile` will only see that one.
-    // However, `reconcile` also compares with `publish_history`.
-    // If we only process one, we shouldn't remove others from history?
-    // `reconcile` logic:
-    // `for (const assignment of config.assignments)` checks for changes.
-    // If I filter `config.assignments`, `reconcile` will only check those.
-    // It WON'T detect deletions for missing assignments because it iterates CONFIG assignments.
-    // But `reconcile` DOES iterate valid Assignments in config.
-    // So filtering config.assignments is safe for "publish specific assignment".
-
-    if (assignmentValues) {
-      const filters = assignmentValues.split(',').map((s: string) => s.trim());
-      const initialCount = config.assignments.length;
-      config.assignments = config.assignments.filter(a => filters.includes(a.name) || filters.includes(a.path));
-      logger.info(`Filtered assignments: ${config.assignments.length}/${initialCount} match "${assignmentValues}"`);
-
-      if (config.assignments.length === 0) {
-        logger.warn('No assignments matched the filter.');
-        core.setOutput('success', 'true'); // Not a failure, just nothing done
-        return;
-      }
-    }
 
     logger.info(`Starting publish process for course ${config.vocareum.course_id}...`);
 

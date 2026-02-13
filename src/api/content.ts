@@ -218,13 +218,67 @@ export async function uploadContent(
  * @returns Map of relative paths to file contents
  */
 export function downloadContent(
-  _client: VocareumClient,
-  _partId: string
+  client: VocareumClient,
+  courseId: string,
+  assignmentId: string,
+  partId: string
 ): Promise<FileMap> {
-  // TODO: Implement download logic
-  // This likely returns a zip stream?
-  // For Phase 3 foundation, we might just stub or guess
-  return Promise.reject(new APIError('Download not implemented', 501));
+  return (async () => {
+    const directories: DirectoryType[] = ['startercode', 'scripts', 'docs', 'data'];
+    const downloaded: FileMap = {};
+    let attempts = 0;
+
+    for (const directory of directories) {
+      const files = await listFiles(client, courseId, assignmentId, partId, directory);
+      for (const file of files) {
+        attempts += 1;
+        try {
+          const response = await client.request<unknown>({
+            method: 'GET',
+            url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`,
+            params: {
+              dir: directory,
+              filename: file.path,
+            },
+          });
+
+          const key = `${directory}/${file.path}`;
+          if (Buffer.isBuffer(response)) {
+            downloaded[key] = response;
+            continue;
+          }
+
+          if (typeof response === 'string') {
+            downloaded[key] = response;
+            continue;
+          }
+
+          if (response !== null && typeof response === 'object') {
+            const obj = response as { content?: string; data?: string; file?: string; base64?: string };
+            const content = obj.content ?? obj.data ?? obj.file ?? obj.base64;
+            if (typeof content === 'string') {
+              const decoded = Buffer.from(content, 'base64');
+              // If content is not base64, keep as text.
+              downloaded[key] = decoded.length > 0 ? decoded : content;
+            }
+          }
+        } catch (error) {
+          logger.warn(`Failed to download ${directory}/${file.path}: ${error instanceof Error ? error.message : 'Unknown'}`);
+        }
+      }
+    }
+
+    if (Object.keys(downloaded).length === 0) {
+      throw new APIError(
+        attempts === 0
+          ? `No files found to download for part ${partId}`
+          : `Download endpoint did not return file contents for part ${partId}`,
+        501
+      );
+    }
+
+    return downloaded;
+  })();
 }
 
 /**

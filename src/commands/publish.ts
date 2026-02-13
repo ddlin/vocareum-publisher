@@ -52,7 +52,12 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
       nonInteractive,
       autoCommit,
       syncDeletes: options.syncDeletes ?? config.publish_options?.sync_deletes ?? false,
+      onMissingId: options.onMissingId ?? config.publish_options?.on_missing_id ?? 'skip',
+      abortOnError: options.abortOnError ?? config.publish_options?.abort_on_error ?? false,
       configPath,
+      assignment: options.assignment,
+      part: options.part,
+      forceAll: options.forceAll ?? false,
     };
 
     logger.info(`Starting publish process for course ${config.vocareum.course_id}...`);

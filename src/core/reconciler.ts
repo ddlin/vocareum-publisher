@@ -32,7 +32,8 @@ import { logger } from '../utils/logger';
 export async function reconcile(
   config: Config,
   client: VocareumClient,
-  lastPublishHistory?: PublishHistory
+  lastPublishHistory?: PublishHistory,
+  options: { forceAll?: boolean; onMissingId?: 'skip' | 'abort' } = {}
 ): Promise<ReconciliationPlan> {
   logger.info('Fetching current state from Vocareum...');
 
@@ -65,16 +66,19 @@ export async function reconcile(
 
   const assignments: AssignmentAction[] = [];
   const orphanedInVocareum: OrphanedEntity[] = [];
+  const onMissingId = options.onMissingId ?? 'skip';
 
   // 3. Process Config Assignments
   for (const configAssignment of config.assignments) {
     let assignmentActionType: 'create' | 'update' | 'skip' | 'error' = 'skip';
-    let remoteAssignment = null;
+    let remoteAssignment: { id: string; name: string; description?: string; due_date?: string } | null = null;
     let idDiscoveredByName = false;
+    let assignmentMetadataChanged = false;
+    let assignmentReason: string | undefined;
 
     if (configAssignment.assignment_id !== undefined && configAssignment.assignment_id !== null) {
       // Lookup by explicit ID
-      remoteAssignment = remoteAssignmentMap.get(configAssignment.assignment_id);
+      remoteAssignment = remoteAssignmentMap.get(configAssignment.assignment_id) ?? null;
       if (remoteAssignment) {
         assignmentActionType = 'update';
         // Remove from map to track orphans
@@ -101,7 +105,12 @@ export async function reconcile(
         configAssignment.assignment_id = foundByName.id;
         remoteAssignmentMap.delete(foundByName.id);
       } else {
-        assignmentActionType = 'create';
+        if (configAssignment.create_from_template === true) {
+          assignmentActionType = 'create';
+        } else {
+          assignmentActionType = onMissingId === 'abort' ? 'error' : 'skip';
+          assignmentReason = `Missing assignment_id and create_from_template is false (on_missing_id=${onMissingId})`;
+        }
       }
     }
 
@@ -109,6 +118,13 @@ export async function reconcile(
 
     // If we are updating, we need to check parts
     if (assignmentActionType === 'update' && remoteAssignment) {
+      assignmentMetadataChanged =
+        configAssignment.name !== remoteAssignment.name ||
+        (configAssignment.settings?.description !== undefined &&
+          configAssignment.settings.description !== remoteAssignment.description) ||
+        (configAssignment.settings?.due_date !== undefined &&
+          configAssignment.settings.due_date !== remoteAssignment.due_date);
+
       // Fetch parts
       const remoteParts = await listParts(client, config.vocareum.course_id, remoteAssignment.id);
 
@@ -127,7 +143,8 @@ export async function reconcile(
             configAssignment.path,
             configPart.path,
             configPart.directories ?? ['startercode', 'scripts', 'docs', 'data'],
-            lastPublishHistory
+            lastPublishHistory,
+            options.forceAll
           );
 
           // Check for metadata changes (name)
@@ -160,10 +177,10 @@ export async function reconcile(
           }
         }
       } catch (error) {
-        logger.error(`Part mapping failed for ${configAssignment.name}: ${error instanceof Error ? error.message : 'Unknown'}`);
-        // If mapping fails, we can't update parts reliably.
-        // Might treat as error action
-        // for now continue but mark assignment as error?
+        const message = error instanceof Error ? error.message : 'Unknown';
+        logger.error(`Part mapping failed for ${configAssignment.name}: ${message}`);
+        assignmentActionType = 'error';
+        assignmentReason = `Part mapping failed: ${message}`;
       }
     } else if (assignmentActionType === 'create') {
       // For creation, we mark all parts as needing creation/upload
@@ -191,6 +208,8 @@ export async function reconcile(
       willCreate: assignmentActionType === 'create',
       templateId: config.vocareum.template_assignment_id,
       idDiscoveredByName,
+      assignmentMetadataChanged,
+      reason: assignmentReason,
     });
   }
 
@@ -208,12 +227,14 @@ export async function reconcile(
   const summary = {
     coursesToUpdate: courseAction.type === 'update' ? 1 : 0,
     assignmentsToCreate: assignments.filter(a => a.type === 'create').length,
-    assignmentsToUpdate: assignments.filter(a => a.type === 'update' && a.parts.some(p => p.type !== 'skip')).length,
+    assignmentsToUpdate: assignments.filter(
+      (a) => a.type === 'update' && (a.parts.some(p => p.type !== 'skip') || a.assignmentMetadataChanged === true)
+    ).length,
     assignmentsWithDiscoveredIds: assignments.filter(a => a.idDiscoveredByName === true).length,
     assignmentsToSkip: assignments.filter(a => a.type === 'skip' || (a.type === 'update' && a.parts.every(p => p.type === 'skip'))).length,
     partsToCreate: assignments.reduce((sum, a) => sum + (a.willCreate === true ? a.parts.length : 0), 0),
     partsToUpdate: assignments.reduce((sum, a) => sum + a.parts.filter(p => a.willCreate !== true && p.type === 'update').length, 0),
-    estimatedApiCalls: 0 // TODO: calculate based on actions
+    estimatedApiCalls: 0
   };
 
   // Rough estimate
@@ -238,8 +259,13 @@ async function detectChangedDirectories(
   assignmentPath: string,
   partPath: string,
   directories: DirectoryType[],
-  lastPublishHistory?: PublishHistory
+  lastPublishHistory?: PublishHistory,
+  forceAll: boolean = false
 ): Promise<DirectoryType[]> {
+  if (forceAll) {
+    return directories;
+  }
+
   const changed: DirectoryType[] = [];
 
   if (!lastPublishHistory?.content_state) {

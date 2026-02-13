@@ -92,6 +92,8 @@ program
   .option('--part <path>', 'Publish specific part only')
   .option('--force-all', 'Re-upload everything (ignore change detection)')
   .option('--sync-deletes', 'Enable file deletion (experimental)')
+  .option('--on-missing-id <mode>', 'Behavior when assignment_id is missing: skip|abort')
+  .option('--abort-on-error', 'Stop publish immediately on first error')
   .option('--auto-commit', 'Auto-commit config updates (local use only)')
   .option('--non-interactive', 'Disable prompts')
   .option('--verbose', 'Enable verbose logging')

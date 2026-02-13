@@ -17,9 +17,20 @@ inputs:
     description: 'Preview changes without publishing'
     required: false
     default: 'false'
+  non-interactive:
+    description: 'Run without prompts (recommended for CI/CD)'
+    required: false
+    default: 'true'
   assignment:
     description: 'Specific assignment to publish'
     required: false
+  part:
+    description: 'Specific part to publish'
+    required: false
+  force-all:
+    description: 'Re-upload all directories (ignore hash-based change detection)'
+    required: false
+    default: 'false'
   sync-deletes:
     description: 'Delete files from Vocareum not in Git (experimental)'
     required: false

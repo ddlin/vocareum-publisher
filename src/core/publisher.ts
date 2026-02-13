@@ -9,7 +9,7 @@ import type { Config, PublishHistory } from '../types/config';
 import type { PublishResult, PublishOperationOptions } from '../types/state';
 import { VocareumClient } from '../api/client';
 import { reconcile, displayPlan } from './reconciler';
-import { copyAssignment } from '../api/assignments';
+import { copyAssignment, updateAssignment } from '../api/assignments';
 import { updateCourse } from '../api/courses';
 import { updatePart } from '../api/parts';
 import { mapParts } from './mapper';
@@ -33,6 +33,46 @@ export async function publish(
   options: PublishOperationOptions
 ): Promise<PublishResult> {
   const configPath = options.configPath ?? 'vocareum.yaml';
+  const abortOnError = options.abortOnError ?? false;
+
+  const parseCsv = (value?: string): string[] =>
+    value
+      ?.split(',')
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0) ?? [];
+
+  const assignmentFilters = parseCsv(options.assignment);
+  const partFilters = parseCsv(options.part);
+
+  const workingConfig: Config = {
+    ...config,
+    assignments: config.assignments.map((assignment) => ({
+      ...assignment,
+      parts: assignment.parts.map((part) => ({ ...part })),
+    })),
+  };
+
+  if (assignmentFilters.length > 0) {
+    workingConfig.assignments = workingConfig.assignments.filter((assignment) =>
+      assignmentFilters.includes(assignment.path) ||
+      assignmentFilters.includes(assignment.name) ||
+      (assignment.assignment_id !== null && assignment.assignment_id !== undefined && assignmentFilters.includes(assignment.assignment_id))
+    );
+  }
+
+  if (partFilters.length > 0) {
+    workingConfig.assignments = workingConfig.assignments
+      .map((assignment) => ({
+        ...assignment,
+        parts: assignment.parts.filter((part) =>
+          partFilters.includes(part.path) ||
+          (part.name !== undefined && partFilters.includes(part.name)) ||
+          (part.part_id !== null && part.part_id !== undefined && partFilters.includes(part.part_id))
+        ),
+      }))
+      .filter((assignment) => assignment.parts.length > 0);
+  }
+
   // 0. Get current git state for history
   const commitSha = await getCommitSha().catch(() => 'unknown');
   const userName = (await getGitUserName().catch(() => null)) || 'unknown';
@@ -41,15 +81,25 @@ export async function publish(
   const lastHistory = config.publish_history?.[0]; // Get most recent
 
   logger.info('Analyzing changes...');
-  const plan = await reconcile(config, client, lastHistory);
+  const plan = await reconcile(workingConfig, client, lastHistory, {
+    forceAll: options.forceAll,
+    onMissingId: options.onMissingId,
+  });
+
+  if (assignmentFilters.length > 0 || partFilters.length > 0) {
+    // Orphans are not meaningful for scoped publish operations.
+    plan.orphanedInVocareum = [];
+  }
 
   // 2. Display Plan (always show summary, verbose shows details)
   const hasDiscoveredIds = plan.assignments.some((a) => a.idDiscoveredByName === true);
+  const hasErrorsInPlan = plan.assignments.some((a) => a.type === 'error');
   const hasChanges = plan.summary.assignmentsToCreate > 0 ||
                      plan.summary.assignmentsToUpdate > 0 ||
                      plan.summary.partsToUpdate > 0 ||
                      plan.summary.coursesToUpdate > 0 ||
-                     hasDiscoveredIds;
+                     hasDiscoveredIds ||
+                     hasErrorsInPlan;
 
   if (options.verbose || options.dryRun) {
     displayPlan(plan);
@@ -128,29 +178,57 @@ export async function publish(
 
   const configUpdates: Config['assignments'] = [];
   let configChanged = false;
+  let shouldAbort = false;
 
   // 4. Course Updates
-  if (plan.course.type === 'update' && config.vocareum.course_settings) {
+  if (plan.course.type === 'update' && workingConfig.vocareum.course_settings) {
     try {
       logger.info('Updating course settings...');
-      await updateCourse(client, config.vocareum.course_id, {
-        name: config.vocareum.course_settings.name,
-        description: config.vocareum.course_settings.description,
+      await updateCourse(client, workingConfig.vocareum.course_id, {
+        name: workingConfig.vocareum.course_settings.name,
+        description: workingConfig.vocareum.course_settings.description,
       });
       logger.success('Course settings updated');
     } catch (error) {
       logger.error(`Failed to update course settings: ${error instanceof Error ? error.message : 'Unknown'}`);
       result.failed.push({ type: 'assignment', id: 'course', error });
       result.success = false;
+      if (abortOnError) {
+        shouldAbort = true;
+      }
     }
   }
 
+  assignmentLoop:
   // 5. Creation (Assignments)
   for (const action of plan.assignments) {
+    if (shouldAbort) {
+      break assignmentLoop;
+    }
+
+    if (action.type === 'error') {
+      result.failed.push({
+        type: 'assignment',
+        id: action.assignment.assignment_id ?? action.assignment.name,
+        error: action.reason ?? 'Assignment reconciliation failed',
+      });
+      result.success = false;
+      if (abortOnError) {
+        shouldAbort = true;
+        break assignmentLoop;
+      }
+      continue;
+    }
+
     if (action.type === 'create' && action.willCreate) {
       if (!action.templateId) {
         logger.error(`Cannot create assignment ${action.assignment.name}: No template ID in config`);
         result.failed.push({ type: 'assignment', id: action.assignment.name, error: 'Missing template ID' });
+        result.success = false;
+        if (abortOnError) {
+          shouldAbort = true;
+          break assignmentLoop;
+        }
         continue;
       }
 
@@ -160,8 +238,8 @@ export async function publish(
           client,
           action.templateId,
           action.assignment.name,
-          config.vocareum.course_id
-        );
+            workingConfig.vocareum.course_id
+          );
 
         logger.success(`Created assignment ${action.assignment.name} (${copyResult.assignment_id})`);
 
@@ -213,9 +291,6 @@ export async function publish(
       }
     }
     else if (action.type === 'update') {
-      // Update metadata if needed
-      // For phase 4 we might skip metadata update or implement
-      // Let's assume metadata update is implicit or skipped for now
       result.updated.push({ type: 'assignment', id: action.assignment.assignment_id! });
 
       // If ID was discovered via name lookup, we need to persist it to config
@@ -223,10 +298,33 @@ export async function publish(
         configUpdates.push(action.assignment);
         configChanged = true;
       }
+
+      if (action.assignmentMetadataChanged === true && action.assignment.assignment_id) {
+        try {
+          await updateAssignment(client, action.assignment.assignment_id, {
+            name: action.assignment.name,
+            description: action.assignment.settings?.description,
+            due_date: action.assignment.settings?.due_date,
+          });
+          logger.success(`Updated assignment metadata: ${action.assignment.name}`);
+        } catch (error) {
+          logger.error(`Failed to update assignment metadata for ${action.assignment.name}`, { error });
+          result.failed.push({ type: 'assignment', id: action.assignment.assignment_id, error });
+          result.success = false;
+          if (abortOnError) {
+            shouldAbort = true;
+            break assignmentLoop;
+          }
+        }
+      }
     }
 
     // 5. Parts & Content
     for (const partAction of action.parts) {
+      if (shouldAbort) {
+        break assignmentLoop;
+      }
+
       if (partAction.type === 'skip') {
         result.skipped.push({ type: 'part', id: partAction.part.part_id!, reason: 'No changes' });
         continue;
@@ -254,6 +352,10 @@ export async function publish(
             logger.error(`Failed to update part metadata for ${partId}`, { error });
             result.failed.push({ type: 'part', id: partId, error });
             result.success = false;
+            if (abortOnError) {
+              shouldAbort = true;
+              break assignmentLoop;
+            }
           }
         }
       }
@@ -264,7 +366,7 @@ export async function publish(
           try {
             const uploadRes = await syncDirectory(
               client,
-              config.vocareum.course_id,
+              workingConfig.vocareum.course_id,
               action.assignment.assignment_id!,
               partId,
               path.join(action.assignment.path, partAction.part.path, dir), // Local path
@@ -285,6 +387,10 @@ export async function publish(
                 });
               }
               result.success = false;
+              if (abortOnError) {
+                shouldAbort = true;
+                break assignmentLoop;
+              }
             } else {
               // Only advance stored hash when this directory upload succeeded.
               const key = path.join(action.assignment.path, partAction.part.path, dir);
@@ -294,6 +400,10 @@ export async function publish(
             logger.error(`Failed to upload ${dir} for part ${partId}`, { error });
             result.failed.push({ type: 'file', id: `${partId}/${dir}`, error });
             result.success = false;
+            if (abortOnError) {
+              shouldAbort = true;
+              break assignmentLoop;
+            }
           }
         }
       }
