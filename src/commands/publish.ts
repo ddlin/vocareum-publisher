@@ -36,12 +36,20 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
 
     const client = new VocareumClient(apiKey, config.vocareum.api_base_url);
 
+    const isCiRuntime = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
+    const requestedAutoCommit = options.autoCommit ?? config.publish_options?.auto_commit ?? false;
+    const autoCommit = isCiRuntime ? false : requestedAutoCommit;
+    if (isCiRuntime && requestedAutoCommit) {
+      logger.warn('Auto-commit is disabled in CI/CD environments.');
+    }
+
     // Merge options with config defaults
     const publishOptions: PublishOperationOptions = {
       dryRun: options.dryRun ?? false,
       verbose: options.verbose ?? false,
-      autoCommit: options.autoCommit ?? config.publish_options?.auto_commit ?? false,
+      autoCommit,
       syncDeletes: options.syncDeletes ?? config.publish_options?.sync_deletes ?? false,
+      configPath,
     };
 
     logger.info(`Starting publish process for course ${config.vocareum.course_id}...`);

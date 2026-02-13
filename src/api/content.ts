@@ -3,19 +3,139 @@
  *
  * File upload/download operations for Vocareum.
  *
- * CRITICAL: Content upload requires multipart/form-data format!
- * Use form-data library for file uploads.
+ * CRITICAL: Content upload uses part PUT with content[].zipcontent payload.
  */
-import FormData from 'form-data';
 import { VocareumClient, APIError, VocareumError } from './client';
 import type { DirectoryType } from '../types/config';
 import type { UploadResult, FileMap, FileInfo } from '../types/api';
 import { logger } from '../utils/logger';
 
+interface PartUpdateResponse {
+  status: 'success';
+  state?: 'pending' | 'success' | 'failed';
+  message?: string;
+  transactionid?: string;
+}
+
+interface TransactionResponse {
+  status: 'success';
+  state: 'pending' | 'success' | 'failed';
+  message?: string;
+}
+
+const PART_UPDATE_POLL_MAX_ATTEMPTS = 30;
+const PART_UPDATE_POLL_DELAY_MS = 1000;
+
+function crc32(buffer: Buffer): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < buffer.length; i++) {
+    crc ^= buffer[i];
+    for (let j = 0; j < 8; j++) {
+      const lsb = crc & 1;
+      crc = (crc >>> 1) ^ (lsb ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function createZipBuffer(files: FileMap): Buffer {
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+  let fileCount = 0;
+
+  for (const [relativePath, content] of Object.entries(files)) {
+    const normalizedPath = relativePath.replace(/\\/g, '/');
+    const nameBuffer = Buffer.from(normalizedPath, 'utf8');
+    const dataBuffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
+    const crc = crc32(dataBuffer);
+
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0, 6);
+    localHeader.writeUInt16LE(0, 8);
+    localHeader.writeUInt16LE(0, 10);
+    localHeader.writeUInt16LE(0, 12);
+    localHeader.writeUInt32LE(crc, 14);
+    localHeader.writeUInt32LE(dataBuffer.length, 18);
+    localHeader.writeUInt32LE(dataBuffer.length, 22);
+    localHeader.writeUInt16LE(nameBuffer.length, 26);
+    localHeader.writeUInt16LE(0, 28);
+
+    localParts.push(localHeader, nameBuffer, dataBuffer);
+
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt16LE(0, 8);
+    centralHeader.writeUInt16LE(0, 10);
+    centralHeader.writeUInt16LE(0, 12);
+    centralHeader.writeUInt16LE(0, 14);
+    centralHeader.writeUInt32LE(crc, 16);
+    centralHeader.writeUInt32LE(dataBuffer.length, 20);
+    centralHeader.writeUInt32LE(dataBuffer.length, 24);
+    centralHeader.writeUInt16LE(nameBuffer.length, 28);
+    centralHeader.writeUInt16LE(0, 30);
+    centralHeader.writeUInt16LE(0, 32);
+    centralHeader.writeUInt16LE(0, 34);
+    centralHeader.writeUInt16LE(0, 36);
+    centralHeader.writeUInt32LE(0, 38);
+    centralHeader.writeUInt32LE(offset, 42);
+
+    centralParts.push(centralHeader, nameBuffer);
+
+    offset += localHeader.length + nameBuffer.length + dataBuffer.length;
+    fileCount += 1;
+  }
+
+  const centralDirectory = Buffer.concat(centralParts);
+  const centralDirectoryOffset = offset;
+  const endOfCentralDirectory = Buffer.alloc(22);
+  endOfCentralDirectory.writeUInt32LE(0x06054b50, 0);
+  endOfCentralDirectory.writeUInt16LE(0, 4);
+  endOfCentralDirectory.writeUInt16LE(0, 6);
+  endOfCentralDirectory.writeUInt16LE(fileCount, 8);
+  endOfCentralDirectory.writeUInt16LE(fileCount, 10);
+  endOfCentralDirectory.writeUInt32LE(centralDirectory.length, 12);
+  endOfCentralDirectory.writeUInt32LE(centralDirectoryOffset, 16);
+  endOfCentralDirectory.writeUInt16LE(0, 20);
+
+  return Buffer.concat([...localParts, centralDirectory, endOfCentralDirectory]);
+}
+
+async function waitForPartUpdateTransaction(
+  client: VocareumClient,
+  transactionId: string
+): Promise<void> {
+  for (let attempt = 0; attempt < PART_UPDATE_POLL_MAX_ATTEMPTS; attempt++) {
+    const txn = await client.request<TransactionResponse>({
+      method: 'GET',
+      url: `/api/v2/transaction/${transactionId}`,
+    });
+
+    if (txn.state === 'success') {
+      return;
+    }
+    if (txn.state === 'failed') {
+      throw new APIError(
+        txn.message ?? `Part update transaction failed (txn=${transactionId})`
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, PART_UPDATE_POLL_DELAY_MS));
+  }
+
+  throw new APIError(
+    `Timed out waiting for part update transaction (txn=${transactionId})`
+  );
+}
+
 /**
  * Upload content to a Vocareum workspace directory
  *
- * CRITICAL: Uses multipart/form-data, NOT JSON!
+ * CRITICAL: Uses part update endpoint with content[].zipcontent payload.
  *
  * @param client - Vocareum API client
  * @param courseId - Course ID (string!)
@@ -33,50 +153,37 @@ export async function uploadContent(
   directory: DirectoryType,
   files: FileMap
 ): Promise<UploadResult> {
-  const form = new FormData();
-
-  // Append metadata
-  form.append('courseid', courseId);
-  form.append('assignmentid', assignmentId);
-  form.append('partid', partId);
-  form.append('type', directory);
-
   const filePaths = Object.keys(files);
+  const zipBuffer = createZipBuffer(files);
+  const zipBase64 = zipBuffer.toString('base64');
 
-  // Append files
-  for (const filePath of filePaths) {
-    const content = files[filePath];
-    // Form-data requires Buffer or Stream for files, or string
-    form.append('file', content, { filename: filePath });
+  const response = await client.request<PartUpdateResponse>({
+    method: 'PUT',
+    url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
+    data: {
+      update: 1,
+      content: [
+        {
+          target: directory,
+          zipcontent: zipBase64,
+          reset: 0,
+        },
+      ],
+    },
+    timeout: 60000,
+  });
+
+  if (response.transactionid !== undefined && response.transactionid !== '') {
+    await waitForPartUpdateTransaction(client, response.transactionid);
+  } else if (response.state === 'failed') {
+    throw new APIError(response.message ?? 'Part update failed');
   }
 
-  try {
-    // Assuming endpoint matches what AGENTS.md hinted at
-    // Using a generic /api/v2/upload or /api/v2/parts/:id/upload
-    // Given we send courseid/assignmentid/partid in body, maybe it's a generic endpoint?
-    // Let's try /api/v2/upload which is common for bulk uploads
-    await client.request({
-      method: 'POST',
-      url: '/api/v2/upload', // Guessing based on AGENTS.md 'axios.post("/upload")'
-      data: form,
-      headers: form.getHeaders(),
-      // Increase timeout for uploads
-      timeout: 60000,
-    });
-
-    return {
-      succeeded: filePaths,
-      failed: [],
-      directoryHash: 'calculated_externally', // content.ts doesn't calculate hash? Uploader does.
-    };
-  } catch (error) {
-    // If bulk upload fails, all fail
-    return {
-      succeeded: [],
-      failed: filePaths.map(p => ({ path: p, error })),
-      directoryHash: '',
-    };
-  }
+  return {
+    succeeded: filePaths,
+    failed: [],
+    directoryHash: 'calculated_externally',
+  };
 }
 
 /**

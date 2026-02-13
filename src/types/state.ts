@@ -200,6 +200,7 @@ export interface PublishOperationOptions {
   nonInteractive?: boolean;
   autoCommit?: boolean;
   syncDeletes?: boolean;
+  configPath?: string;
   assignment?: string;
   part?: string;
   forceAll?: boolean;

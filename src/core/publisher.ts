@@ -29,6 +29,7 @@ export async function publish(
   client: VocareumClient,
   options: PublishOperationOptions
 ): Promise<PublishResult> {
+  const configPath = options.configPath ?? 'vocareum.yaml';
   // 0. Get current git state for history
   const commitSha = await getCommitSha().catch(() => 'unknown');
   const userName = (await getGitUserName().catch(() => null)) || 'unknown';
@@ -195,8 +196,14 @@ export async function publish(
 
             if (uploadRes.failed.length > 0) {
               logger.warn(`Some files failed to upload in ${dir}`);
-              // Don't mark whole part as failed?
-              // result.success = false;
+              for (const failedFile of uploadRes.failed) {
+                result.failed.push({
+                  type: 'file',
+                  id: `${partId}/${dir}/${failedFile.path}`,
+                  error: failedFile.error
+                });
+              }
+              result.success = false;
             }
           } catch (error) {
             logger.error(`Failed to upload ${dir} for part ${partId}`, { error });
@@ -220,7 +227,7 @@ export async function publish(
     }))
   };
 
-  await updateConfig('vocareum.yaml', {
+  await updateConfig(configPath, {
     assignments: configChanged ? configUpdates : undefined,
     publish_history: [historyEntry] // Add this entry
   });
@@ -230,7 +237,7 @@ export async function publish(
     try {
       await commitChanges(
         `chore: update vocareum config [skip ci]`,
-        ['vocareum.yaml']
+        [configPath]
       );
     } catch (error) {
       logger.warn('Failed to auto-commit config changes');
@@ -240,4 +247,3 @@ export async function publish(
   result.summary = `Published: ${result.created.length} created, ${result.updated.length} updated.`;
   return result;
 }
-
