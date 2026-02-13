@@ -16,7 +16,7 @@ import { logger } from '../utils/logger';
 import { loadDotEnvIfPresent, isCI } from '../utils/env';
 import { prompt, promptChoice } from '../utils/prompts';
 import { pathExists, ensureDirectory, writeFile } from '../utils/files';
-import type { Assignment, Part, DirectoryType, AssignmentSettings, PartSettings } from '../types/config';
+import type { Assignment, Part, DirectoryType, AssignmentSettings, PartSettings, SubmissionFilters } from '../types/config';
 import { normalizeSubmissionFilters } from '../types/config';
 import type { OrphanedEntity } from '../types/state';
 import type { FileMap, VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
@@ -179,6 +179,19 @@ function comparePartSettings(
     const localVal = local[key];
     const remoteVal = remoteSettings[key];
 
+    if (key === 'submission_filters') {
+      const normalizedLocal = normalizeSubmissionFilters(localVal as SubmissionFilters | undefined);
+      const normalizedRemote = normalizeSubmissionFilters(remoteVal as SubmissionFilters | undefined);
+      if (!valuesEqual(normalizedLocal, normalizedRemote)) {
+        diffs.push({
+          key,
+          localValue: normalizedLocal,
+          remoteValue: normalizedRemote,
+        });
+      }
+      continue;
+    }
+
     // Only report if remote has a value and it differs from local
     if (remoteVal !== undefined && !valuesEqual(localVal, remoteVal)) {
       diffs.push({ key, localValue: localVal, remoteValue: remoteVal });
@@ -249,8 +262,10 @@ async function detectSettingsDrift(
           partsDrift,
         });
       }
-    } catch {
+    } catch (error) {
       // Assignment may have been deleted - handled by stale detection
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      logger.warn(`Could not fetch settings for assignment "${assignment.name}" (ID: ${assignment.assignment_id}): ${message}`);
       continue;
     }
   }
