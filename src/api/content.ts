@@ -188,7 +188,7 @@ export async function uploadContent(
         {
           target: directory,
           zipcontent: zipBase64,
-          reset: 0,
+          reset: 1, // Clear directory before upload to ensure exact Git state
         },
       ],
     },
