@@ -134,7 +134,7 @@ async function createNewAssignment(
   logger.success(`Added entry to vocareum.yaml`);
   logger.info('\nNext steps:');
   logger.info(`1. Add content to ${options.path}/part1/startercode/ etc.`);
-  logger.info('2. Run: vocareum-publish --validate');
+  logger.info('2. Run: vocareum-publish validate');
   logger.info('3. Run: vocareum-publish (creates in Vocareum)');
   logger.info('4. Commit updated vocareum.yaml with new IDs');
 }
@@ -228,7 +228,7 @@ async function fixValidationIssues(
   await applyFixes(config, fixes);
   
   logger.success(`\nApplied ${fixes.length} fixes.`);
-  logger.info('Run vocareum-publish --validate to verify.');
+  logger.info('Run vocareum-publish validate to verify.');
 }
 ```
 
@@ -524,11 +524,16 @@ interface VocareumConfig {
   course_id: string;
   template_assignment_id: string;
   api_base_url?: string;
+  course_settings?: {
+    name?: string;
+    description?: string;
+  };
 }
 
 interface Assignment {
   assignment_id: string | null;
   name: string;
+  assignment_name_for_lookup?: string;
   path: string;
   create_from_template?: boolean;
   settings?: AssignmentSettings;
@@ -555,9 +560,11 @@ interface PublishHistory {
   timestamp: string;
   commit_sha: string;
   published_by: string;
+  status: 'success' | 'failed';
   content_state: Record<string, string>; // directory path -> hash
   created?: CreatedEntity[];
   updated?: UpdatedEntity[];
+  failed?: Array<{ type: 'assignment' | 'part' | 'file'; id: string; error: string }>;
 }
 ```
 
@@ -723,6 +730,17 @@ export interface ReconciliationPlan {
   summary: ReconciliationSummary;
 }
 
+export interface ReconciliationSummary {
+  coursesToUpdate: number;
+  assignmentsToCreate: number;
+  assignmentsToUpdate: number;
+  assignmentsWithDiscoveredIds: number;
+  assignmentsToSkip: number;
+  partsToCreate: number;
+  partsToUpdate: number;
+  estimatedApiCalls: number;
+}
+
 export interface AssignmentAction {
   type: ActionType;
   assignment: Assignment;
@@ -730,6 +748,7 @@ export interface AssignmentAction {
   reason?: string;
   willCreate?: boolean;
   templateId?: string;
+  idDiscoveredByName?: boolean;
 }
 
 export interface PartAction {
@@ -737,6 +756,7 @@ export interface PartAction {
   part: Part;
   contentChanged: boolean;
   changedDirectories?: DirectoryType[];
+  metadataChanged?: boolean;
   reason?: string;
 }
 
@@ -828,6 +848,8 @@ async function calculateDirectoryHash(
 - Handle errors and partial failures
 - Update local config with new IDs
 - Generate publish report
+- Prompt for confirmation by default (unless non-interactive)
+- Persist failed-run details in publish history
 
 **Public API:**
 ```typescript
@@ -836,6 +858,7 @@ export interface PublishOptions {
   nonInteractive?: boolean;
   autoCommit?: boolean; // LOCAL USE ONLY
   syncDeletes?: boolean;
+  configPath?: string;
   assignment?: string;
   part?: string;
   forceAll?: boolean;
@@ -869,6 +892,10 @@ async function executePublish(
   client: VocareumClient,
   options: PublishOptions
 ): Promise<PublishResult> {
+  // hasChanges considers assignment/part updates, course metadata updates,
+  // and assignment IDs discovered by name-based lookup.
+  // If !options.nonInteractive, prompt user to confirm before executing.
+
   const results: PublishResult = {
     success: true,
     created: [],
@@ -958,6 +985,10 @@ async function executePublish(
     }
   }
   
+  // Persist publish_history entry with:
+  // - status: success | failed
+  // - content_state hashes only for successful directory uploads
+  // - failed[] details when any operation fails
   return results;
 }
 ```

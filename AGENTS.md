@@ -129,6 +129,31 @@ if (vocareumAssignment && !configAssignment) {
 
 **Why:** Prevents accidental deletion of assignments with student submissions.
 
+### 8. **Publish Is Interactive by Default**
+```bash
+# ✅ CORRECT - local interactive confirmation
+vocareum-publish
+# prompts: "Proceed with publish?"
+
+# ✅ CORRECT - explicit non-interactive mode (CI/CD)
+vocareum-publish --non-interactive
+```
+
+**Why:** Prevent accidental publishes locally while ensuring CI/CD can run unattended.
+
+### 9. **Track Failed Runs in publish_history**
+```yaml
+# ✅ CORRECT
+publish_history:
+  - status: "failed"
+    failed:
+      - type: "file"
+        id: "22222/startercode/main.py"
+        error: "..."
+```
+
+**Why:** Preserves operational history and prevents silent failures; hashes should only advance for successful directory uploads.
+
 ---
 ## Compaction Summary Protocol
 
@@ -654,7 +679,7 @@ Before committing any code, verify:
 Technical:
 [ ] TypeScript strict mode passes
 [ ] All IDs treated as strings
-[ ] Multipart form-data used for uploads
+[ ] Part `PUT` with `content[].zipcontent` used for uploads
 [ ] Seqnum parsed before sorting
 [ ] Error handling comprehensive
 [ ] Logger used (no console.log)

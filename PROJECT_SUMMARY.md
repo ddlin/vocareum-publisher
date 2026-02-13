@@ -57,6 +57,8 @@ An open-source CLI tool and GitHub Action that Vocareum customers can deploy to 
 - Only changed directories uploaded (efficient)
 - Works in CI/CD because state is committed to Git
 - Keeps last 10 history entries to prevent config bloat
+- Hashes are advanced only for directories that uploaded successfully
+- Failed runs are recorded with `status: "failed"` and error details
 
 ### 5. Deletion Policy
 **Assignments/Parts:** Never deleted from Vocareum (manual operation only)
@@ -84,6 +86,11 @@ An open-source CLI tool and GitHub Action that Vocareum customers can deploy to 
 
 **Solution:** Create locally, commit IDs, then CI/CD only updates.
 
+### 8. Interactive Confirmation by Default
+- Local `publish` runs prompt for confirmation before execution
+- `--non-interactive` skips prompts
+- CI/GitHub Actions run non-interactive automatically
+
 ---
 
 ## Technology Stack
@@ -95,7 +102,6 @@ An open-source CLI tool and GitHub Action that Vocareum customers can deploy to 
 
 ### Key Dependencies
 - `axios` - HTTP client
-- `form-data` - Multipart form-data for file uploads (API requirement)
 - `commander` - CLI framework
 - `inquirer` - Interactive prompts
 - `js-yaml` - YAML parsing
@@ -150,6 +156,9 @@ vocareum:
   course_id: "67890"
   template_assignment_id: "99999"
   api_base_url: "https://api.vocareum.com"  # Optional
+  course_settings:             # Optional course metadata sync
+    name: "Intro to ML"
+    description: "Spring section"
 
 assignments:
   - assignment_id: "11111"
@@ -168,6 +177,7 @@ assignments:
   
   - assignment_id: null  # Will be created
     name: "Lab 2: Classification"
+    assignment_name_for_lookup: "Lab 2: Classification"  # Optional deterministic lookup
     path: "assignment2"
     create_from_template: true
     parts:
@@ -187,9 +197,14 @@ publish_history:
   - timestamp: "2025-02-12T14:30:00Z"
     commit_sha: "abc123def456"
     published_by: "github-actions"
+    status: "failed"  # success | failed
     content_state:
       "assignment1/part1/startercode": "sha256:abc123..."
       "assignment1/part1/scripts": "sha256:def456..."
+    failed:
+      - type: "file"
+        id: "22222/startercode/main.py"
+        error: "Timed out after 30000ms waiting for part update (txn=123)"
     created:
       - assignment: "44444"
         parts: ["55555"]
@@ -211,11 +226,10 @@ vocareum-publish init --import --course-id 67890
 vocareum-publish new <assignment-path>
 
 # Validate configuration
-vocareum-publish --validate
-vocareum-publish --validate --strict
+vocareum-publish validate
 
 # Auto-fix validation issues
-vocareum-publish --fix
+vocareum-publish fix
 
 # Publish (creates/updates in Vocareum)
 vocareum-publish
@@ -246,7 +260,7 @@ vocareum-publish new lab1-intro
 # Edit files in lab1-intro/part1/startercode/ etc.
 
 # 4. Validate and publish
-vocareum-publish --validate
+vocareum-publish validate
 vocareum-publish
 
 # 5. Commit updated config with IDs

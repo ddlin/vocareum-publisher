@@ -156,6 +156,9 @@ vocareum:
   course_id: "67890"
   template_assignment_id: "99999"
   api_base_url: "https://api.vocareum.com"  # Optional
+  course_settings:             # Optional course metadata sync
+    name: "Intro to ML"
+    description: "Spring section"
 
 assignments:
   - assignment_id: "11111"
@@ -174,6 +177,7 @@ assignments:
   
   - assignment_id: null  # Will be created
     name: "Lab 2: Classification"
+    assignment_name_for_lookup: "Lab 2: Classification"  # Optional deterministic lookup
     path: "assignment2"
     create_from_template: true
     settings:
@@ -185,10 +189,10 @@ assignments:
         # Optional: specify which directories exist for this part
         directories: ["startercode", "scripts"]  # Omit docs/ and data/ if not needed
       - part_id: null
-        path: "part1"
-        name: "Part 1: Implementation"
+        path: "part2"
+        name: "Part 2: Analysis"
         # Optional: specify which directories exist for this part
-        directories: ["startercode", "scripts"]  # Omit docs/ and data/ if not needed
+        directories: ["startercode", "docs"]  # Omit scripts/ and data/ if not needed
 
 publish_options:
   on_missing_id: "skip"       # skip | abort
@@ -204,6 +208,7 @@ publish_history:
   - timestamp: "2025-02-10T14:30:00Z"
     commit_sha: "abc123def456"
     published_by: "github-actions"
+    status: "failed"           # success | failed
     content_state:
       # Directory-level hashes for change detection
       "assignment1/part1/startercode": "sha256:abc123..."
@@ -217,6 +222,10 @@ publish_history:
     updated:
       - assignment: "11111"
         parts: ["22222", "33333"]
+    failed:
+      - type: "file"
+        id: "22222/startercode/main.py"
+        error: "Timed out after 30000ms waiting for part update (txn=123)"
 ```
 
 ---
@@ -289,7 +298,7 @@ vocareum-publish new lab3-neural-networks
 
 Next steps:
 1. Add content to lab3-neural-networks/part1/startercode/ etc.
-2. Run: vocareum-publish --validate
+2. Run: vocareum-publish validate
 3. Run: vocareum-publish (creates in Vocareum)
 4. Commit updated vocareum.yaml with new IDs
 
@@ -297,7 +306,7 @@ Next steps:
 # Edit files in lab3-neural-networks/part1/startercode/ etc.
 
 # 3. Validate before publishing
-vocareum-publish --validate
+vocareum-publish validate
 
 ✓ Configuration valid
 ✓ All assignment folders exist
@@ -439,11 +448,11 @@ Continue? [y/N]
 
 **Stage 6: Update Config**
 - Write new IDs to vocareum.yaml
-- Calculate and store directory hashes in content_state
-- Append to publish_history (keep last 10 entries)
+- Calculate and store directory hashes in content_state (only for successful directory uploads)
+- Append to publish_history (keep last 10 entries), including `status` and failed details when applicable
 - **If auto_commit enabled (LOCAL USE ONLY):** 
   - Commit changes with `[skip ci]` message
-  - Prompt user for confirmation
+  - Do not enable in CI/CD
 
 **Validation Output Examples:**
 
@@ -483,7 +492,7 @@ Errors (must fix before publish):
   ✗ Assignment "assignment3" references path "assignment3/" - folder not found
   ✗ Assignment "assignment1", Part "part3" - folder not found at assignment1/part3/
 
-Fix these issues and run vocareum-publish --validate again.
+Fix these issues and run vocareum-publish validate again.
 
 Quick fixes:
   • Run: vocareum-publish new assignment3
@@ -496,7 +505,7 @@ Quick fixes:
 
 **Validate Configuration:**
 ```bash
-vocareum-publish --validate
+vocareum-publish validate
 
 # Checks:
 # ✓ YAML syntax and schema
@@ -507,7 +516,7 @@ vocareum-publish --validate
 
 **Auto-Fix Issues:**
 ```bash
-vocareum-publish --fix
+vocareum-publish fix
 
 # Interactive mode:
 ? Found orphaned folder "temp_lab/". What should we do?
@@ -540,7 +549,7 @@ Summary:
   • Added 1 YAML entry
   • Created 1 folder structure
   
-Run vocareum-publish --validate to verify.
+Run vocareum-publish validate to verify.
 ```
 
 ---
@@ -622,13 +631,13 @@ vocareum-publish new <assignment-path>
 # Interactive prompts for name, parts, etc.
 
 # Validate configuration and structure
-vocareum-publish --validate
+vocareum-publish validate
 
 # Validate with strict mode (warnings become errors)
-vocareum-publish --validate --strict
+vocareum-publish validate --strict
 
 # Attempt to auto-fix validation issues
-vocareum-publish --fix
+vocareum-publish fix
 
 # Publish entire course
 vocareum-publish
@@ -657,6 +666,10 @@ vocareum-publish --auto-commit
 # Verbose logging
 vocareum-publish --verbose
 ```
+
+Notes:
+- Local publish prompts for confirmation by default.
+- CI/CD runs are non-interactive by default.
 
 ### GitHub Action
 
@@ -721,7 +734,7 @@ jobs:
 
 ### 8. Change Detection
 **Decision:** Store directory-level hashes in vocareum.yaml publish_history (committed to Git)  
-**Rationale:** Works in CI/CD; no external state needed; only changed directories uploaded
+**Rationale:** Works in CI/CD; no external state needed; only changed directories uploaded. Failed runs are tracked with `status: failed` and error details.
 
 ### 9. Assignment/Part Deletion
 **Decision:** Never delete assignments/parts from Vocareum (manual operation only)  
@@ -825,13 +838,13 @@ The `--fix` flag provides interactive resolution:
 
 ```bash
 # Validate only
-vocareum-publish --validate
+vocareum-publish validate
 
 # Validate with warnings as errors
-vocareum-publish --validate --strict
+vocareum-publish validate --strict
 
 # Interactive fix
-vocareum-publish --fix
+vocareum-publish fix
 
 # Validate before publish (automatic)
 vocareum-publish  # Runs validation first

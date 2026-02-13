@@ -52,7 +52,7 @@ lab1-intro/
 ### 4. Validate and Publish
 
 ```bash
-vocareum-publish --validate
+vocareum-publish validate
 vocareum-publish
 ```
 
@@ -75,6 +75,9 @@ vocareum:
   org_id: "12345"
   course_id: "67890"
   template_assignment_id: "99999"
+  course_settings:            # Optional course metadata sync
+    name: "Intro to ML"
+    description: "Spring section"
 
 assignments:
   - assignment_id: "11111"
@@ -84,10 +87,31 @@ assignments:
       - part_id: "22222"
         path: "part1"
         name: "Part 1: Setup"
+  - assignment_id: null
+    name: "Lab 2: Classification"
+    assignment_name_for_lookup: "Lab 2: Classification"  # Optional name-based ID discovery
+    path: "lab2-classification"
+    parts:
+      - part_id: null
+        path: "part1"
+        name: "Part 1: Implementation"
 
 publish_options:
   on_missing_id: "skip"
   auto_commit: false
+  sync_deletes: false
+
+publish_history:
+  - timestamp: "2026-02-12T22:30:00Z"
+    commit_sha: "abc123def456"
+    published_by: "github-actions"
+    status: "failed"   # success | failed
+    content_state:
+      "lab1-intro/part1/startercode": "9a7f..."
+    failed:
+      - type: "file"
+        id: "22222/startercode/main.py"
+        error: "Timed out after 30000ms waiting for part update (txn=123)"
 ```
 
 ## CLI Commands
@@ -107,6 +131,7 @@ vocareum-publish --dry-run           # Preview changes
 vocareum-publish --assignment lab1   # Publish specific assignment
 vocareum-publish --force-all         # Re-upload everything
 vocareum-publish --sync-deletes      # Delete files not in Git (experimental)
+vocareum-publish --non-interactive   # Skip confirmation prompt
 vocareum-publish --verbose           # Detailed logging
 ```
 
@@ -170,7 +195,13 @@ assignment_id: 12345
 
 ### Never Auto-Commit in CI/CD
 
-The `auto_commit` option should only be used locally, never in CI/CD workflows.
+The `auto_commit` option should only be used locally. In CI/CD it is force-disabled by the CLI.
+
+### Publish Confirmation Behavior
+
+- Local CLI prompts for confirmation before executing publish.
+- `--non-interactive` skips prompts.
+- CI/GitHub Actions automatically run non-interactive.
 
 ### API Contract Notes
 
@@ -178,7 +209,9 @@ The `auto_commit` option should only be used locally, never in CI/CD workflows.
 - Base API path: `https://api.vocareum.com/api/v2/`
 - Assignment copy: `POST /api/v2/courses/{courseId}/assignments` with body:
   - `{ "method": "copy", "source": "<templateAssignmentId>", "name": "<newName>" }`
-- Content updates: part `PUT` with `content[].zipcontent` (base64 zip), per Postman docs.
+- Content updates: part `PUT` with `content[].zipcontent` (base64 zip).
+- Part updates may return `transactionid`; publisher polls `GET /api/v2/transaction/{id}`.
+- Failed publish runs are stored in `publish_history` with `status: failed` and `failed[]` entries.
 
 ## Environment Variables
 
