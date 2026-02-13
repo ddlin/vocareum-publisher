@@ -14,11 +14,11 @@ import type {
 } from '../types/api';
 import { listParts } from './parts';
 
-/** Maximum polling attempts for async copy operation (15 attempts = 15 seconds max) */
-const COPY_POLL_MAX_ATTEMPTS = 15;
+/** Maximum polling attempts for async copy operation (30 attempts × 2s = 60 seconds max) */
+const COPY_POLL_MAX_ATTEMPTS = 30;
 
 /** Delay between polling attempts in milliseconds */
-const COPY_POLL_DELAY_MS = 1000;
+const COPY_POLL_DELAY_MS = 2000;
 
 interface TransactionResponse {
   status: 'success';

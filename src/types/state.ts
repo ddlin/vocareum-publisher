@@ -82,6 +82,8 @@ export interface AssignmentAction {
   templateId?: string;
   /** True when assignment_id was discovered via name lookup and should be persisted */
   idDiscoveredByName?: boolean;
+  /** True when part_ids were discovered and should be persisted */
+  partIdsDiscovered?: boolean;
   /** True when assignment metadata differs from remote and needs updating */
   assignmentMetadataChanged?: boolean;
 }

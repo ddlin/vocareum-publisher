@@ -293,8 +293,8 @@ export async function publish(
     else if (action.type === 'update') {
       result.updated.push({ type: 'assignment', id: action.assignment.assignment_id! });
 
-      // If ID was discovered via name lookup, we need to persist it to config
-      if (action.idDiscoveredByName === true) {
+      // If IDs were discovered (assignment or parts), persist to config
+      if (action.idDiscoveredByName === true || action.partIdsDiscovered === true) {
         configUpdates.push(action.assignment);
         configChanged = true;
       }

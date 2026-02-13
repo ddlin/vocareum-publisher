@@ -115,6 +115,7 @@ export async function reconcile(
     }
 
     const partActions: PartAction[] = [];
+    let partIdsDiscovered = false;
 
     // If we are updating, we need to check parts
     if (assignmentActionType === 'update' && remoteAssignment) {
@@ -137,6 +138,12 @@ export async function reconcile(
 
         for (const mapping of mappedParts) {
           const configPart = mapping.configPart;
+
+          // Update part ID if missing (e.g., after failed create or name-based discovery)
+          if (!configPart.part_id) {
+            configPart.part_id = mapping.apiPartId;
+            partIdsDiscovered = true;
+          }
 
           // Check for content changes
           const changedDirs = await detectChangedDirectories(
@@ -208,6 +215,7 @@ export async function reconcile(
       willCreate: assignmentActionType === 'create',
       templateId: config.vocareum.template_assignment_id,
       idDiscoveredByName,
+      partIdsDiscovered,
       assignmentMetadataChanged,
       reason: assignmentReason,
     });
