@@ -276,6 +276,16 @@ export async function reconcile(
 }
 
 /**
+ * Check if two values are meaningfully different (treating null and undefined as equivalent)
+ */
+function settingsDiffer(local: unknown, remote: unknown): boolean {
+  // Treat null and undefined as equivalent
+  const localNorm = local === null ? undefined : local;
+  const remoteNorm = remote === null ? undefined : remote;
+  return localNorm !== remoteNorm;
+}
+
+/**
  * Detect if assignment settings have changed between config and remote
  *
  * Working fields (Feb 2026 API probes):
@@ -295,31 +305,34 @@ function detectAssignmentSettingsChanged(
 
   const remote = remoteAssignment as unknown as Record<string, unknown>;
 
+  // Helper to check if a setting has a real value (not null/undefined)
+  const hasValue = (v: unknown): boolean => v !== undefined && v !== null;
+
   // Check description
-  if (s.description !== undefined && s.description !== remote.description) return true;
+  if (hasValue(s.description) && settingsDiffer(s.description, remote.description)) return true;
 
   // Boolean settings
-  if (s.nosubmit !== undefined && s.nosubmit !== remote.nosubmit) return true;
-  if (s.publish !== undefined && s.publish !== remote.publish) return true;
-  if (s.auto_submit !== undefined && s.auto_submit !== remote.auto_submit) return true;
-  if (s.grading_on_submit !== undefined && s.grading_on_submit !== remote.grading_on_submit) return true;
-  if (s.noworkarea !== undefined && s.noworkarea !== remote.noworkarea) return true;
-  if (s.show_end_exam_button !== undefined && s.show_end_exam_button !== remote.show_end_exam_button) return true;
-  if (s.copy_startercode !== undefined && s.copy_startercode !== remote.copy_startercode) return true;
-  if (s.uncompressupload !== undefined && s.uncompressupload !== remote.uncompressupload) return true;
-  if (s.lti_on !== undefined && s.lti_on !== remote.lti_on) return true;
-  if (s.anonymous_grading !== undefined && s.anonymous_grading !== remote.anonymous_grading) return true;
-  if (s.send_webhook !== undefined && s.send_webhook !== remote.send_webhook) return true;
-  if (s.live_code_comments !== undefined && s.live_code_comments !== remote.live_code_comments) return true;
+  if (hasValue(s.nosubmit) && settingsDiffer(s.nosubmit, remote.nosubmit)) return true;
+  if (hasValue(s.publish) && settingsDiffer(s.publish, remote.publish)) return true;
+  if (hasValue(s.auto_submit) && settingsDiffer(s.auto_submit, remote.auto_submit)) return true;
+  if (hasValue(s.grading_on_submit) && settingsDiffer(s.grading_on_submit, remote.grading_on_submit)) return true;
+  if (hasValue(s.noworkarea) && settingsDiffer(s.noworkarea, remote.noworkarea)) return true;
+  if (hasValue(s.show_end_exam_button) && settingsDiffer(s.show_end_exam_button, remote.show_end_exam_button)) return true;
+  if (hasValue(s.copy_startercode) && settingsDiffer(s.copy_startercode, remote.copy_startercode)) return true;
+  if (hasValue(s.uncompressupload) && settingsDiffer(s.uncompressupload, remote.uncompressupload)) return true;
+  if (hasValue(s.lti_on) && settingsDiffer(s.lti_on, remote.lti_on)) return true;
+  if (hasValue(s.anonymous_grading) && settingsDiffer(s.anonymous_grading, remote.anonymous_grading)) return true;
+  if (hasValue(s.send_webhook) && settingsDiffer(s.send_webhook, remote.send_webhook)) return true;
+  if (hasValue(s.live_code_comments) && settingsDiffer(s.live_code_comments, remote.live_code_comments)) return true;
 
   // String/enum settings
-  if (s.publish_grades !== undefined && s.publish_grades !== remote.publish_grades) return true;
-  if (s.exam_mode !== undefined && s.exam_mode !== remote.exam_mode) return true;
-  if (s.grading_visibility !== undefined && s.grading_visibility !== remote.grading_visibility) return true;
+  if (hasValue(s.publish_grades) && settingsDiffer(s.publish_grades, remote.publish_grades)) return true;
+  if (hasValue(s.exam_mode) && settingsDiffer(s.exam_mode, remote.exam_mode)) return true;
+  if (hasValue(s.grading_visibility) && settingsDiffer(s.grading_visibility, remote.grading_visibility)) return true;
 
   // Number settings
-  if (s.exam_duration !== undefined && s.exam_duration !== remote.exam_duration) return true;
-  if (s.num_attempts !== undefined && s.num_attempts !== remote.num_attempts) return true;
+  if (hasValue(s.exam_duration) && settingsDiffer(s.exam_duration, remote.exam_duration)) return true;
+  if (hasValue(s.num_attempts) && settingsDiffer(s.num_attempts, remote.num_attempts)) return true;
 
   return false;
 }
@@ -342,31 +355,33 @@ function detectPartSettingsChanged(
   if (!remotePart) return false;
 
   const configName = configPart.name;
-  if (configName !== undefined && configName !== remotePart.name) return true;
+  if (configName !== undefined && configName !== null && configName !== remotePart.name) return true;
 
   const s = configPart.settings;
   if (!s) return false;
 
+  const remote = remotePart as unknown as Record<string, unknown>;
+
   // cloud_labs and instant_aws_access may fail if org doesn't have cloud permissions
-  if (s.cloud_labs !== undefined && s.cloud_labs !== remotePart.cloud_labs) return true;
-  if (s.instant_aws_access !== undefined && s.instant_aws_access !== remotePart.instant_aws_access) return true;
-  if (s.session_length !== undefined && s.session_length !== remotePart.session_length) return true;
-  if (s.monthly_dollar !== undefined && s.monthly_dollar !== remotePart.monthly_dollar) return true;
-  if (s.monthly_time !== undefined && s.monthly_time !== remotePart.monthly_time) return true;
-  if (s.total_time !== undefined && s.total_time !== remotePart.total_time) return true;
-  if (s.total_dollar !== undefined && s.total_dollar !== remotePart.total_dollar) return true;
+  if (s.cloud_labs !== undefined && s.cloud_labs !== null && settingsDiffer(s.cloud_labs, remotePart.cloud_labs)) return true;
+  if (s.instant_aws_access !== undefined && s.instant_aws_access !== null && settingsDiffer(s.instant_aws_access, remotePart.instant_aws_access)) return true;
+  if (s.session_length !== undefined && s.session_length !== null && settingsDiffer(s.session_length, remotePart.session_length)) return true;
+  if (s.monthly_dollar !== undefined && s.monthly_dollar !== null && settingsDiffer(s.monthly_dollar, remotePart.monthly_dollar)) return true;
+  if (s.monthly_time !== undefined && s.monthly_time !== null && settingsDiffer(s.monthly_time, remotePart.monthly_time)) return true;
+  if (s.total_time !== undefined && s.total_time !== null && settingsDiffer(s.total_time, remotePart.total_time)) return true;
+  if (s.total_dollar !== undefined && s.total_dollar !== null && settingsDiffer(s.total_dollar, remotePart.total_dollar)) return true;
 
   // Late penalty settings
-  if (s.late_penalty_percent !== undefined && s.late_penalty_percent !== (remotePart as unknown as Record<string, unknown>).late_penalty_percent) return true;
-  if (s.late_penalty_percent_rule !== undefined && s.late_penalty_percent_rule !== (remotePart as unknown as Record<string, unknown>).late_penalty_percent_rule) return true;
-  if (s.deadlinedate !== undefined && s.deadlinedate !== (remotePart as unknown as Record<string, unknown>).deadlinedate) return true;
+  if (s.late_penalty_percent !== undefined && s.late_penalty_percent !== null && settingsDiffer(s.late_penalty_percent, remote.late_penalty_percent)) return true;
+  if (s.late_penalty_percent_rule !== undefined && s.late_penalty_percent_rule !== null && settingsDiffer(s.late_penalty_percent_rule, remote.late_penalty_percent_rule)) return true;
+  if (s.deadlinedate !== undefined && s.deadlinedate !== null && settingsDiffer(s.deadlinedate, remote.deadlinedate)) return true;
 
   // Lab settings
-  if (s.endlab !== undefined && s.endlab !== (remotePart as unknown as Record<string, unknown>).endlab) return true;
-  if (s.labtype !== undefined && s.labtype !== (remotePart as unknown as Record<string, unknown>).labtype) return true;
-  if (s.container_image !== undefined && s.container_image !== (remotePart as unknown as Record<string, unknown>).container_image) return true;
-  if (s.number_of_submissions !== undefined && s.number_of_submissions !== (remotePart as unknown as Record<string, unknown>).number_of_submissions) return true;
-  if (s.databricks_maxusers !== undefined && s.databricks_maxusers !== (remotePart as unknown as Record<string, unknown>).databricks_maxusers) return true;
+  if (s.endlab !== undefined && s.endlab !== null && settingsDiffer(s.endlab, remote.endlab)) return true;
+  if (s.labtype !== undefined && s.labtype !== null && settingsDiffer(s.labtype, remote.labtype)) return true;
+  if (s.container_image !== undefined && s.container_image !== null && settingsDiffer(s.container_image, remote.container_image)) return true;
+  if (s.number_of_submissions !== undefined && s.number_of_submissions !== null && settingsDiffer(s.number_of_submissions, remote.number_of_submissions)) return true;
+  if (s.databricks_maxusers !== undefined && s.databricks_maxusers !== null && settingsDiffer(s.databricks_maxusers, remote.databricks_maxusers)) return true;
 
   // Compare submission filters (normalize both to object format)
   if (s.submission_filters !== undefined && s.submission_filters !== null) {
