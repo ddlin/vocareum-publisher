@@ -21,39 +21,31 @@ export interface PublishCommandOptions extends PublishOperationOptions {
  * Execute the publish command
  */
 export async function publishCommand(options: PublishCommandOptions): Promise<void> {
-  const configPath = options.config || 'vocareum.yaml';
+  const configPath = options.config ?? 'vocareum.yaml';
 
   try {
     loadDotEnvIfPresent();
     const config = await loadConfig(configPath);
 
-    // API Key
-    const apiKey = process.env.VOCAREUM_API_KEY || process.env.VOCAREUM_API_TOKEN;
-    if (!apiKey) {
+    // API Key - support both env var names
+    const apiKey = process.env.VOCAREUM_API_KEY ?? process.env.VOCAREUM_API_TOKEN;
+    if (apiKey === undefined || apiKey === '') {
       logger.error('VOCAREUM_API_KEY (or VOCAREUM_API_TOKEN) environment variable is required.');
       process.exit(1);
     }
 
-    // Client
     const client = new VocareumClient(apiKey, config.vocareum.api_base_url);
 
     // Merge options with config defaults
     const publishOptions: PublishOperationOptions = {
-      dryRun: options.dryRun || false,
-      verbose: options.verbose || false, // verbose is boolean in options but PublishOperationOptions?
-      // PublishOperationOptions schema?
-      // Let's check state.ts.
-      // It has dryRun, autoCommit, etc.
-      // It likely has verbose?
-
+      dryRun: options.dryRun ?? false,
+      verbose: options.verbose ?? false,
       autoCommit: options.autoCommit ?? config.publish_options?.auto_commit ?? false,
       syncDeletes: options.syncDeletes ?? config.publish_options?.sync_deletes ?? false,
-
-      // Pass other options
     };
 
     logger.info(`Starting publish process for course ${config.vocareum.course_id}...`);
-    if (publishOptions.dryRun) {
+    if (publishOptions.dryRun === true) {
       logger.info('DRY RUN MODE: No changes will be applied.');
     }
 

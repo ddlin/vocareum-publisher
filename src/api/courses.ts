@@ -23,7 +23,7 @@ export async function getCourse(
     url: `/api/v2/courses/${courseId}`,
   });
 
-  const course = (response.courses || []).find((c) => c.id === courseId);
+  const course = (response.courses ?? []).find((c) => c.id === courseId);
   if (!course) {
     throw new NotFoundError('Course', courseId);
   }

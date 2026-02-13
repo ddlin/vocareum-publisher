@@ -21,7 +21,7 @@ export interface VocareumCourseResponse {
  */
 export interface CoursesListResponse {
   status: 'success';
-  courses: VocareumCourseResponse[];
+  courses?: VocareumCourseResponse[];
 }
 
 /**
@@ -64,8 +64,8 @@ export interface VocareumPartResponse {
  */
 export interface PartsListResponse {
   status: 'success';
-  parts: VocareumPartResponse[];
-  total_records: number;
+  parts?: VocareumPartResponse[];
+  total_records?: number;
 }
 
 /**

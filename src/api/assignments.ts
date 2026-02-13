@@ -14,6 +14,12 @@ import type {
 } from '../types/api';
 import { listParts } from './parts';
 
+/** Maximum polling attempts for async copy operation (15 attempts = 15 seconds max) */
+const COPY_POLL_MAX_ATTEMPTS = 15;
+
+/** Delay between polling attempts in milliseconds */
+const COPY_POLL_DELAY_MS = 1000;
+
 interface TransactionResponse {
   status: 'success';
   state: 'pending' | 'success' | 'failed';
@@ -94,12 +100,14 @@ export async function copyAssignment(
 
   // Copy is async. Even when objid is present in initial response,
   // it may be a placeholder (e.g., course id) until transaction completes.
-  if (response.transactionid) {
+  if (response.transactionid !== undefined && response.transactionid !== '') {
     assignmentId = await waitForAssignmentObjId(client, response.transactionid);
   }
 
-  if (!assignmentId) {
-    throw new Error('Assignment copy response did not include assignment ID');
+  if (assignmentId === undefined || assignmentId === '') {
+    throw new Error(
+      `Assignment copy failed: no assignment ID returned (template=${templateId}, course=${courseId})`
+    );
   }
 
   // Parts are regenerated; fetch and return them sorted by seqnum.
@@ -115,12 +123,17 @@ export async function copyAssignment(
   };
 }
 
-async function waitForAssignmentObjId(
+/**
+ * Poll transaction endpoint until assignment copy completes
+ * @internal Exported for testing
+ */
+export async function waitForAssignmentObjId(
   client: VocareumClient,
-  transactionId: string
+  transactionId: string,
+  options: { maxAttempts?: number; delayMs?: number } = {}
 ): Promise<string | undefined> {
-  const maxAttempts = 15;
-  const delayMs = 1000;
+  const maxAttempts = options.maxAttempts ?? COPY_POLL_MAX_ATTEMPTS;
+  const delayMs = options.delayMs ?? COPY_POLL_DELAY_MS;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const txn = await client.request<TransactionResponse>({
@@ -132,13 +145,17 @@ async function waitForAssignmentObjId(
       return txn.objid;
     }
     if (txn.state === 'failed') {
-      throw new Error(txn.message || `Copy assignment transaction failed: ${transactionId}`);
+      throw new Error(
+        txn.message ?? `Copy assignment transaction failed (txn=${transactionId})`
+      );
     }
 
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
 
-  throw new Error(`Timed out waiting for assignment copy transaction: ${transactionId}`);
+  throw new Error(
+    `Timed out after ${maxAttempts * delayMs}ms waiting for assignment copy (txn=${transactionId})`
+  );
 }
 
 /**

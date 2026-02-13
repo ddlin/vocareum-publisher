@@ -58,7 +58,7 @@ export async function reconcile(
     let assignmentActionType: 'create' | 'update' | 'skip' | 'error' = 'skip';
     let remoteAssignment = null;
 
-    if (configAssignment.assignment_id) {
+    if (configAssignment.assignment_id !== undefined && configAssignment.assignment_id !== null) {
       remoteAssignment = remoteAssignmentMap.get(configAssignment.assignment_id);
       if (remoteAssignment) {
         assignmentActionType = 'update';
@@ -92,7 +92,7 @@ export async function reconcile(
           const changedDirs = await detectChangedDirectories(
             configAssignment.path,
             configPart.path,
-            configPart.directories || ['startercode', 'scripts', 'docs', 'data'], // Default dirs? or check schema defaults
+            configPart.directories ?? ['startercode', 'scripts', 'docs', 'data'],
             lastPublishHistory
           );
 
@@ -125,7 +125,7 @@ export async function reconcile(
           type: 'create',
           part,
           contentChanged: true,
-          changedDirectories: part.directories || ['startercode', 'scripts', 'docs', 'data']
+          changedDirectories: part.directories ?? ['startercode', 'scripts', 'docs', 'data']
         });
       }
     }
@@ -161,8 +161,8 @@ export async function reconcile(
     assignmentsToCreate: assignments.filter(a => a.type === 'create').length,
     assignmentsToUpdate: assignments.filter(a => a.type === 'update' && a.parts.some(p => p.type !== 'skip')).length,
     assignmentsToSkip: assignments.filter(a => a.type === 'skip' || (a.type === 'update' && a.parts.every(p => p.type === 'skip'))).length,
-    partsToCreate: assignments.reduce((sum, a) => sum + (a.willCreate ? a.parts.length : 0), 0),
-    partsToUpdate: assignments.reduce((sum, a) => sum + a.parts.filter(p => !a.willCreate && p.type === 'update').length, 0),
+    partsToCreate: assignments.reduce((sum, a) => sum + (a.willCreate === true ? a.parts.length : 0), 0),
+    partsToUpdate: assignments.reduce((sum, a) => sum + a.parts.filter(p => a.willCreate !== true && p.type === 'update').length, 0),
     estimatedApiCalls: 0 // TODO: calculate based on actions
   };
 
@@ -261,7 +261,7 @@ export function displayPlan(plan: ReconciliationPlan): void {
     plan.assignments.filter(a => a.type === 'update' && a.parts.some(p => p.type !== 'skip')).forEach(a => {
       logger.plain(`  * ${a.assignment.name}`);
       a.parts.filter(p => p.type === 'update').forEach(p => {
-        logger.plain(`    - Part ${p.part.name || p.part.path}: ${p.reason}`);
+        logger.plain(`    - Part ${p.part.name ?? p.part.path}: ${p.reason}`);
       });
     });
   }

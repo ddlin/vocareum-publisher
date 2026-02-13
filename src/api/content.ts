@@ -112,12 +112,12 @@ export async function listFiles(
   directory: DirectoryType
 ): Promise<FileInfo[]> {
   try {
-    const response = await client.request<{ files: FileInfo[] }>({
+    const response = await client.request<{ files?: FileInfo[] }>({
       method: 'GET',
       url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`,
       params: { dir: directory },
     });
-    return response.files || [];
+    return response.files ?? [];
   } catch (error) {
     logger.warn(`Failed to list files or not supported: ${error instanceof Error ? error.message : 'Unknown'}`);
     return [];

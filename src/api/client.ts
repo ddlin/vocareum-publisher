@@ -50,7 +50,7 @@ export class AuthenticationError extends VocareumError {
 export class RateLimitError extends VocareumError {
   constructor(retryAfter?: number) {
     super(
-      `Rate limit exceeded${retryAfter ? `. Retry after ${retryAfter} seconds` : ''}`,
+      `Rate limit exceeded${retryAfter !== undefined ? `. Retry after ${retryAfter} seconds` : ''}`,
       'RATE_LIMIT',
       429
     );
@@ -85,7 +85,7 @@ function isRetryable(error: unknown): boolean {
   }
   if (error instanceof AxiosError) {
     const status = error.response?.status;
-    if (status && status >= 500 && status < 600) {
+    if (status !== undefined && status >= 500 && status < 600) {
       return true;
     }
     if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
@@ -109,7 +109,7 @@ function sanitizeForLog(config: AxiosRequestConfig): unknown {
   const sanitized = { ...config };
   if (sanitized.headers) {
     sanitized.headers = { ...sanitized.headers };
-    if (sanitized.headers['Authorization']) {
+    if (typeof sanitized.headers['Authorization'] === 'string') {
       sanitized.headers['Authorization'] = '[REDACTED]';
     }
   }
@@ -189,7 +189,7 @@ export class VocareumClient {
     if (error instanceof AxiosError) {
       const status = error.response?.status;
       const data = error.response?.data as { message?: string } | undefined;
-      const message = data?.message || error.message;
+      const message = data?.message ?? error.message;
 
       switch (status) {
         case 401:

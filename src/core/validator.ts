@@ -49,7 +49,7 @@ export async function validateStructure(
         result.errors.push({
           type: 'missing_folder',
           path: `${assignment.path}/${part.path}`,
-          message: `Part "${part.name || part.path}" folder not found at ${part.path}`,
+          message: `Part "${part.name ?? part.path}" folder not found at ${part.path}`,
           fix: `Create directory: ${assignment.path}/${part.path}/`
         });
         result.valid = false;
@@ -133,7 +133,7 @@ export function displayValidationResult(result: ValidationResult): void {
     logger.error(`Found ${result.errors.length} error(s):`);
     for (const error of result.errors) {
       logger.plain(`  [${error.type}] ${error.message}`);
-      if (error.fix) {
+      if (error.fix !== undefined && error.fix !== '') {
         logger.plain(`    Fix: ${error.fix}`);
       }
     }

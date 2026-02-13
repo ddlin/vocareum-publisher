@@ -35,7 +35,7 @@ export async function listParts(
     url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts`,
   });
 
-  const parts = response.parts || [];
+  const parts = response.parts ?? [];
 
   return parts
     .filter((p) => p.deleted !== '1')

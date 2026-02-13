@@ -45,7 +45,7 @@ export async function loadConfig(configPath: string): Promise<Config> {
       ? await explorer.load(configPath)
       : await explorer.search();
 
-    if (!result?.config) {
+    if (result === null || result === undefined || result.config === undefined) {
       throw new ConfigError('Configuration file not found', 'CONFIG_NOT_FOUND');
     }
 
@@ -119,7 +119,9 @@ export async function updateConfig(configPath: string, updates: ConfigUpdates): 
       if (existing) {
         // Update existing assignment
         Object.assign(existing, update);
-      } else if (update.path && update.name && update.parts) {
+      } else if (update.path !== undefined && update.path !== '' &&
+                 update.name !== undefined && update.name !== '' &&
+                 update.parts !== undefined) {
         // New assignment - validate required fields exist
         const newAssignment: Assignment = {
           path: update.path,
@@ -134,7 +136,7 @@ export async function updateConfig(configPath: string, updates: ConfigUpdates): 
     }
   }
 
-  if (updates.publish_history) {
+  if (updates.publish_history !== undefined) {
     if (!currentConfig.publish_history) {
       currentConfig.publish_history = [];
     }
@@ -160,7 +162,7 @@ export async function updateConfig(configPath: string, updates: ConfigUpdates): 
       exclude_patterns: [] as string[]
     };
 
-    const current = currentConfig.publish_options || defaults;
+    const current = currentConfig.publish_options ?? defaults;
 
     currentConfig.publish_options = {
       ...current,
