@@ -377,6 +377,73 @@ async function main() {
       path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
       body: { name: 'Part 1 Updated' },
     },
+    // === Additional part settings from user list ===
+    {
+      name: 'part-put-late_penalty_percent',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', late_penalty_percent: 10 },
+    },
+    {
+      name: 'part-put-late_penalty_rule',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', late_penalty_percent_rule: 'max score' },
+    },
+    {
+      name: 'part-put-deadlinedate',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', deadlinedate: '2026-12-31T23:59:00Z' },
+    },
+    {
+      name: 'part-put-endlab',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', endlab: 'stop' },
+    },
+    {
+      name: 'part-put-number_of_submissions',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', number_of_submissions: 5 },
+    },
+    {
+      name: 'part-put-lab_interface',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', lab_interface: { panels: ['Console'], controls: ['Reset'], information: [], launch_behavior: [], grades: [] } },
+    },
+    {
+      name: 'part-put-tags',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', tags: ['python', 'beginner'] },
+    },
+    {
+      name: 'part-put-container_image',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', labtype: 'Visual Studio Code', container_image: 'Visual Studio Code v2.24' },
+    },
+    {
+      name: 'part-put-databricks_maxusers',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', databricks_maxusers: 100 },
+    },
+    {
+      name: 'part-put-total_dollar',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', total_dollar: '50' },
+    },
+    {
+      name: 'part-put-monthly_time',
+      method: 'PUT',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}`,
+      body: { name: 'Test', monthly_time: '1000' },
+    },
   ];
 
   console.log(`Base URL: ${baseUrl}`);
