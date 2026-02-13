@@ -1,8 +1,8 @@
 # Technical Architecture Document: Vocareum Publisher
 
-**Version:** 1.0  
-**Date:** February 12, 2026  
-**Status:** Draft for Review
+**Version:** 1.1
+**Date:** February 13, 2026
+**Status:** Implementation Complete
 
 ### Part API Response Structure
 
@@ -531,10 +531,24 @@ interface VocareumConfig {
 }
 
 interface AssignmentSettings {
-  due_date?: string;        // ISO 8601 date string
   description?: string;
-  points?: string;          // Total points / grade weight
-  published?: boolean;      // Whether visible to students
+  nosubmit?: boolean;           // Disable student submissions
+  publish?: boolean;            // Publish to students
+  publish_grades?: string;      // Grades publishing setting
+  auto_submit?: boolean;        // Enable automatic submission
+  grading_on_submit?: boolean;  // Grade immediately on submit
+  noworkarea?: boolean;         // Disable work area
+  exam_mode?: 'timed' | 'scheduled' | 'timed_scheduled';
+  exam_duration?: number;       // Exam duration in minutes
+  num_attempts?: number;        // Number of attempts allowed
+  show_end_exam_button?: boolean;
+  copy_startercode?: boolean;   // Copy starter code on start
+  uncompressupload?: boolean;   // Uncompress uploaded files
+  lti_on?: boolean;             // Enable LTI integration
+  anonymous_grading?: boolean;  // Enable anonymous grading
+  grading_visibility?: 'all' | 'assigned';
+  send_webhook?: boolean;       // Send webhook on events
+  live_code_comments?: boolean; // Enable live code comments
 }
 
 interface Assignment {
@@ -548,19 +562,34 @@ interface Assignment {
 }
 
 interface PartSettings {
-  name?: string;
-  description?: string;
   submission_filters?: {    // Include/exclude patterns (passed to rsync)
     include?: string[];
     exclude?: string[];
+    list?: string[];        // Explicit file list
   };
-  cloud_labs?: boolean;
-  instant_aws_access?: boolean;
-  session_length?: string;  // Lab session length (e.g. "3600")
-  monthly_dollar?: string;  // Monthly dollar budget
-  monthly_time?: string;    // Monthly time budget
-  total_time?: string;      // Total time budget
-  total_dollar?: string;    // Total dollar budget
+  cloud_labs?: boolean;           // Enable cloud labs (requires org permission)
+  instant_aws_access?: boolean;   // Enable instant AWS (requires org permission)
+  session_length?: string;        // Lab session length in minutes (e.g. "60")
+  monthly_dollar?: string;        // Monthly dollar budget
+  monthly_time?: string;          // Monthly time budget in minutes
+  total_time?: string;            // Total time budget in minutes
+  total_dollar?: string;          // Total dollar budget
+  late_penalty_percent?: number;  // Late penalty percentage (0-100)
+  late_penalty_percent_rule?: 'max score' | 'student score';
+  deadlinedate?: string;          // Part deadline (ISO 8601)
+  endlab?: 'stop' | 'terminate';  // Behavior on end lab
+  labtype?: string;               // Lab type name (e.g., "JupyterLab", "Visual Studio Code")
+  container_image?: string;       // Container image (must match labtype)
+  number_of_submissions?: number; // Max submissions allowed
+  lab_interface?: {               // Lab interface configuration
+    panels?: string[];            // e.g., ["Console", "Html"]
+    controls?: string[];          // e.g., ["Reset"]
+    information?: string[];       // e.g., ["Assignments"]
+    launch_behavior?: string[];
+    grades?: string[];
+  };
+  databricks_maxusers?: number;   // Max users for Databricks labs
+  tags?: string[];                // Tags for the part
 }
 
 interface Part {

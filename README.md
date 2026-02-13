@@ -86,19 +86,30 @@ assignments:
     name: "Lab 1: Introduction"
     path: "lab1-intro"
     settings:                       # Optional assignment settings
-      due_date: "2025-03-15T23:59:00Z"
       description: "Introduction to the course"
-      points: "100"
-      published: true
+      nosubmit: false
+      publish: true
+      auto_submit: false
+      grading_on_submit: true
+      exam_mode: "timed"            # timed, scheduled, or timed_scheduled
+      exam_duration: 120
+      num_attempts: 3
     parts:
       - part_id: "22222"
         path: "part1"
         name: "Part 1: Setup"
         settings:                   # Optional part settings
-          description: "Setup your environment"
           submission_filters:
             include: ["*.py"]
             exclude: ["*.pyc"]
+          session_length: "60"      # minutes
+          late_penalty_percent: 10
+          late_penalty_percent_rule: "max score"  # or "student score"
+          deadlinedate: "2025-03-15T23:59:00Z"
+          number_of_submissions: 5
+          lab_interface:
+            panels: ["Console"]
+            controls: ["Reset"]
   - assignment_id: null
     name: "Lab 2: Classification"
     assignment_name_for_lookup: "Lab 2: Classification"  # Optional name-based ID discovery
@@ -109,7 +120,9 @@ assignments:
         name: "Part 1: Implementation"
         settings:
           cloud_labs: true
-          session_length: "3600"
+          session_length: "60"
+          labtype: "JupyterLab"
+          endlab: "stop"            # or "terminate"
 
 publish_options:
   on_missing_id: "skip"
