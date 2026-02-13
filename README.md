@@ -151,7 +151,7 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: Publish to Vocareum
-        uses: vocareum/publish-action@v1
+        uses: ddlin/vocareum-publisher@v1
         with:
           config-file: vocareum.yaml
           api-key: ${{ secrets.VOCAREUM_API_KEY }}
@@ -221,10 +221,6 @@ The `auto_commit` option should only be used locally. In CI/CD it is force-disab
 | `VOCAREUM_API_TOKEN` | API key for authentication (supported alias) |
 | `VOCAREUM_LOG_LEVEL` | Log level: ERROR, WARN, INFO, DEBUG, TRACE |
 
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
@@ -234,4 +230,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 - [Documentation](docs/)
 - [Examples](examples/)
 - [Vocareum API](https://documenter.getpostman.com/view/6736336/S11Exg4b)
-- [Issues](https://github.com/vocareum/vocareum-publisher/issues)
+- [Issues](https://github.com/ddlin/vocareum-publisher/issues)

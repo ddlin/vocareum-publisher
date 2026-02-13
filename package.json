@@ -41,12 +41,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vocareum/vocareum-publisher.git"
+    "url": "https://github.com/ddlin/vocareum-publisher.git"
   },
   "bugs": {
-    "url": "https://github.com/vocareum/vocareum-publisher/issues"
+    "url": "https://github.com/ddlin/vocareum-publisher/issues"
   },
-  "homepage": "https://github.com/vocareum/vocareum-publisher#readme",
+  "homepage": "https://github.com/ddlin/vocareum-publisher#readme",
   "dependencies": {
     "@actions/core": "^3.0.0",
     "axios": "^1.6.0",
