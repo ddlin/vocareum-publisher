@@ -9,10 +9,30 @@ import { z } from 'zod';
 
 /**
  * Directory types for content upload
+ *
+ * Part-level directories: lib, asnlib, docs, scripts, startercode
+ * Course-level directories: course, data, docs, scripts, private, startercode
  */
-export type DirectoryType = 'startercode' | 'scripts' | 'docs' | 'data';
+export type DirectoryType =
+  | 'startercode'
+  | 'scripts'
+  | 'docs'
+  | 'data'
+  | 'lib'
+  | 'asnlib'
+  | 'private'
+  | 'course';
 
-export const DirectoryTypeSchema = z.enum(['startercode', 'scripts', 'docs', 'data']);
+export const DirectoryTypeSchema = z.enum([
+  'startercode',
+  'scripts',
+  'docs',
+  'data',
+  'lib',
+  'asnlib',
+  'private',
+  'course'
+]);
 
 /**
  * Part settings for Vocareum configuration
