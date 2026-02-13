@@ -17,8 +17,8 @@ import type {
 } from '../types/state';
 import { VocareumClient } from '../api/client';
 import { getCourse } from '../api/courses';
-import { listAssignments } from '../api/assignments';
-import { listParts } from '../api/parts';
+import { listAssignments, getAssignment } from '../api/assignments';
+import { listParts, getPart } from '../api/parts';
 import { mapParts } from './mapper';
 import { calculateDirectoryHash } from '../utils/files';
 import { logger } from '../utils/logger';
@@ -127,16 +127,16 @@ export async function reconcile(
 
     // If we are updating, we need to check parts
     if (assignmentActionType === 'update' && remoteAssignment) {
+      // Fetch full assignment details for accurate settings comparison
+      const fullAssignment = await getAssignment(client, config.vocareum.course_id, remoteAssignment.id);
+
       // Check for changes in fields that can be updated via API
       // Working fields: name, description, nosubmit, auto_submit, grading_on_submit, publish, etc.
       // NOT working: due_date, points (return "No valid parameters")
-      assignmentMetadataChanged = detectAssignmentSettingsChanged(configAssignment, remoteAssignment);
+      assignmentMetadataChanged = detectAssignmentSettingsChanged(configAssignment, fullAssignment);
 
-      // Fetch parts
+      // Fetch parts list for mapping
       const remoteParts = await listParts(client, config.vocareum.course_id, remoteAssignment.id);
-
-      // Create map of remote part ID -> remote part for metadata comparison
-      const remotePartMap = new Map(remoteParts.map(p => [p.id, p]));
 
       // Map parts
       try {
@@ -160,9 +160,9 @@ export async function reconcile(
             options.forceAll
           );
 
-          // Check for metadata/settings changes
-          const remotePart = remotePartMap.get(mapping.apiPartId);
-          const metadataChanged = detectPartSettingsChanged(configPart, remotePart);
+          // Fetch full part details for accurate settings comparison
+          const fullPart = await getPart(client, config.vocareum.course_id, remoteAssignment.id, mapping.apiPartId);
+          const metadataChanged = detectPartSettingsChanged(configPart, fullPart);
 
           if (changedDirs.length > 0 || metadataChanged) {
             const reasons: string[] = [];

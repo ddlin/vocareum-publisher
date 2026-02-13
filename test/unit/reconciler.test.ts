@@ -6,12 +6,16 @@ import { reconcile } from '../../src/core/reconciler';
 const {
   getCourseMock,
   listAssignmentsMock,
+  getAssignmentMock,
   listPartsMock,
+  getPartMock,
   calculateDirectoryHashMock,
 } = vi.hoisted(() => ({
   getCourseMock: vi.fn(),
   listAssignmentsMock: vi.fn(),
+  getAssignmentMock: vi.fn(),
   listPartsMock: vi.fn(),
+  getPartMock: vi.fn(),
   calculateDirectoryHashMock: vi.fn(),
 }));
 
@@ -21,10 +25,12 @@ vi.mock('../../src/api/courses', () => ({
 
 vi.mock('../../src/api/assignments', () => ({
   listAssignments: listAssignmentsMock,
+  getAssignment: getAssignmentMock,
 }));
 
 vi.mock('../../src/api/parts', () => ({
   listParts: listPartsMock,
+  getPart: getPartMock,
 }));
 
 vi.mock('../../src/utils/files', async () => {
@@ -75,9 +81,11 @@ describe('reconcile options behavior', () => {
     vi.clearAllMocks();
     getCourseMock.mockResolvedValue({ id: '201303', name: 'Course 1', org_id: '1' });
     listAssignmentsMock.mockResolvedValue([]);
+    getAssignmentMock.mockResolvedValue({ id: 'asn-1', name: 'Lab 1', courseid: '201303', deleted: '0' });
     listPartsMock.mockResolvedValue([
       { id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0' },
     ]);
+    getPartMock.mockResolvedValue({ id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0', assignmentid: 'asn-1', courseid: '201303' });
     calculateDirectoryHashMock.mockResolvedValue('same-hash');
   });
 
@@ -154,6 +162,7 @@ describe('reconcile options behavior', () => {
     listAssignmentsMock.mockResolvedValue([
       { id: 'asn-1', name: 'Lab 1', deleted: '0', description: 'Same description' },
     ]);
+    getAssignmentMock.mockResolvedValue({ id: 'asn-1', name: 'Lab 1', deleted: '0', description: 'Same description', courseid: '201303' });
 
     const plan = await reconcile(config, client, undefined);
 
@@ -293,9 +302,11 @@ describe('reconcile options behavior', () => {
     listAssignmentsMock.mockResolvedValue([
       { id: 'asn-1', name: 'Lab 1', deleted: '0' },
     ]);
+    getAssignmentMock.mockResolvedValue({ id: 'asn-1', name: 'Lab 1', deleted: '0', courseid: '201303' });
     listPartsMock.mockResolvedValue([
       { id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0', description: 'Same', cloud_labs: true },
     ]);
+    getPartMock.mockResolvedValue({ id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0', description: 'Same', cloud_labs: true, assignmentid: 'asn-1', courseid: '201303' });
 
     const plan = await reconcile(config, client, publishHistory);
 
