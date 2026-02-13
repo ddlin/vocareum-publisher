@@ -5,7 +5,7 @@
  */
 
 import * as path from 'path';
-import type { Config, PublishHistory, DirectoryType, Part } from '../types/config';
+import type { Config, PublishHistory, DirectoryType, Part, Assignment } from '../types/config';
 import type { VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
 import type {
   ReconciliationPlan,
@@ -121,12 +121,9 @@ export async function reconcile(
     // If we are updating, we need to check parts
     if (assignmentActionType === 'update' && remoteAssignment) {
       // Check for changes in fields that can be updated via API
-      // Working fields: name, description, nosubmit, auto_submit, grading_on_submit
-      // NOT working: due_date, points, published (return "No valid parameters")
-      assignmentMetadataChanged =
-        configAssignment.name !== remoteAssignment.name ||
-        (configAssignment.settings?.description !== undefined &&
-          configAssignment.settings.description !== remoteAssignment.description);
+      // Working fields: name, description, nosubmit, auto_submit, grading_on_submit, publish, etc.
+      // NOT working: due_date, points (return "No valid parameters")
+      assignmentMetadataChanged = detectAssignmentSettingsChanged(configAssignment, remoteAssignment);
 
       // Fetch parts
       const remoteParts = await listParts(client, config.vocareum.course_id, remoteAssignment.id);
@@ -262,16 +259,61 @@ export async function reconcile(
 }
 
 /**
- * Detect whether part settings in config differ from remote state.
+ * Detect if assignment settings have changed between config and remote
  *
- * Only settings explicitly defined in the config are compared; undefined
- * config values are treated as "do not change" and never trigger an update.
+ * Working fields (Feb 2026 API probes):
+ * - name, description, nosubmit, auto_submit, grading_on_submit, publish, etc.
+ *
+ * NOT working: points, due_date
  */
+function detectAssignmentSettingsChanged(
+  configAssignment: Assignment,
+  remoteAssignment: VocareumAssignmentResponse
+): boolean {
+  // Check name
+  if (configAssignment.name !== remoteAssignment.name) return true;
+
+  const s = configAssignment.settings;
+  if (!s) return false;
+
+  const remote = remoteAssignment as unknown as Record<string, unknown>;
+
+  // Check description
+  if (s.description !== undefined && s.description !== remote.description) return true;
+
+  // Boolean settings
+  if (s.nosubmit !== undefined && s.nosubmit !== remote.nosubmit) return true;
+  if (s.publish !== undefined && s.publish !== remote.publish) return true;
+  if (s.auto_submit !== undefined && s.auto_submit !== remote.auto_submit) return true;
+  if (s.grading_on_submit !== undefined && s.grading_on_submit !== remote.grading_on_submit) return true;
+  if (s.noworkarea !== undefined && s.noworkarea !== remote.noworkarea) return true;
+  if (s.show_end_exam_button !== undefined && s.show_end_exam_button !== remote.show_end_exam_button) return true;
+  if (s.copy_startercode !== undefined && s.copy_startercode !== remote.copy_startercode) return true;
+  if (s.uncompressupload !== undefined && s.uncompressupload !== remote.uncompressupload) return true;
+  if (s.lti_on !== undefined && s.lti_on !== remote.lti_on) return true;
+  if (s.anonymous_grading !== undefined && s.anonymous_grading !== remote.anonymous_grading) return true;
+  if (s.send_webhook !== undefined && s.send_webhook !== remote.send_webhook) return true;
+  if (s.live_code_comments !== undefined && s.live_code_comments !== remote.live_code_comments) return true;
+
+  // String/enum settings
+  if (s.publish_grades !== undefined && s.publish_grades !== remote.publish_grades) return true;
+  if (s.exam_mode !== undefined && s.exam_mode !== remote.exam_mode) return true;
+  if (s.grading_visibility !== undefined && s.grading_visibility !== remote.grading_visibility) return true;
+
+  // Number settings
+  if (s.exam_duration !== undefined && s.exam_duration !== remote.exam_duration) return true;
+  if (s.num_attempts !== undefined && s.num_attempts !== remote.num_attempts) return true;
+
+  return false;
+}
+
 /**
  * Detect if part settings have changed between config and remote
  *
  * Working fields (Feb 2026 API probes):
  * - name, submission_filters, session_length, monthly_dollar, monthly_time, total_time, total_dollar
+ * - late_penalty_percent, late_penalty_percent_rule, deadlinedate, endlab
+ * - labtype, container_image, number_of_submissions, lab_interface, databricks_maxusers, tags
  *
  * Conditional fields (require org permissions):
  * - cloud_labs, instant_aws_access
@@ -282,7 +324,7 @@ function detectPartSettingsChanged(
 ): boolean {
   if (!remotePart) return false;
 
-  const configName = configPart.name ?? configPart.settings?.name;
+  const configName = configPart.name;
   if (configName !== undefined && configName !== remotePart.name) return true;
 
   const s = configPart.settings;
@@ -297,6 +339,18 @@ function detectPartSettingsChanged(
   if (s.total_time !== undefined && s.total_time !== remotePart.total_time) return true;
   if (s.total_dollar !== undefined && s.total_dollar !== remotePart.total_dollar) return true;
 
+  // Late penalty settings
+  if (s.late_penalty_percent !== undefined && s.late_penalty_percent !== (remotePart as unknown as Record<string, unknown>).late_penalty_percent) return true;
+  if (s.late_penalty_percent_rule !== undefined && s.late_penalty_percent_rule !== (remotePart as unknown as Record<string, unknown>).late_penalty_percent_rule) return true;
+  if (s.deadlinedate !== undefined && s.deadlinedate !== (remotePart as unknown as Record<string, unknown>).deadlinedate) return true;
+
+  // Lab settings
+  if (s.endlab !== undefined && s.endlab !== (remotePart as unknown as Record<string, unknown>).endlab) return true;
+  if (s.labtype !== undefined && s.labtype !== (remotePart as unknown as Record<string, unknown>).labtype) return true;
+  if (s.container_image !== undefined && s.container_image !== (remotePart as unknown as Record<string, unknown>).container_image) return true;
+  if (s.number_of_submissions !== undefined && s.number_of_submissions !== (remotePart as unknown as Record<string, unknown>).number_of_submissions) return true;
+  if (s.databricks_maxusers !== undefined && s.databricks_maxusers !== (remotePart as unknown as Record<string, unknown>).databricks_maxusers) return true;
+
   // Compare submission filters
   if (s.submission_filters !== undefined) {
     const remoteFilters = remotePart.submission_filters;
@@ -304,6 +358,19 @@ function detectPartSettingsChanged(
     if (JSON.stringify(s.submission_filters.include ?? []) !== JSON.stringify(remoteFilters.include ?? [])) return true;
     if (JSON.stringify(s.submission_filters.exclude ?? []) !== JSON.stringify(remoteFilters.exclude ?? [])) return true;
     if (JSON.stringify(s.submission_filters.list ?? []) !== JSON.stringify((remoteFilters as { list?: string[] }).list ?? [])) return true;
+  }
+
+  // Compare lab_interface
+  if (s.lab_interface !== undefined) {
+    const remoteInterface = (remotePart as unknown as Record<string, unknown>).lab_interface as Record<string, unknown> | undefined;
+    if (!remoteInterface) return true;
+    if (JSON.stringify(s.lab_interface) !== JSON.stringify(remoteInterface)) return true;
+  }
+
+  // Compare tags
+  if (s.tags !== undefined) {
+    const remoteTags = (remotePart as unknown as Record<string, unknown>).tags as string[] | undefined;
+    if (JSON.stringify(s.tags) !== JSON.stringify(remoteTags ?? [])) return true;
   }
 
   return false;

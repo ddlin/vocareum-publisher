@@ -301,12 +301,27 @@ export async function publish(
 
       if (action.assignmentMetadataChanged === true && action.assignment.assignment_id) {
         try {
+          const asnSettings = action.assignment.settings;
           await updateAssignment(client, workingConfig.vocareum.course_id, action.assignment.assignment_id, {
             name: action.assignment.name,
-            description: action.assignment.settings?.description,
-            nosubmit: action.assignment.settings?.nosubmit,
-            auto_submit: action.assignment.settings?.auto_submit,
-            grading_on_submit: action.assignment.settings?.grading_on_submit,
+            description: asnSettings?.description,
+            nosubmit: asnSettings?.nosubmit,
+            publish: asnSettings?.publish,
+            publish_grades: asnSettings?.publish_grades,
+            auto_submit: asnSettings?.auto_submit,
+            grading_on_submit: asnSettings?.grading_on_submit,
+            noworkarea: asnSettings?.noworkarea,
+            exam_mode: asnSettings?.exam_mode,
+            exam_duration: asnSettings?.exam_duration,
+            num_attempts: asnSettings?.num_attempts,
+            show_end_exam_button: asnSettings?.show_end_exam_button,
+            copy_startercode: asnSettings?.copy_startercode,
+            uncompressupload: asnSettings?.uncompressupload,
+            lti_on: asnSettings?.lti_on,
+            anonymous_grading: asnSettings?.anonymous_grading,
+            grading_visibility: asnSettings?.grading_visibility,
+            send_webhook: asnSettings?.send_webhook,
+            live_code_comments: asnSettings?.live_code_comments,
           });
           logger.success(`Updated assignment metadata: ${action.assignment.name}`);
         } catch (error) {
@@ -345,7 +360,7 @@ export async function publish(
       // Update part metadata/settings if needed
       if (partAction.metadataChanged && !action.willCreate) {
         // name is REQUIRED for part updates
-        const partName = partAction.part.name ?? partAction.part.settings?.name ?? partAction.part.path;
+        const partName = partAction.part.name ?? partAction.part.path;
         const partSettings = partAction.part.settings;
         const assignmentId = action.assignment.assignment_id;
         if (!assignmentId) {
@@ -365,6 +380,16 @@ export async function publish(
             monthly_time: partSettings?.monthly_time,
             total_time: partSettings?.total_time,
             total_dollar: partSettings?.total_dollar,
+            late_penalty_percent: partSettings?.late_penalty_percent,
+            late_penalty_percent_rule: partSettings?.late_penalty_percent_rule,
+            deadlinedate: partSettings?.deadlinedate,
+            endlab: partSettings?.endlab,
+            labtype: partSettings?.labtype,
+            container_image: partSettings?.container_image,
+            number_of_submissions: partSettings?.number_of_submissions,
+            lab_interface: partSettings?.lab_interface,
+            databricks_maxusers: partSettings?.databricks_maxusers,
+            tags: partSettings?.tags,
           });
           logger.success(`Updated part ${partName}`);
         } catch (error) {

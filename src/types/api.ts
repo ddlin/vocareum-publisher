@@ -111,25 +111,52 @@ export interface CourseSettings {
  *
  * Confirmed working fields (Feb 2026 live probes):
  * - name, description, nosubmit, auto_submit, grading_on_submit
+ * - publish, publish_grades, noworkarea, exam_mode, exam_duration, num_attempts
+ * - show_end_exam_button, copy_startercode, uncompressupload, lti_on
+ * - anonymous_grading, grading_visibility, send_webhook, live_code_comments
  *
  * Fields that DO NOT work (return "No valid parameters to update the assignment"):
- * - published, points, due_date, gradespublished
+ * - points, due_date, gradespublished
  */
 export interface ApiAssignmentSettings {
   name?: string;
   description?: string;
   nosubmit?: boolean;
+  publish?: boolean;
+  publish_grades?: string;
   auto_submit?: boolean;
   grading_on_submit?: boolean;
+  noworkarea?: boolean;
+  exam_mode?: 'timed' | 'scheduled' | 'timed_scheduled';
+  exam_duration?: number;
+  num_attempts?: number;
+  show_end_exam_button?: boolean;
+  copy_startercode?: boolean;
+  uncompressupload?: boolean;
+  lti_on?: boolean;
+  anonymous_grading?: boolean;
+  grading_visibility?: 'all' | 'assigned';
+  send_webhook?: boolean;
+  live_code_comments?: boolean;
+}
+
+/**
+ * Lab interface configuration for parts (API shape)
+ * Note: Use LabInterface from config.ts for config validation
+ */
+export interface ApiLabInterface {
+  panels?: string[];  // e.g., ["Console", "Html"]
+  controls?: string[];  // e.g., ["Reset"]
+  information?: string[];  // e.g., ["Assignments"]
+  launch_behavior?: string[];
+  grades?: string[];
 }
 
 /**
  * Part settings for API updates
  *
- * Confirmed working fields (Feb 2026 live probes):
- * - name (REQUIRED for most updates)
- * - submission_filters (object with include/exclude/list arrays)
- * - session_length, monthly_dollar, monthly_time, total_time, total_dollar
+ * All fields confirmed working (Feb 2026 live probes).
+ * name is REQUIRED for most update requests.
  *
  * Fields requiring org permissions:
  * - cloud_labs, instant_aws_access ("Cloud not allowed for the org")
@@ -141,13 +168,28 @@ export interface ApiPartSettings {
     exclude?: string[];
     list?: string[];  // Explicit file list
   };
-  cloud_labs?: boolean;  // Requires org permission
-  instant_aws_access?: boolean;  // Requires org permission
-  session_length?: string;
-  monthly_dollar?: string;
-  monthly_time?: string;
-  total_time?: string;
-  total_dollar?: string;
+  // Cloud/AWS settings (require org permission)
+  cloud_labs?: boolean;
+  instant_aws_access?: boolean;
+  // Resource budgets
+  session_length?: string;  // Session length in minutes
+  monthly_dollar?: string;  // Monthly dollar budget
+  monthly_time?: string;  // Monthly time budget in minutes
+  total_time?: string;  // Total time budget in minutes
+  total_dollar?: string;  // Total dollar budget
+  // Late submission settings
+  late_penalty_percent?: number;  // Penalty percentage (0-100)
+  late_penalty_percent_rule?: 'max score' | 'student score';
+  deadlinedate?: string;  // Part deadline (ISO 8601)
+  // Lab settings
+  endlab?: 'stop' | 'terminate';  // Behavior on end lab
+  labtype?: string;  // Lab type name (e.g., "Visual Studio Code", "JupyterLab")
+  container_image?: string;  // Container image (must match labtype)
+  number_of_submissions?: number;  // Max submissions allowed
+  lab_interface?: ApiLabInterface;  // Lab interface configuration
+  // Optional/advanced settings
+  databricks_maxusers?: number;  // Max users for Databricks
+  tags?: string[];  // Tags for the part
 }
 
 /**

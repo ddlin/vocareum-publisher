@@ -47,28 +47,61 @@ export const SubmissionFiltersSchema = z.object({
 export type SubmissionFilters = z.infer<typeof SubmissionFiltersSchema>;
 
 /**
+ * Lab interface configuration schema
+ */
+export const LabInterfaceSchema = z.object({
+  panels: z.array(z.string()).optional(),
+  controls: z.array(z.string()).optional(),
+  information: z.array(z.string()).optional(),
+  launch_behavior: z.array(z.string()).optional(),
+  grades: z.array(z.string()).optional(),
+});
+
+export type LabInterface = z.infer<typeof LabInterfaceSchema>;
+
+/**
  * Part settings for Vocareum configuration
+ *
+ * All fields confirmed working via API (Feb 2026).
  */
 export const PartSettingsSchema = z
   .object({
-    name: z.string().optional(),
-    description: z.string().optional(),
-    /** Include/exclude patterns for student submissions (passed to rsync) */
+    /** Include/exclude patterns for student submissions */
     submission_filters: SubmissionFiltersSchema.optional(),
-    /** Enable cloud labs for this part */
+    /** Enable cloud labs for this part (requires org permission) */
     cloud_labs: z.boolean().optional(),
-    /** Enable instant AWS access for this part */
+    /** Enable instant AWS access for this part (requires org permission) */
     instant_aws_access: z.boolean().optional(),
-    /** Lab session length (e.g. "3600" for 1 hour) */
+    /** Lab session length in minutes (e.g. "60" for 1 hour) */
     session_length: z.string().optional(),
     /** Monthly dollar budget for cloud resources */
     monthly_dollar: z.string().optional(),
-    /** Monthly time budget for cloud resources */
+    /** Monthly time budget for cloud resources (minutes) */
     monthly_time: z.string().optional(),
-    /** Total time budget for cloud resources */
+    /** Total time budget for cloud resources (minutes) */
     total_time: z.string().optional(),
     /** Total dollar budget for cloud resources */
     total_dollar: z.string().optional(),
+    /** Late submission penalty percentage (0-100) */
+    late_penalty_percent: z.number().optional(),
+    /** How late penalty is applied: "max score" or "student score" */
+    late_penalty_percent_rule: z.enum(['max score', 'student score']).optional(),
+    /** Part submission deadline (ISO 8601 date string) */
+    deadlinedate: z.string().optional(),
+    /** Behavior on end lab: "stop" or "terminate" */
+    endlab: z.enum(['stop', 'terminate']).optional(),
+    /** Lab type name (e.g., "Visual Studio Code", "JupyterLab") */
+    labtype: z.string().optional(),
+    /** Container image name (must be valid for the labtype) */
+    container_image: z.string().optional(),
+    /** Maximum number of submissions allowed */
+    number_of_submissions: z.number().optional(),
+    /** Lab interface configuration */
+    lab_interface: LabInterfaceSchema.optional(),
+    /** Maximum users for Databricks labs */
+    databricks_maxusers: z.number().optional(),
+    /** Tags for the part */
+    tags: z.array(z.string()).optional(),
   })
   .optional();
 
@@ -93,9 +126,12 @@ export type Part = z.infer<typeof PartSchema>;
  *
  * Confirmed working fields (Feb 2026 API probes):
  * - description, nosubmit, auto_submit, grading_on_submit
+ * - publish, publish_grades, noworkarea, exam_mode, exam_duration, num_attempts
+ * - show_end_exam_button, copy_startercode, uncompressupload, lti_on
+ * - anonymous_grading, grading_visibility, send_webhook, live_code_comments
  *
  * Fields that DO NOT work via API (return "No valid parameters"):
- * - published, points, due_date
+ * - points, due_date
  * These must be set manually in Vocareum UI.
  */
 export const AssignmentSettingsSchema = z
@@ -103,10 +139,38 @@ export const AssignmentSettingsSchema = z
     description: z.string().optional(),
     /** Disable student submissions for this assignment */
     nosubmit: z.boolean().optional(),
+    /** Publish the assignment to students */
+    publish: z.boolean().optional(),
+    /** Publish grades setting (string value) */
+    publish_grades: z.string().optional(),
     /** Enable automatic submission */
     auto_submit: z.boolean().optional(),
     /** Grade immediately on submit */
     grading_on_submit: z.boolean().optional(),
+    /** Disable work area for students */
+    noworkarea: z.boolean().optional(),
+    /** Exam mode: timed, scheduled, or timed_scheduled */
+    exam_mode: z.enum(['timed', 'scheduled', 'timed_scheduled']).optional(),
+    /** Exam duration in minutes */
+    exam_duration: z.number().optional(),
+    /** Number of attempts allowed */
+    num_attempts: z.number().optional(),
+    /** Show end exam button to students */
+    show_end_exam_button: z.boolean().optional(),
+    /** Copy starter code to student workspace on start */
+    copy_startercode: z.boolean().optional(),
+    /** Uncompress uploaded files */
+    uncompressupload: z.boolean().optional(),
+    /** Enable LTI integration */
+    lti_on: z.boolean().optional(),
+    /** Enable anonymous grading */
+    anonymous_grading: z.boolean().optional(),
+    /** Grading visibility: all or assigned */
+    grading_visibility: z.enum(['all', 'assigned']).optional(),
+    /** Send webhook on events */
+    send_webhook: z.boolean().optional(),
+    /** Enable live code comments */
+    live_code_comments: z.boolean().optional(),
   })
   .optional();
 

@@ -217,17 +217,29 @@ return 400 Invalid Request. Use **course-scoped** endpoints instead.
 - `name` — assignment display name (string)
 - `description` — assignment description (string)
 - `nosubmit` — disable student submissions (boolean)
+- `publish` — publish assignment to students (boolean)
+- `publish_grades` — grades publishing setting (string)
 - `auto_submit` — automatic submission (boolean)
 - `grading_on_submit` — grade immediately on submit (boolean)
+- `noworkarea` — disable work area for students (boolean)
+- `exam_mode` — exam type: "timed", "scheduled", or "timed_scheduled"
+- `exam_duration` — exam duration in minutes (integer)
+- `num_attempts` — number of attempts allowed (integer)
+- `show_end_exam_button` — show end exam button to students (boolean)
+- `copy_startercode` — copy starter code to student workspace (boolean)
+- `uncompressupload` — uncompress uploaded files (boolean)
+- `lti_on` — enable LTI integration (boolean)
+- `anonymous_grading` — enable anonymous grading (boolean)
+- `grading_visibility` — grading visibility: "all" or "assigned"
+- `send_webhook` — send webhook on events (boolean)
+- `live_code_comments` — enable live code comments (boolean)
 
 **Fields that DO NOT WORK:**
-- `published` — returns "No valid parameters to update the assignment"
 - `points` — returns "No valid parameters to update the assignment"
 - `due_date` — returns "No valid parameters to update the assignment"
 - `gradespublished` — returns "No valid parameters to update the assignment"
 
-**Note:** Publishing assignments and setting points/due dates appears to require
-a different endpoint or workflow not yet documented.
+**Note:** Setting points/due dates appears to require a different endpoint or workflow not yet documented.
 
 #### Part settings update
 
@@ -239,11 +251,26 @@ a different endpoint or workflow not yet documented.
   - `include` — array of glob patterns (e.g. `["*.py", "*.txt"]`)
   - `exclude` — array of glob patterns (e.g. `["*.pyc", "__pycache__"]`)
   - `list` — explicit file list (array of filenames)
-- `session_length` — lab session length in seconds (string, e.g. `"3600"`)
+- `session_length` — lab session length in minutes (string, e.g. `"60"`)
 - `monthly_dollar` — monthly dollar budget for cloud resources (string)
-- `monthly_time` — monthly time budget for cloud resources (string)
-- `total_time` — total time budget for cloud resources (string)
+- `monthly_time` — monthly time budget for cloud resources in minutes (string)
+- `total_time` — total time budget for cloud resources in minutes (string)
 - `total_dollar` — total dollar budget for cloud resources (string)
+- `late_penalty_percent` — late submission penalty percentage 0-100 (integer)
+- `late_penalty_percent_rule` — how penalty is applied: "max score" or "student score"
+- `deadlinedate` — part submission deadline (ISO 8601 date string)
+- `endlab` — behavior on end lab: "stop" or "terminate"
+- `labtype` — lab type name (e.g., "Visual Studio Code", "JupyterLab")
+- `container_image` — container image name (must be valid for the labtype)
+- `number_of_submissions` — maximum submissions allowed (integer)
+- `lab_interface` — lab interface configuration (object)
+  - `panels` — panels to show (e.g. `["Console", "Html"]`)
+  - `controls` — controls to show (e.g. `["Reset"]`)
+  - `information` — information panels (e.g. `["Assignments"]`)
+  - `launch_behavior` — launch behavior options
+  - `grades` — grades display options
+- `databricks_maxusers` — max users for Databricks labs (integer)
+- `tags` — tags for the part (array of strings)
 
 **Fields that require org permissions:**
 - `cloud_labs` — returns "Cloud not allowed for the org" if org lacks cloud feature
