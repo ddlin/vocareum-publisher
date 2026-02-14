@@ -80,6 +80,8 @@ export interface AssignmentAction {
   reason?: string;
   willCreate?: boolean;
   templateId?: string;
+  /** Course ID where the template assignment exists (for cross-course templates) */
+  templateCourseId?: string;
   /** True when assignment_id was discovered via name lookup and should be persisted */
   idDiscoveredByName?: boolean;
   /** True when part_ids were discovered and should be persisted */

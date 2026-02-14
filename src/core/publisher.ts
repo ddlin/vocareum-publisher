@@ -329,7 +329,8 @@ export async function publish(
           client,
           action.templateId,
           action.assignment.name,
-          workingConfig.vocareum.course_id
+          workingConfig.vocareum.course_id,
+          action.templateCourseId
         );
 
         logger.success(`Created assignment ${action.assignment.name} (${copyResult.assignment_id})`);
@@ -368,7 +369,8 @@ export async function publish(
           const fullAssignment = await getAssignment(client, workingConfig.vocareum.course_id, copyResult.assignment_id);
           const templateSettings = mapAssignmentSettings(fullAssignment);
           if (Object.keys(templateSettings).length > 0) {
-            action.assignment.settings = { ...action.assignment.settings, ...templateSettings };
+            // Merge: template settings as base, local settings override
+            action.assignment.settings = { ...templateSettings, ...action.assignment.settings };
             logger.debug(`Pulled ${Object.keys(templateSettings).length} settings from template`);
           }
 
@@ -377,7 +379,8 @@ export async function publish(
             const fullPart = await getPart(client, workingConfig.vocareum.course_id, copyResult.assignment_id, m.apiPartId);
             const partSettings = mapPartSettings(fullPart);
             if (Object.keys(partSettings).length > 0) {
-              m.configPart.settings = { ...m.configPart.settings, ...partSettings };
+              // Merge: template settings as base, local settings override
+              m.configPart.settings = { ...partSettings, ...m.configPart.settings };
             }
           }
         } catch (settingsError) {

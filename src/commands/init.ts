@@ -84,6 +84,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       course_id: courseId,
       api_base_url: 'https://api.vocareum.com',
       templates,
+      template_assignment_ids: [],
       excluded_assignments: [],
     },
     assignments: [],

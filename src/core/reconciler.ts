@@ -223,12 +223,14 @@ export async function reconcile(
     // If we are strictly updating metadata (name, description), checks would go here.
     // For now, assume metadata matches or we enable metadata updates implicitly.
 
+    const resolvedTemplate = resolveTemplate(configAssignment, config);
     assignments.push({
       type: assignmentActionType,
       assignment: configAssignment,
       parts: partActions,
       willCreate: assignmentActionType === 'create',
-      templateId: resolveTemplateAssignmentId(configAssignment, config),
+      templateId: resolvedTemplate?.id,
+      templateCourseId: resolvedTemplate?.courseId,
       idDiscoveredByName,
       partIdsDiscovered,
       assignmentMetadataChanged,
@@ -278,26 +280,52 @@ export async function reconcile(
   };
 }
 
-function resolveTemplateAssignmentId(assignment: Assignment, config: Config): string | undefined {
+interface ResolvedTemplate {
+  id: string;
+  courseId: string;
+}
+
+function resolveTemplate(assignment: Assignment, config: Config): ResolvedTemplate | undefined {
+  const defaultCourseId = config.vocareum.course_id;
+
   // 1. Per-assignment override takes precedence
   if (assignment.template_assignment_id !== undefined && assignment.template_assignment_id !== '') {
-    return assignment.template_assignment_id;
+    // Check if this ID corresponds to a named template (to get its course_id)
+    const templates = config.vocareum.templates ?? [];
+    const matchingTemplate = templates.find(t => t.id === assignment.template_assignment_id);
+    return {
+      id: assignment.template_assignment_id,
+      courseId: matchingTemplate?.course_id ?? defaultCourseId,
+    };
   }
 
   // 2. Named templates array (preferred)
   const templates = config.vocareum.templates ?? [];
   if (templates.length > 0) {
-    return templates[0].id;
+    return {
+      id: templates[0].id,
+      courseId: templates[0].course_id,
+    };
   }
 
-  // 3. Legacy: template_assignment_ids array
+  // 3. Legacy: template_assignment_ids array (assumes same course)
   const templateIds = config.vocareum.template_assignment_ids ?? [];
   if (templateIds.length > 0) {
-    return templateIds[0];
+    return {
+      id: templateIds[0],
+      courseId: defaultCourseId,
+    };
   }
 
-  // 4. Legacy: single template_assignment_id
-  return config.vocareum.template_assignment_id;
+  // 4. Legacy: single template_assignment_id (assumes same course)
+  if (config.vocareum.template_assignment_id) {
+    return {
+      id: config.vocareum.template_assignment_id,
+      courseId: defaultCourseId,
+    };
+  }
+
+  return undefined;
 }
 
 /**

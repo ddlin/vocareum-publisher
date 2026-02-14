@@ -79,17 +79,31 @@ export async function getAssignment(
  * @param templateId - Template assignment ID (string!)
  * @param name - New assignment name
  * @param courseId - Target course ID
+ * @param sourceCourseId - Source course ID (for cross-course templates)
  * @returns New assignment with parts
  */
 export async function copyAssignment(
   client: VocareumClient,
   templateId: string,
   name: string,
-  courseId: string
+  courseId: string,
+  sourceCourseId?: string
 ): Promise<AssignmentCopyResponse> {
   // Postman contract:
   // POST /api/v2/courses/{courseId}/assignments
   // { method: "copy", source: "{source-assignmentId}", name: "assignment copy" }
+  // For cross-course copies, include source_course_id
+  const data: Record<string, string> = {
+    method: 'copy',
+    source: templateId,
+    name,
+  };
+
+  // Include source course ID for cross-course template copies
+  if (sourceCourseId && sourceCourseId !== courseId) {
+    data.source_course_id = sourceCourseId;
+  }
+
   const response = await client.request<{
     status: 'success';
     message?: string;
@@ -98,11 +112,7 @@ export async function copyAssignment(
   }>({
     method: 'POST',
     url: `/api/v2/courses/${courseId}/assignments`,
-    data: {
-      method: 'copy',
-      source: templateId,
-      name,
-    },
+    data,
   });
 
   let assignmentId = response.objid;
