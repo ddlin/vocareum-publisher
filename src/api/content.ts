@@ -26,6 +26,144 @@ interface TransactionResponse {
 const PART_UPDATE_POLL_MAX_ATTEMPTS = 30;
 const PART_UPDATE_POLL_DELAY_MS = 1000;
 
+function isHttp400(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+  const maybe = error as { statusCode?: number; response?: { status?: number } };
+  return maybe.statusCode === 400 || maybe.response?.status === 400;
+}
+
+interface ParsedFileEntry {
+  path: string;
+  size: number;
+  modifiedAt?: string;
+  directory?: string;
+}
+
+function parseFileListResponse(response: unknown): ParsedFileEntry[] {
+  let rawFiles: unknown[] = [];
+  if (Array.isArray(response)) {
+    rawFiles = response;
+  } else if (response !== null && typeof response === 'object') {
+    const obj = response as {
+      files?: unknown[];
+      data?: unknown[];
+      items?: unknown[];
+    };
+    rawFiles = obj.files ?? obj.data ?? obj.items ?? [];
+  }
+
+  const parsed: ParsedFileEntry[] = [];
+  for (const entry of rawFiles) {
+    if (typeof entry === 'string') {
+      parsed.push({ path: entry, size: 0 });
+      continue;
+    }
+    if (entry !== null && typeof entry === 'object') {
+      const e = entry as {
+        path?: unknown;
+        filename?: unknown;
+        name?: unknown;
+        size?: unknown;
+        modifiedAt?: unknown;
+        modified_at?: unknown;
+        dir?: unknown;
+        directory?: unknown;
+        target?: unknown;
+      };
+      const pathValue = e.path ?? e.filename ?? e.name;
+      if (typeof pathValue === 'string' && pathValue.length > 0) {
+        parsed.push({
+          path: pathValue,
+          size: typeof e.size === 'number' ? e.size : 0,
+          modifiedAt: typeof e.modifiedAt === 'string'
+            ? e.modifiedAt
+            : (typeof e.modified_at === 'string' ? e.modified_at : undefined),
+          directory: typeof e.dir === 'string'
+            ? e.dir
+            : (typeof e.directory === 'string'
+              ? e.directory
+              : (typeof e.target === 'string' ? e.target : undefined)),
+        });
+      }
+    }
+  }
+
+  return parsed;
+}
+
+async function fetchFileContent(
+  client: VocareumClient,
+  courseId: string,
+  assignmentId: string,
+  partId: string,
+  directory: DirectoryType,
+  filePath: string
+): Promise<unknown> {
+  const url = `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
+  let last400Error: unknown;
+  try {
+    return await client.request<unknown>({
+      method: 'GET',
+      url,
+      params: {
+        dir: directory,
+        filename: filePath,
+      },
+    });
+  } catch (error) {
+    if (!isHttp400(error)) {
+      throw error;
+    }
+    last400Error = error;
+
+    try {
+      return await client.request<unknown>({
+        method: 'GET',
+        url,
+        params: {
+          target: directory,
+          filename: filePath,
+        },
+      });
+    } catch (retryError) {
+      if (!isHttp400(retryError)) {
+        throw retryError;
+      }
+      last400Error = retryError;
+
+      try {
+        return await client.request<unknown>({
+          method: 'GET',
+          url,
+          params: { filename: filePath },
+        });
+      } catch (retryError2) {
+        if (!isHttp400(retryError2)) {
+          throw retryError2;
+        }
+        last400Error = retryError2;
+
+        const prefixedPath = `${directory}/${filePath}`;
+        try {
+          return await client.request<unknown>({
+            method: 'GET',
+            url,
+            params: { filename: prefixedPath },
+          });
+        } catch (retryError3) {
+          if (!isHttp400(retryError3)) {
+            throw retryError3;
+          }
+          last400Error = retryError3;
+          throw last400Error;
+        }
+      }
+    }
+  }
+}
+
 /**
  * Calculate CRC32 checksum for ZIP file integrity
  * @internal Exported for testing
@@ -224,21 +362,21 @@ export function downloadContent(
   partId: string
 ): Promise<FileMap> {
   return (async (): Promise<FileMap> => {
-    const directories: DirectoryType[] = ['startercode', 'scripts', 'docs', 'data', 'private', 'lib', 'asnlib'];
+    const directories: DirectoryType[] = ['startercode', 'scripts', 'docs', 'data', 'private', 'lib', 'asnlib', 'course'];
     const downloaded: FileMap = {};
 
     for (const directory of directories) {
       const files = await listFiles(client, courseId, assignmentId, partId, directory);
       for (const file of files) {
         try {
-          const response = await client.request<unknown>({
-            method: 'GET',
-            url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`,
-            params: {
-              dir: directory,
-              filename: file.path,
-            },
-          });
+          const response = await fetchFileContent(
+            client,
+            courseId,
+            assignmentId,
+            partId,
+            directory,
+            file.path
+          );
 
           const key = `${directory}/${file.path}`;
           if (Buffer.isBuffer(response)) {
@@ -278,6 +416,14 @@ export function downloadContent(
  * @param directory - Directory type
  * @returns Array of file info
  */
+/**
+ * Map directory type to Vocareum API path format
+ * All instructor directories are under /voc/
+ */
+function toApiDirPath(directory: DirectoryType): string {
+  return `/voc/${directory}`;
+}
+
 export async function listFiles(
   client: VocareumClient,
   courseId: string,
@@ -285,15 +431,33 @@ export async function listFiles(
   partId: string,
   directory: DirectoryType
 ): Promise<FileInfo[]> {
+  const url = `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
+  const apiDirPath = toApiDirPath(directory);
+
   try {
-    const response = await client.request<{ files?: FileInfo[] }>({
+    // Use correct API format: dir=/voc/{directory}&list=true
+    const response = await client.request<unknown>({
       method: 'GET',
-      url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`,
-      params: { dir: directory },
+      url,
+      params: { dir: apiDirPath, list: true },
     });
-    return response.files ?? [];
-  } catch {
-    // Silently return empty - API may not support file listing
+    return parseFileListResponse(response).map((entry) => ({
+      path: entry.path,
+      size: entry.size,
+      modifiedAt: entry.modifiedAt,
+    }));
+  } catch (error) {
+    // If the directory doesn't exist, return empty array (not an error)
+    if (isHttp400(error)) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes("doesn't exist")) {
+        return [];
+      }
+    }
+    // For other errors, log and return empty
+    logger.warn(
+      `Failed to list files for part=${partId}, dir=${directory}: ${error instanceof Error ? error.message : 'Unknown'}`
+    );
     return [];
   }
 }

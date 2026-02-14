@@ -416,7 +416,7 @@ describe('listFiles', () => {
     } as unknown as VocareumClient;
   });
 
-  it('should call correct endpoint with dir param', async () => {
+  it('should call correct endpoint with dir param and list=true', async () => {
     requestMock.mockResolvedValueOnce({ files: [] });
 
     await listFiles(mockClient, 'c1', 'a1', 'p1', 'startercode');
@@ -424,7 +424,7 @@ describe('listFiles', () => {
     expect(requestMock).toHaveBeenCalledWith({
       method: 'GET',
       url: '/api/v2/courses/c1/assignments/a1/parts/p1/files',
-      params: { dir: 'startercode' },
+      params: { dir: '/voc/startercode', list: true },
     });
   });
 
@@ -448,12 +448,48 @@ describe('listFiles', () => {
     expect(result).toEqual([]);
   });
 
+  it('should support direct array response from API', async () => {
+    requestMock.mockResolvedValueOnce([
+      { path: 'main.py', size: 120 },
+      { filename: 'utils.py', size: 80 },
+    ]);
+
+    const result = await listFiles(mockClient, 'c1', 'a1', 'p1', 'scripts');
+
+    expect(result).toEqual([
+      { path: 'main.py', size: 120, modifiedAt: undefined },
+      { path: 'utils.py', size: 80, modifiedAt: undefined },
+    ]);
+  });
+
+  it('should support data/items array response variants', async () => {
+    requestMock.mockResolvedValueOnce({ data: ['a.py', 'b.py'] });
+
+    const result = await listFiles(mockClient, 'c1', 'a1', 'p1', 'startercode');
+
+    expect(result).toEqual([
+      { path: 'a.py', size: 0 },
+      { path: 'b.py', size: 0 },
+    ]);
+  });
+
   it('should return empty array on error (graceful fallback)', async () => {
     requestMock.mockRejectedValueOnce(new Error('Network error'));
 
     const result = await listFiles(mockClient, 'c1', 'a1', 'p1', 'data');
 
     expect(result).toEqual([]);
+  });
+
+  it('should return empty array on 400 "doesn\'t exist" error', async () => {
+    requestMock.mockRejectedValueOnce(
+      new VocareumError("startercode doesn't exist", 'API_ERROR', 400)
+    );
+
+    const result = await listFiles(mockClient, 'c1', 'a1', 'p1', 'startercode');
+
+    expect(result).toEqual([]);
+    expect(requestMock).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -401,7 +401,7 @@ function detectDirectories(files: FileMap): DirectoryType[] {
     const parts = filePath.split('/');
     if (parts.length > 0) {
       const dir = parts[0] as DirectoryType;
-      if (['startercode', 'scripts', 'docs', 'data', 'lib', 'asnlib'].includes(dir)) {
+      if (['startercode', 'scripts', 'docs', 'data', 'private', 'lib', 'asnlib', 'course'].includes(dir)) {
         dirs.add(dir);
       }
     }
