@@ -19,6 +19,7 @@ import { initCommand, InitOptions } from './commands/init';
 import { newCommand } from './commands/new';
 import { publishCommand, PublishCommandOptions } from './commands/publish';
 import { pullCommand, PullOptions } from './commands/pull';
+import { statusCommand, StatusCommandOptions } from './commands/status';
 import { ValidateOptions } from './commands/validate';
 import { FixOptions } from './commands/fix';
 import { logger } from './utils/logger';
@@ -206,9 +207,40 @@ Examples:
     }
   });
 
-// Push command (default action)
+// Status command (default action)
 program
-  .command('push', { isDefault: true })
+  .command('status', { isDefault: true })
+  .description('Show current local sync status and last push details')
+  .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
+  .option('--verbose', 'Show assignment-by-assignment details')
+  .addHelpText('after', `
+Description:
+  Shows the current local state without changing anything.
+
+  Includes:
+    - Config + target org/course
+    - Assignment/part mapping progress
+    - Last push timestamp, status, and commit
+    - Git branch/commit/dirty state
+    - Environment details (CI/local, API key presence)
+
+Examples:
+  $ vocareum-publish           # Default status view
+  $ vocareum-publish status
+  $ vocareum-publish status --verbose
+`)
+  .action(async (options: StatusCommandOptions) => {
+    try {
+      await statusCommand(options);
+    } catch (error) {
+      logger.error(`Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      process.exit(1);
+    }
+  });
+
+// Push command
+program
+  .command('push')
   .description('Push assignment content to Vocareum')
   .option('--dry-run', 'Preview changes without executing')
   .option('--assignment <path>', 'Push specific assignment only')

@@ -7,3 +7,4 @@ export { newCommand, createNewAssignment, type NewAssignmentOptions } from './ne
 export { validateCommand, type ValidateOptions } from './validate';
 export { fixCommand, fixValidationIssues } from './fix';
 export { publishCommand, type PublishCommandOptions } from './publish';
+export { statusCommand, type StatusCommandOptions } from './status';

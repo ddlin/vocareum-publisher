@@ -163,7 +163,13 @@ publish_history:
 | `vocareum-publish validate` | Validate configuration and structure |
 | `vocareum-publish fix` | Interactively fix validation issues |
 | `vocareum-publish pull` | Import or exclude orphaned assignments from Vocareum |
+| `vocareum-publish status` | Show current local sync status (default command) |
 | `vocareum-publish push` | Push content to Vocareum |
+
+```bash
+vocareum-publish                  # Same as: vocareum-publish status
+vocareum-publish status --verbose # Include per-assignment details
+```
 
 ### Push Options
 
