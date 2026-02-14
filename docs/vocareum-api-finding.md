@@ -21,6 +21,35 @@ We built a CLI tool to sync assignment content from GitHub to Vocareum. During i
 
 ---
 
+## Non-Standard API Patterns
+
+The Vocareum API deviates from common REST conventions in several ways, which contributed to integration difficulty:
+
+| Aspect | Standard Practice | Vocareum Pattern |
+|--------|------------------|------------------|
+| **Query param format** | `?dir=startercode` | `?dir=/voc/startercode` (full filesystem path) |
+| **Listing vs download** | Different endpoints or HTTP verbs | Same endpoint, `list=true` param toggles behavior |
+| **Auth header** | `Authorization: Bearer <token>` | `Authorization: Token <token>` |
+| **Error responses** | Detailed validation errors with field info | Generic `400 Invalid Request` |
+| **Directory abstraction** | API abstracts internal filesystem | API exposes internal paths (`/voc/`, `/work`) |
+| **Endpoint structure** | Resource-based (`/assignments/{id}`) | Requires full context (`/courses/{cid}/assignments/{aid}`) |
+
+**Why this matters:**
+
+1. **The `/voc/` prefix is unusual** — Most APIs abstract internal filesystem structure. Exposing it means clients must know internal directory layout, and creates breaking change risk if Vocareum restructures internally. The difference between `startercode` and `/voc/startercode` is non-obvious.
+
+2. **The `list=true` toggle is unusual** — Typically you'd have separate endpoints:
+   - `GET /files` → list files
+   - `GET /files/{filename}` → download file
+
+   Instead of one endpoint that changes behavior based on a query param.
+
+3. **Developers assume standard patterns** — Our initial implementation assumed industry-standard conventions, which is why it failed. The trial-and-error discovery process was necessary because the API isn't self-documenting and follows non-obvious conventions.
+
+**Recommendation:** Consider adopting more conventional REST patterns, or at minimum document the non-standard behaviors prominently.
+
+---
+
 ## Critical Issues
 
 ### 1. Direct endpoints return 400 (Undocumented)
