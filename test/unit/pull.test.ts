@@ -170,9 +170,19 @@ describe('Settings Drift Detection', () => {
       expect(valuesEqual(obj1, obj3)).toBe(false);
     });
 
-    it('should return false for different types', () => {
-      expect(valuesEqual('123', 123)).toBe(false);
+    it('should handle string/number comparison (API returns strings for some numbers)', () => {
+      // API often returns numeric values as strings (e.g., databricks_maxusers: "250")
+      expect(valuesEqual('123', 123)).toBe(true);
+      expect(valuesEqual(123, '123')).toBe(true);
+      expect(valuesEqual('250', 250)).toBe(true);
+
+      // Different values should still be different
+      expect(valuesEqual('123', 456)).toBe(false);
+      expect(valuesEqual('abc', 123)).toBe(false);
+
+      // Non-numeric comparisons should still work normally
       expect(valuesEqual(true, 'true')).toBe(false);
+      expect(valuesEqual('hello', 123)).toBe(false);
     });
   });
 });

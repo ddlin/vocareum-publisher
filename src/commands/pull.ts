@@ -15,7 +15,9 @@ import { downloadContent } from '../api/content';
 import { logger } from '../utils/logger';
 import { loadDotEnvIfPresent, isCI } from '../utils/env';
 import { prompt, promptChoice } from '../utils/prompts';
-import { pathExists, ensureDirectory, writeFile } from '../utils/files';
+import { pathExists, ensureDirectory, writeFile, calculateDirectoryHash } from '../utils/files';
+import { getCommitSha, getGitUserName } from '../utils/git';
+import type { PublishHistory } from '../types/config';
 import { mapAssignmentSettings, mapPartSettings } from '../utils/settings';
 import { normalizeSubmissionFilters } from '../types/config';
 import type { Assignment, Part, DirectoryType, AssignmentSettings, PartSettings, SubmissionFilters } from '../types/config';
@@ -40,6 +42,12 @@ interface PullSummary {
 type PullAction = 'import' | 'exclude' | 'skip';
 type StaleAction = 'exclude' | 'remove' | 'reset' | 'skip';
 type SettingsDriftAction = 'pull' | 'keep' | 'skip';
+
+/** Result from importing an assignment, includes content state for history tracking */
+interface ImportResult {
+  assignment: Assignment;
+  contentState: Record<string, string>;  // path -> hash
+}
 
 /** Represents a single setting that differs between local and remote */
 interface SettingDiff {
@@ -315,7 +323,7 @@ async function importAssignment(
   orphan: OrphanedEntity,
   localPath: string,
   verbose: boolean
-): Promise<Assignment> {
+): Promise<ImportResult> {
   const assignmentId = orphan.id;
 
   // Get full assignment details including settings
@@ -395,7 +403,30 @@ async function importAssignment(
     parts: configParts,
   };
 
-  return assignment;
+  // Calculate content hashes for each part to track state
+  const contentState: Record<string, string> = {};
+  for (const configPart of configParts) {
+    const partDir = configPart.path === '.'
+      ? localPath
+      : path.join(localPath, configPart.path);
+
+    try {
+      const hash = await calculateDirectoryHash(partDir);
+      const stateKey = configPart.path === '.' ? localPath : `${localPath}/${configPart.path}`;
+      contentState[stateKey] = hash;
+
+      if (verbose) {
+        logger.debug(`Content hash for ${stateKey}: ${hash.substring(0, 8)}...`);
+      }
+    } catch (error) {
+      // Directory might not exist if no files were downloaded
+      if (verbose) {
+        logger.debug(`Could not hash ${partDir}: ${error instanceof Error ? error.message : 'Unknown'}`);
+      }
+    }
+  }
+
+  return { assignment, contentState };
 }
 
 /**
@@ -523,6 +554,7 @@ export async function pullCommand(options: PullOptions): Promise<void> {
     const assignmentsToRemove: string[] = [];  // assignment paths to remove
     const assignmentsToReset: string[] = [];   // assignment paths to reset IDs
     const settingsUpdates: Map<string, { assignmentSettings?: NonNullable<AssignmentSettings>; partSettings?: Map<string, NonNullable<PartSettings>> }> = new Map();
+    const importedContentState: Record<string, string> = {};  // Accumulated content hashes from imports
 
     // Process orphaned assignments (exist in Vocareum but not in config)
     if (hasOrphans) {
@@ -563,7 +595,7 @@ export async function pullCommand(options: PullOptions): Promise<void> {
           const finalDirName = await getUniqueDirectoryName('.', dirName || suggestedName);
 
           try {
-            const assignment = await importAssignment(
+            const { assignment, contentState } = await importAssignment(
               client,
               config.vocareum.course_id,
               orphan,
@@ -572,6 +604,8 @@ export async function pullCommand(options: PullOptions): Promise<void> {
             );
 
             newAssignments.push(assignment);
+            // Merge content state for publish history tracking
+            Object.assign(importedContentState, contentState);
             summary.imported++;
             logger.success(`Imported "${orphan.name}" to ${finalDirName}/`);
           } catch (error) {
@@ -725,7 +759,25 @@ export async function pullCommand(options: PullOptions): Promise<void> {
       assignmentsToReset.length > 0 ||
       settingsUpdates.size > 0;
 
-    if (hasChanges) {
+    // Create publish_history entry for imported assignments to prevent accidental re-push
+    let newPublishHistory: PublishHistory[] | undefined;
+    if (Object.keys(importedContentState).length > 0) {
+      const commitSha = await getCommitSha().catch(() => 'unknown');
+      const gitUserName = await getGitUserName().catch(() => null);
+      const publishedBy = gitUserName ?? 'pull-command';
+
+      const historyEntry: PublishHistory = {
+        timestamp: new Date().toISOString(),
+        commit_sha: commitSha,
+        published_by: publishedBy,
+        status: 'success',
+        content_state: importedContentState,
+      };
+
+      newPublishHistory = [historyEntry];
+    }
+
+    if (hasChanges || newPublishHistory) {
       // Build assignment updates for settings that need to be pulled
       const assignmentUpdates: Partial<Assignment>[] = [...newAssignments];
 
@@ -771,6 +823,7 @@ export async function pullCommand(options: PullOptions): Promise<void> {
         excluded_assignments: newExclusions.length > 0 ? newExclusions : undefined,
         remove_assignments: assignmentsToRemove.length > 0 ? assignmentsToRemove : undefined,
         reset_assignment_ids: assignmentsToReset.length > 0 ? assignmentsToReset : undefined,
+        publish_history: newPublishHistory,
       });
 
       logger.info('Updated vocareum.yaml');
