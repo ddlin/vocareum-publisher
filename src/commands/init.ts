@@ -25,7 +25,7 @@ export interface InitOptions {
 export async function initCommand(options: InitOptions): Promise<void> {
   const configPath = 'vocareum.yaml';
 
-  if (await pathExists(configPath) && !options.force) {
+  if (await pathExists(configPath) && options.force !== true) {
     const overwrite = await promptConfirm(
       'vocareum.yaml already exists. Overwrite?',
       false
@@ -44,7 +44,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     return;
   }
 
-  const courseId = options.courseId || await prompt('Enter Course ID:');
+  const courseId = options.courseId ?? await prompt('Enter Course ID:');
 
   if (!courseId) {
     logger.error('Course ID is required.');

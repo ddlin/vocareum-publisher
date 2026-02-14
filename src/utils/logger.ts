@@ -69,7 +69,7 @@ export class Logger {
   error(message: string, meta?: unknown): void {
     // Always log errors
     process.stderr.write(chalk.red('✗ ') + message + '\n');
-    if (meta && this.level >= LogLevel.DEBUG) {
+    if (meta !== undefined && meta !== null && this.level >= LogLevel.DEBUG) {
       process.stderr.write(chalk.gray(JSON.stringify(meta, null, 2)) + '\n');
     }
   }
@@ -80,7 +80,7 @@ export class Logger {
   warn(message: string, meta?: unknown): void {
     if (this.level >= LogLevel.WARN) {
       process.stderr.write(chalk.yellow('⚠ ') + message + '\n');
-      if (meta && this.level >= LogLevel.DEBUG) {
+      if (meta !== undefined && meta !== null && this.level >= LogLevel.DEBUG) {
         process.stderr.write(chalk.gray(JSON.stringify(meta, null, 2)) + '\n');
       }
     }
@@ -110,7 +110,7 @@ export class Logger {
   debug(message: string, meta?: unknown): void {
     if (this.level >= LogLevel.DEBUG) {
       process.stdout.write(chalk.gray(`[DEBUG ${timestamp()}] `) + message + '\n');
-      if (meta) {
+      if (meta !== undefined && meta !== null) {
         process.stdout.write(chalk.gray(JSON.stringify(meta, null, 2)) + '\n');
       }
     }
@@ -122,7 +122,7 @@ export class Logger {
   trace(message: string, meta?: unknown): void {
     if (this.level >= LogLevel.TRACE) {
       process.stdout.write(chalk.gray(`[TRACE ${timestamp()}] `) + message + '\n');
-      if (meta) {
+      if (meta !== undefined && meta !== null) {
         process.stdout.write(chalk.gray(JSON.stringify(meta, null, 2)) + '\n');
       }
     }

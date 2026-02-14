@@ -55,7 +55,7 @@ export async function fixCommand(options: FixOptions): Promise<void> {
 
       const folderPath = error.path;
 
-      if (options.nonInteractive) {
+      if (options.nonInteractive === true) {
         logger.info(`Creating ${folderPath}...`);
         await ensureDirectory(folderPath);
       } else {

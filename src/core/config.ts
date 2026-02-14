@@ -120,8 +120,8 @@ export async function updateConfig(configPath: string, updates: ConfigUpdates): 
         // Update existing assignment
         Object.assign(existing, update);
       } else if (update.path !== undefined && update.path !== '' &&
-                 update.name !== undefined && update.name !== '' &&
-                 update.parts !== undefined) {
+        update.name !== undefined && update.name !== '' &&
+        update.parts !== undefined) {
         // New assignment - validate required fields exist
         const newAssignment: Assignment = {
           path: update.path,
@@ -137,7 +137,7 @@ export async function updateConfig(configPath: string, updates: ConfigUpdates): 
   }
 
   if (updates.publish_history !== undefined) {
-    if (!currentConfig.publish_history) {
+    if (currentConfig.publish_history === undefined) {
       currentConfig.publish_history = [];
     }
 

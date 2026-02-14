@@ -103,7 +103,7 @@ export async function syncDirectory(
   );
 
   // 2. Handle deletions if enabled
-  if (options.syncDeletes) {
+  if (options.syncDeletes === true) {
     try {
       logger.info('Syncing deletions...');
 

@@ -223,15 +223,13 @@ export function downloadContent(
   assignmentId: string,
   partId: string
 ): Promise<FileMap> {
-  return (async () => {
+  return (async (): Promise<FileMap> => {
     const directories: DirectoryType[] = ['startercode', 'scripts', 'docs', 'data', 'private', 'lib', 'asnlib'];
     const downloaded: FileMap = {};
-    let attempts = 0;
 
     for (const directory of directories) {
       const files = await listFiles(client, courseId, assignmentId, partId, directory);
       for (const file of files) {
-        attempts += 1;
         try {
           const response = await client.request<unknown>({
             method: 'GET',

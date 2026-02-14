@@ -65,7 +65,7 @@ export async function getAssignment(
     method: 'GET',
     url: `/api/v2/courses/${courseId}/assignments/${assignmentId}`,
   });
-  if (!response.assignments || response.assignments.length === 0) {
+  if (response.assignments.length === 0) {
     throw new Error(`Assignment not found: ${assignmentId}`);
   }
   return response.assignments[0];

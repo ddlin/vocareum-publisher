@@ -65,7 +65,7 @@ export type SubmissionFiltersObject = z.infer<typeof SubmissionFiltersObjectSche
 export function normalizeSubmissionFilters(
   filters: SubmissionFilters | null | undefined
 ): SubmissionFiltersObject | undefined {
-  if (filters === undefined || filters === null) return undefined;
+  if (filters === undefined || filters === null) {return undefined;}
 
   // If it's an array, treat as include list
   if (Array.isArray(filters)) {

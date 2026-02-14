@@ -39,7 +39,7 @@ export async function promptNumber(message: string, defaultValue?: number): Prom
       name: 'value',
       message,
       default: defaultValue,
-      validate: (input: number) => {
+      validate: (input: number): boolean | string => {
         if (isNaN(input) || input < 0) {
           return 'Please enter a valid positive number';
         }

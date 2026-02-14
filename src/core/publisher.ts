@@ -24,7 +24,7 @@ import { logger } from '../utils/logger';
 import { promptConfirm } from '../utils/prompts';
 
 function isHttp400(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
+  if (typeof error !== 'object' || error === null) { return false; }
   const maybeError = error as { response?: { status?: number }; statusCode?: number };
   return maybeError.response?.status === 400 || maybeError.statusCode === 400;
 }
@@ -32,7 +32,7 @@ function isHttp400(error: unknown): boolean {
 function sanitizeSubmissionFilters(
   filters: ReturnType<typeof normalizeSubmissionFilters>
 ): ApiPartSettings['submission_filters'] | undefined {
-  if (!filters) return undefined;
+  if (!filters) { return undefined; }
   const include = filters.include?.filter((v) => v.length > 0);
   const exclude = filters.exclude?.filter((v) => v.length > 0);
   const list = filters.list?.filter((v) => v.length > 0);
@@ -80,9 +80,9 @@ function buildPartSettingsPayload(
 }
 
 function settingsEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (a === undefined || a === null) return b === undefined || b === null;
-  if (b === undefined || b === null) return false;
+  if (a === b) { return true; }
+  if (a === undefined || a === null) { return b === undefined || b === null; }
+  if (b === undefined || b === null) { return false; }
   if (typeof a === 'object' && typeof b === 'object') {
     return JSON.stringify(a) === JSON.stringify(b);
   }
@@ -159,7 +159,7 @@ export async function publish(
 
   // 0. Get current git state for history
   const commitSha = await getCommitSha().catch(() => 'unknown');
-  const userName = (await getGitUserName().catch(() => null)) || 'unknown';
+  const userName = (await getGitUserName().catch(() => null)) ?? 'unknown';
 
   // 1. Reconcile
   const lastHistory = config.publish_history?.[0]; // Get most recent
@@ -179,13 +179,13 @@ export async function publish(
   const hasDiscoveredIds = plan.assignments.some((a) => a.idDiscoveredByName === true);
   const hasErrorsInPlan = plan.assignments.some((a) => a.type === 'error');
   const hasChanges = plan.summary.assignmentsToCreate > 0 ||
-                     plan.summary.assignmentsToUpdate > 0 ||
-                     plan.summary.partsToUpdate > 0 ||
-                     plan.summary.coursesToUpdate > 0 ||
-                     hasDiscoveredIds ||
-                     hasErrorsInPlan;
+    plan.summary.assignmentsToUpdate > 0 ||
+    plan.summary.partsToUpdate > 0 ||
+    plan.summary.coursesToUpdate > 0 ||
+    hasDiscoveredIds ||
+    hasErrorsInPlan;
 
-  if (options.verbose || options.dryRun) {
+  if ((options.verbose ?? false) || (options.dryRun ?? false)) {
     displayPlan(plan);
   } else if (hasChanges) {
     // Show brief summary even without verbose
@@ -203,7 +203,7 @@ export async function publish(
   }
 
   // 3. Dry Run Check
-  if (options.dryRun) {
+  if (options.dryRun === true) {
     logger.info('Dry run complete. No changes made.');
     return {
       success: true,
@@ -310,8 +310,8 @@ export async function publish(
       continue;
     }
 
-    if (action.type === 'create' && action.willCreate) {
-      if (!action.templateId) {
+    if (action.type === 'create' && action.willCreate === true) {
+      if (action.templateId === undefined || action.templateId === null || action.templateId === '') {
         logger.error(`Cannot create assignment ${action.assignment.name}: No template ID in config`);
         result.failed.push({ type: 'assignment', id: action.assignment.name, error: 'Missing template ID' });
         result.success = false;
@@ -328,8 +328,8 @@ export async function publish(
           client,
           action.templateId,
           action.assignment.name,
-            workingConfig.vocareum.course_id
-          );
+          workingConfig.vocareum.course_id
+        );
 
         logger.success(`Created assignment ${action.assignment.name} (${copyResult.assignment_id})`);
 
@@ -391,7 +391,7 @@ export async function publish(
         configChanged = true;
       }
 
-      if (action.assignmentMetadataChanged === true && action.assignment.assignment_id) {
+      if (action.assignmentMetadataChanged === true && (action.assignment.assignment_id !== undefined && action.assignment.assignment_id !== null)) {
         try {
           const remoteAssignment = await getAssignment(
             client,
@@ -430,7 +430,7 @@ export async function publish(
           });
           for (const key of assignmentKeys) {
             const toValue = asnSettings?.[key];
-            if (!hasSettingValue(toValue)) continue;
+            if (!hasSettingValue(toValue)) { continue; }
             const fromValue = (remoteAssignment as unknown as Record<string, unknown>)[key as string];
             pushSettingChange(settingChanges, {
               scope: 'assignment',
@@ -491,9 +491,9 @@ export async function publish(
       // If we are updating, it already had ID.
 
       const partId = partAction.part.part_id;
-      if (!partId) {
+      if (partId === undefined || partId === null || partId === '') {
         logger.error(`Part ${partAction.part.name} has no ID, skipping`);
-        result.failed.push({ type: 'part', id: partAction.part.name || 'unknown', error: 'No Part ID' });
+        result.failed.push({ type: 'part', id: partAction.part.name ?? 'unknown', error: 'No Part ID' });
         continue;
       }
 
@@ -501,12 +501,12 @@ export async function publish(
       let partWasUpdated = false;
 
       // Update part metadata/settings if needed
-      if (partAction.metadataChanged && !action.willCreate) {
+      if (partAction.metadataChanged === true && action.willCreate !== true) {
         // name is REQUIRED for part updates
         const partName = partAction.part.name ?? partAction.part.path;
         const partSettings = partAction.part.settings;
         const assignmentId = action.assignment.assignment_id;
-        if (!assignmentId) {
+        if (assignmentId === undefined || assignmentId === null || assignmentId === '') {
           logger.error(`Cannot update part ${partName}: assignment has no ID`);
           result.failed.push({ type: 'part', id: partId, error: 'Assignment has no ID' });
           continue;
@@ -563,7 +563,7 @@ export async function publish(
             const remotePartRecord = remotePart as unknown as Record<string, unknown>;
             for (const key of partKeys) {
               const toValue = toPartSettings[key];
-              if (!hasSettingValue(toValue)) continue;
+              if (!hasSettingValue(toValue)) { continue; }
               const fromValue = remotePartRecord[key as string];
               pushSettingChange(settingChanges, {
                 scope: 'part',
@@ -732,12 +732,12 @@ export async function publish(
       : undefined,
     created: result.created.map(c => ({
       assignment: c.id,
-      parts: c.parts || []
+      parts: c.parts ?? []
     })),
     updated: result.updated.length > 0
       ? result.updated.map(u => ({
         assignment: u.id,
-        parts: u.parts || []
+        parts: u.parts ?? []
       }))
       : undefined,
     failed: result.failed.length > 0
@@ -755,7 +755,7 @@ export async function publish(
   });
 
   // 7. Auto-Commit
-  if (options.autoCommit && (configChanged || Object.keys(result.contentState).length > 0)) {
+  if ((options.autoCommit ?? false) && (configChanged || Object.keys(result.contentState).length > 0)) {
     try {
       await commitChanges(
         `chore: update vocareum config [skip ci]`,

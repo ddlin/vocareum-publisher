@@ -41,7 +41,7 @@ export async function validateCommand(options: ValidateOptions): Promise<void> {
       result.warnings.forEach(w => logger.warn(`[${w.type}] ${w.message}`));
     }
 
-    if (!result.valid || (options.strict && result.warnings.length > 0)) {
+    if (!result.valid || (options.strict === true && result.warnings.length > 0)) {
       process.exit(1);
     }
 

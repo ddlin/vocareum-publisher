@@ -38,7 +38,7 @@ export async function newCommand(assignmentPath: string | undefined): Promise<vo
   // Argument name is `path` in my interface but `assignment-path` in doc.
   // Usually `vocareum-publish new <name>`
 
-  if (!name) {
+  if (name === undefined || name === '') {
     name = await prompt('Assignment Name (folder name):');
   }
 
@@ -117,7 +117,7 @@ function getTemplateChoices(
 ): string[] {
   const values = [
     ...(templateAssignmentIds ?? []),
-    ...(templateAssignmentId ? [templateAssignmentId] : []),
+    ...(templateAssignmentId !== undefined && templateAssignmentId !== '' ? [templateAssignmentId] : []),
   ];
   return [...new Set(values)];
 }
