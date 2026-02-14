@@ -68,6 +68,26 @@ assignments:
     expect(updated.assignments[0].path).toBe('lab1');
   });
 
+  it('should persist template_assignment_id when adding new assignment', async () => {
+    await updateConfig(configPath, {
+      assignments: [{
+        path: 'lab-new',
+        name: 'New Lab',
+        assignment_id: null,
+        create_from_template: true,
+        template_assignment_id: 'tmpl-specific',
+        parts: [{ path: 'part1', part_id: null }],
+      }],
+    });
+
+    const updated = await loadConfig(configPath);
+    const newAssignment = updated.assignments.find((a) => a.path === 'lab-new');
+
+    expect(newAssignment).toBeDefined();
+    expect(newAssignment?.template_assignment_id).toBe('tmpl-specific');
+    expect(newAssignment?.create_from_template).toBe(true);
+  });
+
   it('should parse multiple template IDs and assignment-level template override', async () => {
     const yaml = `version: "1.0"
 vocareum:

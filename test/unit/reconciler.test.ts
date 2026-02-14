@@ -142,6 +142,52 @@ describe('reconcile options behavior', () => {
     expect(plan.assignments[0].templateId).toBe('tmpl-list-1');
   });
 
+  it('should use first named template from templates array', async () => {
+    const config: Config = {
+      ...baseConfig,
+      vocareum: {
+        ...baseConfig.vocareum,
+        templates: [
+          { id: 'tmpl-named-1', name: 'Standard Lab', course_id: '201303' },
+          { id: 'tmpl-named-2', name: 'Cloud Lab', course_id: '999' },
+        ],
+      },
+      assignments: [
+        {
+          ...baseConfig.assignments[0],
+          create_from_template: true,
+        },
+      ],
+    };
+
+    const plan = await reconcile(config, client, undefined);
+
+    expect(plan.assignments[0].type).toBe('create');
+    expect(plan.assignments[0].templateId).toBe('tmpl-named-1');
+  });
+
+  it('should prefer named templates over legacy template_assignment_ids', async () => {
+    const config: Config = {
+      ...baseConfig,
+      vocareum: {
+        ...baseConfig.vocareum,
+        templates: [{ id: 'tmpl-named', name: 'Named Template', course_id: '201303' }],
+        template_assignment_ids: ['tmpl-legacy'],
+      },
+      assignments: [
+        {
+          ...baseConfig.assignments[0],
+          create_from_template: true,
+        },
+      ],
+    };
+
+    const plan = await reconcile(config, client, undefined);
+
+    expect(plan.assignments[0].type).toBe('create');
+    expect(plan.assignments[0].templateId).toBe('tmpl-named');
+  });
+
   it('should skip stale assignment when its ID is in excluded_assignments', async () => {
     const config: Config = {
       ...baseConfig,

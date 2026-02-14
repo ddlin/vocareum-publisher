@@ -1,17 +1,17 @@
 # Vocareum Publisher
 
-Publish assignment content from GitHub to Vocareum.
+Push assignment content from GitHub to Vocareum.
 
-A CLI tool and GitHub Action that enables instructors to maintain assignment content in Git with full version control while seamlessly publishing to Vocareum.
+A CLI tool and GitHub Action that enables instructors to maintain assignment content in Git with full version control while seamlessly syncing to Vocareum.
 
 ## Features
 
 - **Git-First Workflow**: GitHub is the source of truth for all assignment content
-- **CLI Tool**: Local development and publishing via command line
-- **GitHub Action**: Automated CI/CD publishing on push
+- **CLI Tool**: Local development and push via command line
+- **GitHub Action**: Automated CI/CD push on git push
 - **Change Detection**: Only uploads changed content (efficient)
 - **Template-Based Creation**: Create new assignments from templates
-- **Validation**: Verify configuration before publishing
+- **Validation**: Verify configuration before pushing
 
 ## Installation
 
@@ -51,11 +51,11 @@ lab1-intro/
 │   └── data/          # Datasets
 ```
 
-### 4. Validate and Publish
+### 4. Validate and Push
 
 ```bash
 vocareum-publish validate
-vocareum-publish
+vocareum-publish push
 ```
 
 ### 5. Commit and Push
@@ -76,7 +76,16 @@ version: "1.0"
 vocareum:
   org_id: "12345"
   course_id: "67890"
-  template_assignment_id: "99999"
+  templates:                        # Named templates for creating new assignments
+    - id: "99999"
+      name: "Standard Lab"
+      course_id: "67890"            # Same course
+    - id: "88888"
+      name: "Cloud Lab"
+      course_id: "11111"            # Template in different course
+    - id: "77777"
+      name: "Timed Exam"
+      course_id: "67890"
   excluded_assignments:       # Assignment IDs to hide from orphan detection
     - "111222"
     - "333444"
@@ -154,17 +163,17 @@ publish_history:
 | `vocareum-publish validate` | Validate configuration and structure |
 | `vocareum-publish fix` | Interactively fix validation issues |
 | `vocareum-publish pull` | Import or exclude orphaned assignments from Vocareum |
-| `vocareum-publish` | Publish to Vocareum |
+| `vocareum-publish push` | Push content to Vocareum |
 
-### Publish Options
+### Push Options
 
 ```bash
-vocareum-publish --dry-run           # Preview changes
-vocareum-publish --assignment lab1   # Publish specific assignment
-vocareum-publish --force-all         # Re-upload everything
-vocareum-publish --sync-deletes      # Delete files not in Git (experimental)
-vocareum-publish --non-interactive   # Skip confirmation prompt
-vocareum-publish --verbose           # Detailed logging
+vocareum-publish push --dry-run           # Preview changes
+vocareum-publish push --assignment lab1   # Push specific assignment
+vocareum-publish push --force-all         # Re-upload everything
+vocareum-publish push --sync-deletes      # Delete files not in Git (experimental)
+vocareum-publish push --non-interactive   # Skip confirmation prompt
+vocareum-publish push --verbose           # Detailed logging
 ```
 
 ### Pull Command
@@ -200,7 +209,7 @@ vocareum-publish pull --non-interactive  # Skip all issues
 
 **For settings drift** (local settings differ from Vocareum):
 - **Pull**: Update local config with settings from Vocareum
-- **Keep**: Keep local settings (will overwrite Vocareum on next publish)
+- **Keep**: Keep local settings (will overwrite Vocareum on next push)
 - **Skip**: Do nothing for now
 
 Example workflow:
@@ -223,7 +232,7 @@ $ vocareum-publish pull
 [1/1] Old Lab (ID: 777888, path: old-lab)
 ? This assignment was deleted from Vocareum. What would you like to do?
   Reset ID (allow re-creation from template)
-✓ Reset ID for "Old Lab" - will be re-created on next publish
+✓ Reset ID for "Old Lab" - will be re-created on next push
 
 ℹ Found 1 assignment(s) with settings drift.
 
@@ -248,19 +257,19 @@ Summary:
 ## GitHub Action
 
 ```yaml
-name: Publish to Vocareum
+name: Push to Vocareum
 on:
   push:
     branches: [main]
     paths: ['lab*/**', 'vocareum.yaml']
 
 jobs:
-  publish:
+  push-to-vocareum:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
 
-      - name: Publish to Vocareum
+      - name: Push to Vocareum
         uses: ddlin/vocareum-publisher@v1
         with:
           config-file: vocareum.yaml
@@ -327,13 +336,37 @@ assignment_id: 12345
 - **Commit IDs** to Git before CI/CD runs
 - **CI/CD only updates** existing assignments
 
+### Template Selection
+
+Templates can exist in any course within your organization. When you have multiple templates configured, `vocareum-publish new` will prompt you to select which template to use:
+
+```
+$ vocareum-publish new lab3
+Multiple templates available.
+? Select template for this assignment:
+❯ Standard Lab (99999)
+  Cloud Lab (course:11111, id:88888)
+  Timed Exam (77777)
+```
+
+Templates in the same course as your main `course_id` show just the ID. Templates in different courses show both the course and assignment ID for clarity.
+
+The selected template ID is stored per-assignment in `vocareum.yaml`:
+
+```yaml
+assignments:
+  - name: "Lab 3"
+    path: "lab3"
+    template_assignment_id: "88888"  # Selected: Cloud Lab
+```
+
 ### Never Auto-Commit in CI/CD
 
 The `auto_commit` option should only be used locally. In CI/CD it is force-disabled by the CLI.
 
-### Publish Confirmation Behavior
+### Push Confirmation Behavior
 
-- Local CLI prompts for confirmation before executing publish.
+- Local CLI prompts for confirmation before executing push.
 - `--non-interactive` skips prompts.
 - CI/GitHub Actions automatically run non-interactive.
 
@@ -347,8 +380,8 @@ The `auto_commit` option should only be used locally. In CI/CD it is force-disab
 - Content updates: part `PUT` with `content[].zipcontent` (base64 zip)
   - Uses `reset: 1` to clear directory before upload (ensures exact Git state)
   - All files in directory uploaded together as a single ZIP
-- Part updates may return `transactionid`; publisher polls `GET /api/v2/transaction/{id}`
-- Failed publish runs are stored in `publish_history` with `status: failed` and `failed[]` entries
+- Part updates may return `transactionid`; CLI polls `GET /api/v2/transaction/{id}`
+- Failed push runs are stored in `publish_history` with `status: failed` and `failed[]` entries
 
 ### ID Discovery
 

@@ -11,7 +11,7 @@ import * as yaml from 'js-yaml';
 import { pathExists, writeFile } from '../utils/files';
 import { logger } from '../utils/logger';
 import { prompt, promptConfirm } from '../utils/prompts';
-import type { Config } from '../types/config';
+import type { Config, TemplateConfig } from '../types/config';
 
 export interface InitOptions {
   import?: boolean;
@@ -51,14 +51,31 @@ export async function initCommand(options: InitOptions): Promise<void> {
     return;
   }
 
-  const templateIdInput = await prompt(
-    'Enter Template Assignment ID(s) (optional; comma-separated for multiple):'
-  );
-  const templateIds = templateIdInput
-    .split(',')
-    .map((value) => value.trim())
-    .filter((value) => value !== '');
-  const defaultTemplateId = templateIds[0];
+  // Collect templates
+  const templates: TemplateConfig[] = [];
+  const addTemplates = await promptConfirm('Add template assignments for creating new assignments?', true);
+
+  if (addTemplates) {
+    let addMore = true;
+    while (addMore) {
+      const templateCourseId = await prompt(`Template course ID (or press Enter for ${courseId}):`);
+      const templateId = await prompt('Template assignment ID:');
+
+      if (!templateId) {
+        break;
+      }
+
+      const templateName = await prompt(`Template name (e.g., "Standard Lab", "Timed Exam"):`);
+
+      templates.push({
+        id: templateId,
+        name: templateName || `Template ${templateId}`,
+        course_id: templateCourseId || courseId,
+      });
+
+      addMore = await promptConfirm('Add another template?', false);
+    }
+  }
 
   const config: Config = {
     version: '1.0',
@@ -66,8 +83,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
       org_id: orgId,
       course_id: courseId,
       api_base_url: 'https://api.vocareum.com',
-      template_assignment_id: defaultTemplateId || undefined,
-      template_assignment_ids: templateIds,
+      templates,
       excluded_assignments: [],
     },
     assignments: [],

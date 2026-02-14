@@ -60,7 +60,7 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
       forceAll: options.forceAll ?? false,
     };
 
-    logger.info(`Starting publish process for course ${config.vocareum.course_id}...`);
+    logger.info(`Starting push for course ${config.vocareum.course_id}...`);
     if (publishOptions.dryRun === true) {
       logger.info('DRY RUN MODE: No changes will be applied.');
     }
@@ -68,12 +68,12 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
     const result = await publish(config, client, publishOptions);
 
     if (result.success) {
-      logger.success('Publish completed successfully!');
+      logger.success('Push completed successfully!');
       if (result.summary) {
         logger.info(result.summary);
       }
     } else {
-      logger.error('Publish failed with errors.');
+      logger.error('Push failed with errors.');
       if (result.failed.length > 0) {
         result.failed.forEach(f => {
           const errorMsg = f.error instanceof Error ? f.error.message : String(f.error);
@@ -84,7 +84,7 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
     }
 
   } catch (error) {
-    logger.error(`Publish failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    logger.error(`Push failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     process.exit(1);
   }
 }

@@ -279,15 +279,24 @@ export async function reconcile(
 }
 
 function resolveTemplateAssignmentId(assignment: Assignment, config: Config): string | undefined {
+  // 1. Per-assignment override takes precedence
   if (assignment.template_assignment_id !== undefined && assignment.template_assignment_id !== '') {
     return assignment.template_assignment_id;
   }
 
+  // 2. Named templates array (preferred)
+  const templates = config.vocareum.templates ?? [];
+  if (templates.length > 0) {
+    return templates[0].id;
+  }
+
+  // 3. Legacy: template_assignment_ids array
   const templateIds = config.vocareum.template_assignment_ids ?? [];
   if (templateIds.length > 0) {
     return templateIds[0];
   }
 
+  // 4. Legacy: single template_assignment_id
   return config.vocareum.template_assignment_id;
 }
 

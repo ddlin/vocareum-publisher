@@ -135,7 +135,7 @@ async function createNewAssignment(
   logger.info('\nNext steps:');
   logger.info(`1. Add content to ${options.path}/part1/startercode/ etc.`);
   logger.info('2. Run: vocareum-publish validate');
-  logger.info('3. Run: vocareum-publish (creates in Vocareum)');
+  logger.info('3. Run: vocareum-publish push (creates in Vocareum)');
   logger.info('4. Commit updated vocareum.yaml with new IDs');
 }
 ```
@@ -1774,11 +1774,11 @@ inputs:
     description: 'Vocareum API key'
     required: true
   dry-run:
-    description: 'Preview changes without publishing'
+    description: 'Preview changes without pushing'
     required: false
     default: 'false'
   assignment:
-    description: 'Specific assignment to publish'
+    description: 'Specific assignment to push'
     required: false
   auto-commit:
     description: 'Auto-commit config updates'
@@ -1795,13 +1795,13 @@ inputs:
 
 outputs:
   summary:
-    description: 'Publish summary'
+    description: 'Push summary'
   created-ids:
     description: 'JSON of newly created entity IDs'
   updated-ids:
     description: 'JSON of updated entity IDs'
   success:
-    description: 'Whether publish succeeded (true/false)'
+    description: 'Whether push succeeded (true/false)'
 
 runs:
   using: 'node20'

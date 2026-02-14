@@ -246,15 +246,33 @@ export const CourseSettingsConfigSchema = z.object({
 }).optional();
 
 /**
+ * Named template configuration for assignment creation.
+ * Templates can exist in any course within the same organization.
+ */
+export const TemplateConfigSchema = z.object({
+  /** Assignment ID of the template */
+  id: z.string(),
+  /** Human-readable name for template selection */
+  name: z.string(),
+  /** Course ID where this template assignment exists */
+  course_id: z.string(),
+});
+
+export type TemplateConfig = z.infer<typeof TemplateConfigSchema>;
+
+/**
  * Vocareum connection configuration
  * CRITICAL: All IDs are strings
  */
 export const VocareumConfigSchema = z.object({
   org_id: z.string(),
   course_id: z.string(),
+  /** @deprecated Use `templates` array instead for named templates */
   template_assignment_id: z.string().optional(),
-  /** Optional list of template assignment IDs; first entry is treated as default */
+  /** @deprecated Use `templates` array instead for named templates */
   template_assignment_ids: z.array(z.string()).optional().default([]),
+  /** Named templates for assignment creation (preferred over template_assignment_id/ids) */
+  templates: z.array(TemplateConfigSchema).optional().default([]),
   api_base_url: z.string().optional().default('https://api.vocareum.com'),
   /** Optional course settings to sync */
   course_settings: CourseSettingsConfigSchema,

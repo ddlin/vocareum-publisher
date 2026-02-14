@@ -128,6 +128,7 @@ export async function updateConfig(configPath: string, updates: ConfigUpdates): 
           name: update.name,
           assignment_id: update.assignment_id ?? null,
           create_from_template: update.create_from_template ?? false,
+          template_assignment_id: update.template_assignment_id,
           settings: update.settings ?? {},
           parts: update.parts,
         };

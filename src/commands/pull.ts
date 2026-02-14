@@ -16,10 +16,11 @@ import { logger } from '../utils/logger';
 import { loadDotEnvIfPresent, isCI } from '../utils/env';
 import { prompt, promptChoice } from '../utils/prompts';
 import { pathExists, ensureDirectory, writeFile } from '../utils/files';
-import type { Assignment, Part, DirectoryType, AssignmentSettings, PartSettings, SubmissionFilters } from '../types/config';
+import { mapAssignmentSettings, mapPartSettings } from '../utils/settings';
 import { normalizeSubmissionFilters } from '../types/config';
+import type { Assignment, Part, DirectoryType, AssignmentSettings, PartSettings, SubmissionFilters } from '../types/config';
 import type { OrphanedEntity } from '../types/state';
-import type { FileMap, VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
+import type { FileMap } from '../types/api';
 
 export interface PullOptions {
   config?: string;
@@ -127,14 +128,16 @@ function formatValue(value: unknown): string {
  * Compare assignment settings and return differences
  */
 function compareAssignmentSettings(
-  localSettings: AssignmentSettings | undefined,
+  localSettings: NonNullable<AssignmentSettings> | undefined,
   remoteSettings: NonNullable<AssignmentSettings>
 ): SettingDiff[] {
   const diffs: SettingDiff[] = [];
-  const local = localSettings ?? {};
+  // Cast to Record for safe dynamic key access
+  const local: Record<string, unknown> = localSettings ?? {};
+  const remote: Record<string, unknown> = remoteSettings;
 
   // All possible assignment setting keys
-  const keys: (keyof NonNullable<AssignmentSettings>)[] = [
+  const keys = [
     'description', 'nosubmit', 'publish', 'publish_grades',
     'auto_submit', 'grading_on_submit', 'noworkarea',
     'exam_mode', 'exam_duration', 'num_attempts',
@@ -145,7 +148,7 @@ function compareAssignmentSettings(
 
   for (const key of keys) {
     const localVal = local[key];
-    const remoteVal = remoteSettings[key];
+    const remoteVal = remote[key];
 
     // Only report if remote has a value and it differs from local
     if (remoteVal !== undefined && !valuesEqual(localVal, remoteVal)) {
@@ -160,14 +163,16 @@ function compareAssignmentSettings(
  * Compare part settings and return differences
  */
 function comparePartSettings(
-  localSettings: PartSettings | undefined,
+  localSettings: NonNullable<PartSettings> | undefined,
   remoteSettings: NonNullable<PartSettings>
 ): SettingDiff[] {
   const diffs: SettingDiff[] = [];
-  const local = localSettings ?? {};
+  // Cast to Record for safe dynamic key access
+  const local: Record<string, unknown> = localSettings ?? {};
+  const remote: Record<string, unknown> = remoteSettings;
 
   // All possible part setting keys
-  const keys: (keyof NonNullable<PartSettings>)[] = [
+  const keys = [
     'submission_filters', 'cloud_labs', 'instant_aws_access',
     'session_length', 'monthly_dollar', 'monthly_time', 'total_time', 'total_dollar',
     'late_penalty_percent', 'late_penalty_percent_rule', 'deadlinedate',
@@ -177,11 +182,11 @@ function comparePartSettings(
 
   for (const key of keys) {
     const localVal = local[key];
-    const remoteVal = remoteSettings[key];
+    const remoteVal = remote[key];
 
     if (key === 'submission_filters') {
-      const normalizedLocal = normalizeSubmissionFilters(localVal as SubmissionFilters | undefined);
-      const normalizedRemote = normalizeSubmissionFilters(remoteVal as SubmissionFilters | undefined);
+      const normalizedLocal = normalizeSubmissionFilters(localVal as SubmissionFilters | null | undefined);
+      const normalizedRemote = normalizeSubmissionFilters(remoteVal as SubmissionFilters | null | undefined);
       if (!valuesEqual(normalizedLocal, normalizedRemote)) {
         diffs.push({
           key,
@@ -285,77 +290,6 @@ async function detectSettingsDrift(
   }
 
   return driftList;
-}
-
-/**
- * Map Vocareum assignment API response to config settings
- */
-function mapAssignmentSettings(apiResponse: VocareumAssignmentResponse): NonNullable<AssignmentSettings> {
-  const settings: NonNullable<AssignmentSettings> = {};
-
-  // Only include fields that have values
-  if (apiResponse.description !== undefined) { settings.description = apiResponse.description; }
-  if (apiResponse.nosubmit !== undefined) { settings.nosubmit = apiResponse.nosubmit; }
-  if (apiResponse.publish !== undefined) { settings.publish = apiResponse.publish; }
-  if (apiResponse.publish_grades !== undefined) { settings.publish_grades = apiResponse.publish_grades; }
-  if (apiResponse.auto_submit !== undefined) { settings.auto_submit = apiResponse.auto_submit; }
-  if (apiResponse.grading_on_submit !== undefined) { settings.grading_on_submit = apiResponse.grading_on_submit; }
-  if (apiResponse.noworkarea !== undefined) { settings.noworkarea = apiResponse.noworkarea; }
-  if (apiResponse.exam_mode !== undefined) { settings.exam_mode = apiResponse.exam_mode; }
-  if (apiResponse.exam_duration !== undefined) { settings.exam_duration = apiResponse.exam_duration; }
-  if (apiResponse.num_attempts !== undefined) { settings.num_attempts = apiResponse.num_attempts; }
-  if (apiResponse.show_end_exam_button !== undefined) { settings.show_end_exam_button = apiResponse.show_end_exam_button; }
-  if (apiResponse.copy_startercode !== undefined) { settings.copy_startercode = apiResponse.copy_startercode; }
-  if (apiResponse.uncompressupload !== undefined) { settings.uncompressupload = apiResponse.uncompressupload; }
-  if (apiResponse.lti_on !== undefined) { settings.lti_on = apiResponse.lti_on; }
-  if (apiResponse.anonymous_grading !== undefined) { settings.anonymous_grading = apiResponse.anonymous_grading; }
-  if (apiResponse.grading_visibility !== undefined) { settings.grading_visibility = apiResponse.grading_visibility; }
-  if (apiResponse.send_webhook !== undefined) { settings.send_webhook = apiResponse.send_webhook; }
-  if (apiResponse.live_code_comments !== undefined) { settings.live_code_comments = apiResponse.live_code_comments; }
-
-  return settings;
-}
-
-/**
- * Map Vocareum part API response to config settings
- */
-function mapPartSettings(apiResponse: VocareumPartResponse): NonNullable<PartSettings> {
-  const settings: NonNullable<PartSettings> = {};
-
-  // Submission filters - normalize to object format
-  const normalizedFilters = normalizeSubmissionFilters(apiResponse.submission_filters);
-  if (normalizedFilters !== undefined) {
-    settings.submission_filters = normalizedFilters;
-  }
-
-  // Cloud/AWS settings
-  if (apiResponse.cloud_labs !== undefined) { settings.cloud_labs = apiResponse.cloud_labs; }
-  if (apiResponse.instant_aws_access !== undefined) { settings.instant_aws_access = apiResponse.instant_aws_access; }
-
-  // Resource budgets
-  if (apiResponse.session_length !== undefined) { settings.session_length = apiResponse.session_length; }
-  if (apiResponse.monthly_dollar !== undefined) { settings.monthly_dollar = apiResponse.monthly_dollar; }
-  if (apiResponse.monthly_time !== undefined) { settings.monthly_time = apiResponse.monthly_time; }
-  if (apiResponse.total_time !== undefined) { settings.total_time = apiResponse.total_time; }
-  if (apiResponse.total_dollar !== undefined) { settings.total_dollar = apiResponse.total_dollar; }
-
-  // Late submission settings
-  if (apiResponse.late_penalty_percent !== undefined) { settings.late_penalty_percent = apiResponse.late_penalty_percent; }
-  if (apiResponse.late_penalty_percent_rule !== undefined) { settings.late_penalty_percent_rule = apiResponse.late_penalty_percent_rule; }
-  if (apiResponse.deadlinedate !== undefined) { settings.deadlinedate = apiResponse.deadlinedate; }
-
-  // Lab settings
-  if (apiResponse.endlab !== undefined) { settings.endlab = apiResponse.endlab; }
-  if (apiResponse.labtype !== undefined) { settings.labtype = apiResponse.labtype; }
-  if (apiResponse.container_image !== undefined) { settings.container_image = apiResponse.container_image; }
-  if (apiResponse.number_of_submissions !== undefined) { settings.number_of_submissions = apiResponse.number_of_submissions; }
-  if (apiResponse.lab_interface !== undefined) { settings.lab_interface = apiResponse.lab_interface; }
-
-  // Other settings
-  if (apiResponse.databricks_maxusers !== undefined) { settings.databricks_maxusers = apiResponse.databricks_maxusers; }
-  if (apiResponse.tags !== undefined) { settings.tags = apiResponse.tags; }
-
-  return settings;
 }
 
 /**

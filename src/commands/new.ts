@@ -6,7 +6,7 @@
  */
 
 import * as path from 'path';
-import type { DirectoryType } from '../types/config';
+import type { DirectoryType, TemplateConfig } from '../types/config';
 import { loadConfig, updateConfig } from '../core/config';
 import { ensureDirectory, pathExists } from '../utils/files';
 import { logger } from '../utils/logger';
@@ -30,7 +30,7 @@ export async function newCommand(assignmentPath: string | undefined): Promise<vo
   }
 
   const config = await loadConfig(configPath);
-  const templateChoices = getTemplateChoices(config.vocareum.template_assignment_id, config.vocareum.template_assignment_ids);
+  const templateChoices = getTemplateChoices(config.vocareum);
 
   // Interactive prompts
   let name = assignmentPath;
@@ -82,7 +82,7 @@ export async function newCommand(assignmentPath: string | undefined): Promise<vo
     path: assignmentDir,
     assignment_id: null as string | null, // New, so no ID
     create_from_template: true,
-    template_assignment_id: await selectTemplateForAssignment(templateChoices),
+    template_assignment_id: await selectTemplateForAssignment(templateChoices, config.vocareum.course_id),
     parts: parts.map(p => ({
       path: p,
       part_id: null as string | null,
@@ -111,27 +111,74 @@ export function createNewAssignment(
   return Promise.reject(new Error('Use newCommand instead'));
 }
 
-function getTemplateChoices(
-  templateAssignmentId: string | undefined,
-  templateAssignmentIds: string[] | undefined
-): string[] {
-  const values = [
-    ...(templateAssignmentIds ?? []),
-    ...(templateAssignmentId !== undefined && templateAssignmentId !== '' ? [templateAssignmentId] : []),
-  ];
-  return [...new Set(values)];
+interface VocareumConfig {
+  course_id: string;
+  templates?: TemplateConfig[];
+  template_assignment_id?: string;
+  template_assignment_ids?: string[];
 }
 
-async function selectTemplateForAssignment(templateChoices: string[]): Promise<string | undefined> {
-  if (templateChoices.length === 0) {
-    logger.warn('No template assignment IDs configured; publish will fail unless one is added before creation.');
-    return undefined;
+/**
+ * Get all available templates, merging named templates with legacy ID-only configs.
+ * Named templates take precedence; legacy IDs are shown as "Template <id>".
+ */
+function getTemplateChoices(vocareum: VocareumConfig): TemplateConfig[] {
+  const namedTemplates = vocareum.templates ?? [];
+  const namedIds = new Set(namedTemplates.map(t => t.id));
+
+  // Collect legacy IDs not already in named templates
+  const legacyIds: string[] = [];
+  for (const id of vocareum.template_assignment_ids ?? []) {
+    if (!namedIds.has(id)) {
+      legacyIds.push(id);
+    }
   }
-  if (templateChoices.length === 1) {
-    logger.info(`Using template assignment ID ${templateChoices[0]}`);
-    return templateChoices[0];
+  if (vocareum.template_assignment_id && !namedIds.has(vocareum.template_assignment_id)) {
+    if (!legacyIds.includes(vocareum.template_assignment_id)) {
+      legacyIds.push(vocareum.template_assignment_id);
+    }
   }
 
-  logger.info('Multiple template assignments found.');
-  return promptChoice('Select template assignment ID for this assignment:', templateChoices);
+  // Convert legacy IDs to template objects with auto-generated names
+  // Legacy templates are assumed to be in the main course
+  const legacyTemplates: TemplateConfig[] = legacyIds.map(id => ({
+    id,
+    name: `Template ${id}`,
+    course_id: vocareum.course_id,
+  }));
+
+  return [...namedTemplates, ...legacyTemplates];
+}
+
+/**
+ * Format template for display, showing course if different from main course
+ */
+function formatTemplateChoice(template: TemplateConfig, mainCourseId: string): string {
+  if (template.course_id === mainCourseId) {
+    return `${template.name} (${template.id})`;
+  }
+  return `${template.name} (course:${template.course_id}, id:${template.id})`;
+}
+
+async function selectTemplateForAssignment(
+  templates: TemplateConfig[],
+  mainCourseId: string
+): Promise<string | undefined> {
+  if (templates.length === 0) {
+    logger.warn('No templates configured; publish will fail unless one is added before creation.');
+    return undefined;
+  }
+  if (templates.length === 1) {
+    const display = formatTemplateChoice(templates[0], mainCourseId);
+    logger.info(`Using template: ${display}`);
+    return templates[0].id;
+  }
+
+  logger.info('Multiple templates available.');
+  const choices = templates.map(t => formatTemplateChoice(t, mainCourseId));
+  const selected = await promptChoice('Select template for this assignment:', choices);
+
+  // Find the template that matches the selected display string
+  const selectedTemplate = templates.find(t => formatTemplateChoice(t, mainCourseId) === selected);
+  return selectedTemplate?.id;
 }

@@ -22,6 +22,7 @@ import { updateConfig } from './config';
 import { commitChanges, getCommitSha, getGitUserName } from '../utils/git';
 import { logger } from '../utils/logger';
 import { promptConfirm } from '../utils/prompts';
+import { mapAssignmentSettings, mapPartSettings } from '../utils/settings';
 
 function isHttp400(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) { return false; }
@@ -226,16 +227,16 @@ export async function publish(
       skipped: [],
       failed: [],
       contentState: { ...lastHistory?.content_state },
-      summary: 'No changes to publish'
+      summary: 'No changes to push'
     };
   }
 
   // 5. Interactive confirmation (unless --non-interactive or CI)
   if (options.nonInteractive !== true) {
     logger.newline();
-    const confirmed = await promptConfirm('Proceed with publish?', true);
+    const confirmed = await promptConfirm('Proceed with push?', true);
     if (!confirmed) {
-      logger.warn('Publish cancelled by user.');
+      logger.warn('Push cancelled by user.');
       return {
         success: true,
         created: [],
@@ -248,7 +249,7 @@ export async function publish(
     }
   }
 
-  logger.info('Executing publish...');
+  logger.info('Executing push...');
 
   const result: PublishResult = {
     success: true,
@@ -359,6 +360,29 @@ export async function publish(
 
         for (const m of mapped) {
           m.configPart.part_id = m.apiPartId;
+        }
+
+        // Pull settings from the newly created assignment (inherited from template)
+        // This ensures the next push doesn't detect false drift
+        try {
+          const fullAssignment = await getAssignment(client, workingConfig.vocareum.course_id, copyResult.assignment_id);
+          const templateSettings = mapAssignmentSettings(fullAssignment);
+          if (Object.keys(templateSettings).length > 0) {
+            action.assignment.settings = { ...action.assignment.settings, ...templateSettings };
+            logger.debug(`Pulled ${Object.keys(templateSettings).length} settings from template`);
+          }
+
+          // Pull part settings too
+          for (const m of mapped) {
+            const fullPart = await getPart(client, workingConfig.vocareum.course_id, copyResult.assignment_id, m.apiPartId);
+            const partSettings = mapPartSettings(fullPart);
+            if (Object.keys(partSettings).length > 0) {
+              m.configPart.settings = { ...m.configPart.settings, ...partSettings };
+            }
+          }
+        } catch (settingsError) {
+          // Non-fatal - just log and continue
+          logger.warn(`Could not pull template settings: ${settingsError instanceof Error ? settingsError.message : 'Unknown error'}`);
         }
 
         result.created.push({ type: 'assignment', id: copyResult.assignment_id, parts: mapped.map(m => m.apiPartId) });
@@ -766,6 +790,6 @@ export async function publish(
     }
   }
 
-  result.summary = `Published: ${result.created.length} created, ${result.updated.length} updated.`;
+  result.summary = `Pushed: ${result.created.length} created, ${result.updated.length} updated.`;
   return result;
 }
