@@ -67,4 +67,31 @@ assignments:
     expect(updated.assignments).toHaveLength(1);
     expect(updated.assignments[0].path).toBe('lab1');
   });
+
+  it('should parse multiple template IDs and assignment-level template override', async () => {
+    const yaml = `version: "1.0"
+vocareum:
+  org_id: "1"
+  course_id: "201303"
+  template_assignment_id: "tmpl-default"
+  template_assignment_ids:
+    - "tmpl-default"
+    - "tmpl-alt"
+assignments:
+  - assignment_id: null
+    name: "Lab 3"
+    path: "lab3"
+    create_from_template: true
+    template_assignment_id: "tmpl-alt"
+    parts:
+      - part_id: null
+        path: "part1"
+`;
+    await fs.writeFile(configPath, yaml, 'utf8');
+
+    const loaded = await loadConfig(configPath);
+
+    expect(loaded.vocareum.template_assignment_ids).toEqual(['tmpl-default', 'tmpl-alt']);
+    expect(loaded.assignments[0].template_assignment_id).toBe('tmpl-alt');
+  });
 });

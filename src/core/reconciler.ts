@@ -228,7 +228,7 @@ export async function reconcile(
       assignment: configAssignment,
       parts: partActions,
       willCreate: assignmentActionType === 'create',
-      templateId: config.vocareum.template_assignment_id,
+      templateId: resolveTemplateAssignmentId(configAssignment, config),
       idDiscoveredByName,
       partIdsDiscovered,
       assignmentMetadataChanged,
@@ -276,6 +276,19 @@ export async function reconcile(
     orphanedInVocareum,
     staleInConfig
   };
+}
+
+function resolveTemplateAssignmentId(assignment: Assignment, config: Config): string | undefined {
+  if (assignment.template_assignment_id !== undefined && assignment.template_assignment_id !== '') {
+    return assignment.template_assignment_id;
+  }
+
+  const templateIds = config.vocareum.template_assignment_ids ?? [];
+  if (templateIds.length > 0) {
+    return templateIds[0];
+  }
+
+  return config.vocareum.template_assignment_id;
 }
 
 /**

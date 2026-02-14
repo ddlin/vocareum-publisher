@@ -226,6 +226,8 @@ export const AssignmentSchema = z.object({
   name: z.string(),
   path: z.string(),
   create_from_template: z.boolean().optional().default(false),
+  /** Optional template assignment ID override used when creating this assignment */
+  template_assignment_id: z.string().optional(),
   /** Optional name to search for in Vocareum when assignment_id is null.
    *  Used to prevent duplicate creation in CI/CD environments. */
   assignment_name_for_lookup: z.string().optional(),
@@ -251,6 +253,8 @@ export const VocareumConfigSchema = z.object({
   org_id: z.string(),
   course_id: z.string(),
   template_assignment_id: z.string().optional(),
+  /** Optional list of template assignment IDs; first entry is treated as default */
+  template_assignment_ids: z.array(z.string()).optional().default([]),
   api_base_url: z.string().optional().default('https://api.vocareum.com'),
   /** Optional course settings to sync */
   course_settings: CourseSettingsConfigSchema,

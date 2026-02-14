@@ -103,6 +103,45 @@ describe('reconcile options behavior', () => {
     expect(plan.assignments[0].reason).toContain('on_missing_id=abort');
   });
 
+  it('should use assignment-level template ID for create actions', async () => {
+    const config: Config = {
+      ...baseConfig,
+      assignments: [
+        {
+          ...baseConfig.assignments[0],
+          create_from_template: true,
+          template_assignment_id: 'tmpl-assignment',
+        },
+      ],
+    };
+
+    const plan = await reconcile(config, client, undefined);
+
+    expect(plan.assignments[0].type).toBe('create');
+    expect(plan.assignments[0].templateId).toBe('tmpl-assignment');
+  });
+
+  it('should fall back to first global template ID from template_assignment_ids', async () => {
+    const config: Config = {
+      ...baseConfig,
+      vocareum: {
+        ...baseConfig.vocareum,
+        template_assignment_ids: ['tmpl-list-1', 'tmpl-list-2'],
+      },
+      assignments: [
+        {
+          ...baseConfig.assignments[0],
+          create_from_template: true,
+        },
+      ],
+    };
+
+    const plan = await reconcile(config, client, undefined);
+
+    expect(plan.assignments[0].type).toBe('create');
+    expect(plan.assignments[0].templateId).toBe('tmpl-list-1');
+  });
+
   it('should skip stale assignment when its ID is in excluded_assignments', async () => {
     const config: Config = {
       ...baseConfig,

@@ -10,7 +10,7 @@ import type { DirectoryType } from '../types/config';
 import { loadConfig, updateConfig } from '../core/config';
 import { ensureDirectory, pathExists } from '../utils/files';
 import { logger } from '../utils/logger';
-import { prompt, promptConfirm } from '../utils/prompts';
+import { prompt, promptChoice, promptConfirm } from '../utils/prompts';
 
 export interface NewAssignmentOptions {
   path?: string;
@@ -30,6 +30,7 @@ export async function newCommand(assignmentPath: string | undefined): Promise<vo
   }
 
   const config = await loadConfig(configPath);
+  const templateChoices = getTemplateChoices(config.vocareum.template_assignment_id, config.vocareum.template_assignment_ids);
 
   // Interactive prompts
   let name = assignmentPath;
@@ -81,6 +82,7 @@ export async function newCommand(assignmentPath: string | undefined): Promise<vo
     path: assignmentDir,
     assignment_id: null as string | null, // New, so no ID
     create_from_template: true,
+    template_assignment_id: await selectTemplateForAssignment(templateChoices),
     parts: parts.map(p => ({
       path: p,
       part_id: null as string | null,
@@ -107,4 +109,29 @@ export function createNewAssignment(
 ): Promise<void> {
   // Deprecated - use newCommand instead
   return Promise.reject(new Error('Use newCommand instead'));
+}
+
+function getTemplateChoices(
+  templateAssignmentId: string | undefined,
+  templateAssignmentIds: string[] | undefined
+): string[] {
+  const values = [
+    ...(templateAssignmentIds ?? []),
+    ...(templateAssignmentId ? [templateAssignmentId] : []),
+  ];
+  return [...new Set(values)];
+}
+
+async function selectTemplateForAssignment(templateChoices: string[]): Promise<string | undefined> {
+  if (templateChoices.length === 0) {
+    logger.warn('No template assignment IDs configured; publish will fail unless one is added before creation.');
+    return undefined;
+  }
+  if (templateChoices.length === 1) {
+    logger.info(`Using template assignment ID ${templateChoices[0]}`);
+    return templateChoices[0];
+  }
+
+  logger.info('Multiple template assignments found.');
+  return promptChoice('Select template assignment ID for this assignment:', templateChoices);
 }

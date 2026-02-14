@@ -51,7 +51,14 @@ export async function initCommand(options: InitOptions): Promise<void> {
     return;
   }
 
-  const templateId = await prompt('Enter Default Template Assignment ID (optional, press Enter to skip):');
+  const templateIdInput = await prompt(
+    'Enter Template Assignment ID(s) (optional; comma-separated for multiple):'
+  );
+  const templateIds = templateIdInput
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value !== '');
+  const defaultTemplateId = templateIds[0];
 
   const config: Config = {
     version: '1.0',
@@ -59,7 +66,8 @@ export async function initCommand(options: InitOptions): Promise<void> {
       org_id: orgId,
       course_id: courseId,
       api_base_url: 'https://api.vocareum.com',
-      template_assignment_id: templateId || undefined,
+      template_assignment_id: defaultTemplateId || undefined,
+      template_assignment_ids: templateIds,
       excluded_assignments: [],
     },
     assignments: [],
