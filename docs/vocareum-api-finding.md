@@ -122,6 +122,23 @@ PUT /api/v2/courses/{cid}/assignments/{aid}/parts/{pid}
 
 **Recommendation:** Return `Content-Type: application/json` for all JSON responses.
 
+### File listing requires specific format
+
+**Problem:** `GET .../files?dir=startercode` returns `400 Invalid Request` with message "startercode doesn't exist".
+
+**Discovery:** The correct format requires:
+- Full path with `/voc/` prefix: `dir=/voc/startercode`
+- The `list=true` parameter to get file listing (without it, returns download URL)
+
+**Working examples:**
+```
+GET .../files?dir=/voc/startercode&list=true  → {"files": ["main.py", "utils.py"]}
+GET .../files?dir=/voc/scripts&list=true      → {"files": ["grade.sh"]}
+GET .../files?dir=/work&list=true             → {"files": ["notebook.ipynb"]}
+```
+
+**Recommendation:** Document the `/voc/` prefix requirement and the `list=true` parameter clearly.
+
 ### File download format varies
 
 `GET .../files?dir=...&filename=...` returns different shapes:
@@ -191,6 +208,7 @@ When reading assignment/part settings, some unset fields are:
 |-------|---------------|
 | Content upload | Full schema for `content[]` payload |
 | Valid `target` values | List by scope (part vs course) |
+| File listing | `dir=/voc/{directory}` format, `list=true` parameter |
 | Transaction polling | Endpoint, states, recommended intervals |
 | Assignment copy | Full request/response schema |
 | Required fields | `name` required for part updates |
@@ -234,6 +252,7 @@ When reading assignment/part settings, some unset fields are:
 | Direct endpoints don't work | Always use course-scoped paths |
 | Upload contract undocumented | Discovered via Postman collection + trial-and-error |
 | Generic 400 errors | Extensive probing to find valid field combinations |
+| File listing format undocumented | Use `dir=/voc/{directory}&list=true` format |
 | ID type varies | Normalize all IDs to strings |
 | Content-Type inconsistent | Parse body regardless of Content-Type |
 | File download format varies | Try multiple response shapes, fallback gracefully |

@@ -95,6 +95,32 @@ async function main() {
         name: 'Probe Copy',
       },
     },
+    // === File Listing Probes ===
+    // Correct format: dir=/voc/{directory}&list=true
+    {
+      name: 'files-list-startercode',
+      method: 'GET',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}/files`,
+      params: { dir: '/voc/startercode', list: 'true' },
+    },
+    {
+      name: 'files-list-scripts',
+      method: 'GET',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}/files`,
+      params: { dir: '/voc/scripts', list: 'true' },
+    },
+    {
+      name: 'files-list-work',
+      method: 'GET',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}/files`,
+      params: { dir: '/work', list: 'true' },
+    },
+    {
+      name: 'files-download-startercode',
+      method: 'GET',
+      path: `/api/v2/courses/${courseId ?? 'COURSE_ID'}/assignments/${assignmentId ?? 'ASSIGNMENT_ID'}/parts/${partId ?? 'PART_ID'}/files`,
+      params: { dir: '/voc/startercode' },
+    },
     // === Assignment Settings Update Probes ===
     // Test various field combinations to discover which are accepted
     {
@@ -464,6 +490,7 @@ async function main() {
         method: probe.method,
         url: `${baseUrl}${probe.path}`,
         headers,
+        params: probe.params,
         data: probe.body,
         timeout: 20000,
         validateStatus: () => true,
