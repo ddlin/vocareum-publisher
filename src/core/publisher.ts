@@ -391,7 +391,7 @@ export async function publish(
         configChanged = true;
       }
 
-      if (action.assignmentMetadataChanged === true && (action.assignment.assignment_id !== undefined && action.assignment.assignment_id !== null)) {
+      if (action.assignmentMetadataChanged === true && (action.assignment.assignment_id !== undefined && action.assignment.assignment_id !== null && action.assignment.assignment_id !== '')) {
         try {
           const remoteAssignment = await getAssignment(
             client,
