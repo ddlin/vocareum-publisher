@@ -6,9 +6,10 @@
  */
 
 import * as path from 'path';
-import type { DirectoryType, TemplateConfig } from '../types/config';
+import type { TemplateConfig } from '../types/config';
+import { DEFAULT_PART_DIRECTORIES } from '../types/config';
 import { loadConfig, updateConfig } from '../core/config';
-import { ensureDirectory, pathExists } from '../utils/files';
+import { ensureDirectory, pathExists, writeFile } from '../utils/files';
 import { logger } from '../utils/logger';
 import { prompt, promptChoice, promptConfirm } from '../utils/prompts';
 
@@ -62,17 +63,19 @@ export async function newCommand(assignmentPath: string | undefined): Promise<vo
     return;
   }
 
-  // Create structure
+  // Create structure with all default directories
   logger.info(`Creating assignment structure in ${assignmentDir}...`);
 
   const parts = ['part1']; // Default to 1 part
-  const dirs: DirectoryType[] = ['startercode', 'scripts', 'docs', 'data'];
+  const dirs = DEFAULT_PART_DIRECTORIES;
 
   for (const part of parts) {
     for (const dir of dirs) {
       const fullPath = path.join(assignmentDir, part, dir);
       await ensureDirectory(fullPath);
-      logger.debug(`Created ${fullPath}`);
+      // Create .gitkeep to ensure empty directories are tracked in git
+      await writeFile(path.join(fullPath, '.gitkeep'), '');
+      logger.debug(`Created ${fullPath}/`);
     }
   }
 

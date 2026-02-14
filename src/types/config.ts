@@ -38,6 +38,22 @@ export const DirectoryTypeSchema = z.enum([
 ]);
 
 /**
+ * Default directories to create for every assignment part.
+ * These provide scaffolding for course designers to drop content into
+ * without needing to remember the Vocareum directory structure.
+ *
+ * Note: 'lib' and 'asnlib' are omitted as they're less commonly used.
+ * Note: 'course' is excluded as it's shared across all assignments.
+ */
+export const DEFAULT_PART_DIRECTORIES: DirectoryType[] = [
+  'startercode',
+  'scripts',
+  'docs',
+  'data',
+  'private',
+];
+
+/**
  * Submission filter patterns for part file submissions.
  * Patterns are passed as-is to rsync on the Vocareum backend.
  *

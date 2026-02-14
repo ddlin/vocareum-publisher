@@ -19,7 +19,7 @@ import { pathExists, ensureDirectory, writeFile, calculateDirectoryHash } from '
 import { getCommitSha, getGitUserName } from '../utils/git';
 import type { PublishHistory } from '../types/config';
 import { mapAssignmentSettings, mapPartSettings } from '../utils/settings';
-import { normalizeSubmissionFilters } from '../types/config';
+import { normalizeSubmissionFilters, DEFAULT_PART_DIRECTORIES } from '../types/config';
 import type { Assignment, Part, DirectoryType, AssignmentSettings, PartSettings, SubmissionFilters } from '../types/config';
 import type { OrphanedEntity } from '../types/state';
 import type { FileMap } from '../types/api';
@@ -361,18 +361,17 @@ async function importAssignment(
     // Determine part path (use part name or index)
     const partPath = parts.length === 1 ? '.' : `part${i + 1}`;
 
-    // Determine directories to create
-    const directories: DirectoryType[] = fileCount > 0
-      ? detectDirectories(files)
-      : ['startercode', 'scripts', 'docs', 'data'];
+    // Always include default directories, plus any detected from downloaded files
+    const detectedDirs = fileCount > 0 ? detectDirectories(files) : [];
+    const directories = mergeDirectories(DEFAULT_PART_DIRECTORIES, detectedDirs);
 
     // Write files to local directory if any were downloaded
     if (fileCount > 0) {
       await writeFilesToDirectory(localPath, partPath, files, verbose);
-    } else {
-      // Create empty directory structure
-      await createEmptyPartStructure(localPath, partPath, directories);
     }
+
+    // Always create the full directory structure (including empty directories with .gitkeep)
+    await ensurePartDirectories(localPath, partPath, directories, verbose);
 
     // Create part config entry with settings
     const configPart: Part = {
@@ -446,25 +445,55 @@ function detectDirectories(files: FileMap): DirectoryType[] {
     }
   }
 
-  return dirs.size > 0 ? Array.from(dirs) : ['startercode', 'scripts'];
+  return Array.from(dirs);
 }
 
 /**
- * Create empty directory structure for a part when no content is downloaded
+ * Merge default directories with detected directories, removing duplicates
  */
-async function createEmptyPartStructure(
+function mergeDirectories(defaults: DirectoryType[], detected: DirectoryType[]): DirectoryType[] {
+  const merged = new Set<DirectoryType>(defaults);
+  for (const dir of detected) {
+    merged.add(dir);
+  }
+  return Array.from(merged);
+}
+
+/**
+ * Ensure all directories exist for a part, creating .gitkeep in empty ones
+ */
+async function ensurePartDirectories(
   assignmentPath: string,
   partPath: string,
-  directories: DirectoryType[]
+  directories: DirectoryType[],
+  verbose: boolean
 ): Promise<void> {
+  const fs = await import('fs/promises');
+
   for (const dir of directories) {
     const dirPath = partPath === '.'
       ? path.join(assignmentPath, dir)
       : path.join(assignmentPath, partPath, dir);
+
     await ensureDirectory(dirPath);
 
-    // Create .gitkeep to ensure empty dirs are tracked
-    await writeFile(path.join(dirPath, '.gitkeep'), '');
+    // Check if directory is empty (no files other than .gitkeep)
+    let isEmpty = true;
+    try {
+      const entries = await fs.readdir(dirPath);
+      isEmpty = entries.length === 0 || (entries.length === 1 && entries[0] === '.gitkeep');
+    } catch {
+      // Directory doesn't exist yet or can't be read - treat as empty
+      isEmpty = true;
+    }
+
+    if (isEmpty) {
+      // Create .gitkeep to ensure empty dirs are tracked in git
+      await writeFile(path.join(dirPath, '.gitkeep'), '');
+      if (verbose) {
+        logger.debug(`Created ${dirPath}/.gitkeep`);
+      }
+    }
   }
 }
 

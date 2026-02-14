@@ -6,6 +6,7 @@ const {
   updateConfigMock,
   pathExistsMock,
   ensureDirectoryMock,
+  writeFileMock,
   promptMock,
   promptConfirmMock,
   promptChoiceMock,
@@ -19,6 +20,7 @@ const {
   updateConfigMock: vi.fn(),
   pathExistsMock: vi.fn(),
   ensureDirectoryMock: vi.fn(),
+  writeFileMock: vi.fn(),
   promptMock: vi.fn(),
   promptConfirmMock: vi.fn(),
   promptChoiceMock: vi.fn(),
@@ -37,6 +39,7 @@ vi.mock('../../src/core/config', () => ({
 vi.mock('../../src/utils/files', () => ({
   pathExists: pathExistsMock,
   ensureDirectory: ensureDirectoryMock,
+  writeFile: writeFileMock,
 }));
 
 vi.mock('../../src/utils/prompts', () => ({
