@@ -106,8 +106,13 @@ export function mapPartSettings(apiResponse: VocareumPartResponse): NonNullable<
   if (apiResponse.number_of_submissions !== undefined) { settings.number_of_submissions = apiResponse.number_of_submissions; }
   if (apiResponse.lab_interface !== undefined) { settings.lab_interface = apiResponse.lab_interface; }
 
-  // Other settings
-  if (apiResponse.databricks_maxusers !== undefined) { settings.databricks_maxusers = apiResponse.databricks_maxusers; }
+  // Other settings - coerce databricks_maxusers to number (API returns string)
+  if (apiResponse.databricks_maxusers !== undefined) {
+    const parsed = typeof apiResponse.databricks_maxusers === 'string'
+      ? parseInt(apiResponse.databricks_maxusers, 10)
+      : apiResponse.databricks_maxusers;
+    if (!isNaN(parsed)) { settings.databricks_maxusers = parsed; }
+  }
   if (apiResponse.tags !== undefined) { settings.tags = apiResponse.tags; }
 
   return settings;

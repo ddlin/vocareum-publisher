@@ -296,16 +296,18 @@ course-repo/
 
 ### Supported Directory Types
 
-| Directory | Description |
-|-----------|-------------|
-| `startercode` | Student-visible starter files |
-| `scripts` | Grading and setup scripts |
-| `lib` | Grading libraries (hidden from students) |
-| `asnlib` | Assignment libraries |
-| `docs` | Documentation files |
-| `data` | Datasets and resources |
-| `private` | Private course files |
-| `course` | Course-level shared files |
+| Directory | Description | Synced |
+|-----------|-------------|--------|
+| `startercode` | Student-visible starter files | ✓ |
+| `scripts` | Grading and setup scripts | ✓ |
+| `lib` | Grading libraries (hidden from students) | ✓ |
+| `asnlib` | Assignment libraries | ✓ |
+| `docs` | Documentation files | ✓ |
+| `data` | Datasets and resources | ✓ |
+| `private` | Private course files | ✓ |
+| `course` | Course-level shared files | ✗ |
+
+> **Note:** The `course` directory is NOT synced. It contains course-wide shared files (symlinks) that are shared across all assignments. Syncing these would cause infinite update loops. Manage course-level files directly in the Vocareum UI.
 
 Configure which directories to sync per part:
 

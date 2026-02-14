@@ -188,8 +188,9 @@ export class VocareumClient {
 
     if (error instanceof AxiosError) {
       const status = error.response?.status;
-      const data = error.response?.data as { message?: string } | undefined;
-      const message = data?.message ?? error.message;
+      const data = error.response?.data as { message?: string; error?: { message?: string } } | undefined;
+      // Vocareum API returns errors as { error: { message: "..." } } or { message: "..." }
+      const message = data?.error?.message ?? data?.message ?? error.message;
 
       switch (status) {
         case 401:

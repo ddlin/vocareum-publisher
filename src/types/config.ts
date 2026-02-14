@@ -10,8 +10,11 @@ import { z } from 'zod';
 /**
  * Directory types for content upload
  *
- * Part-level directories: lib, asnlib, docs, scripts, startercode
- * Course-level directories: course, data, docs, scripts, private, startercode
+ * Synced directories: startercode, scripts, docs, data, lib, asnlib, private
+ *
+ * NOT synced: 'course' - Contains course-wide shared files that are symlinked
+ * across all assignments. Syncing would cause infinite update loops since changes
+ * to course files affect all assignments simultaneously.
  */
 export type DirectoryType =
   | 'startercode'
@@ -137,8 +140,8 @@ export const PartSettingsSchema = z
     number_of_submissions: z.number().nullish(),
     /** Lab interface configuration */
     lab_interface: LabInterfaceSchema.nullish(),
-    /** Maximum users for Databricks labs */
-    databricks_maxusers: z.number().nullish(),
+    /** Maximum users for Databricks labs (API returns string, coerce to number) */
+    databricks_maxusers: z.coerce.number().nullish(),
     /** Tags for the part */
     tags: z.array(z.string()).nullish(),
   })

@@ -134,98 +134,276 @@ PUT /api/v2/courses/{cid}/assignments/{aid}/parts/{pid}
 
 ## Inconsistencies
 
-### ID type varies
+### 1. ID type varies between string and number
 
-- Most responses return IDs as strings (`"12345"`)
-- Some contexts return IDs as numbers (`12345`)
+**Problem:** The same ID field returns different JSON types depending on context.
 
-**Impact:** Comparison bugs if client doesn't normalize.
+**Examples:**
+```json
+// Assignment listing returns string IDs
+GET /api/v2/courses/192814/assignments
+→ { "assignments": [{ "id": "4959500", "name": "Lab 1" }] }
 
-**Recommendation:** Consistently return all IDs as strings.
+// But some nested contexts return numeric IDs
+{ "courseid": 192814, "assignmentid": 4959500 }  // numbers, not strings
+```
 
-### Content-Type header inconsistent
+**Impact:** JavaScript `===` comparison fails: `"4959500" !== 4959500`. Clients must normalize all IDs to strings.
 
-- Some JSON responses are served with `Content-Type: text/html; charset=UTF-8`
+**Our workaround:** Convert all IDs to strings immediately upon receipt.
 
-**Impact:** Breaks strict content-type validation in HTTP clients.
+**Recommendation:** Consistently return all IDs as JSON strings.
+
+---
+
+### 2. Content-Type header doesn't match response body
+
+**Problem:** Some endpoints return JSON with incorrect Content-Type header.
+
+**Example:**
+```
+HTTP/1.1 200 OK
+Content-Type: text/html; charset=UTF-8
+
+{"status":"success","assignments":[...]}
+```
+
+**Impact:** HTTP clients with strict content-type validation reject valid responses. Libraries like axios may not auto-parse JSON.
+
+**Our workaround:** Parse response body as JSON regardless of Content-Type header.
 
 **Recommendation:** Return `Content-Type: application/json` for all JSON responses.
 
-### File listing requires specific format
+---
 
-**Problem:** `GET .../files?dir=startercode` returns `400 Invalid Request` with message "startercode doesn't exist".
+### 3. File listing requires undocumented `/voc/` prefix and `list=true` parameter
 
-**Discovery:** The correct format requires:
-- Full path with `/voc/` prefix: `dir=/voc/startercode`
-- The `list=true` parameter to get file listing (without it, returns download URL)
+**Problem:** Intuitive request format returns error.
 
-**Working examples:**
+**What we tried:**
 ```
-GET .../files?dir=/voc/startercode&list=true  → {"files": ["main.py", "utils.py"]}
-GET .../files?dir=/voc/scripts&list=true      → {"files": ["grade.sh"]}
-GET .../files?dir=/work&list=true             → {"files": ["notebook.ipynb"]}
+GET .../files?dir=startercode
+→ 400: "startercode doesn't exist"
+
+GET .../files?dir=startercode&list=true
+→ 400: "startercode doesn't exist"
 ```
 
-**Recommendation:** Document the `/voc/` prefix requirement and the `list=true` parameter clearly.
+**What actually works:**
+```
+GET .../files?dir=/voc/startercode&list=true
+→ {"files": ["main.py", "utils.py"]}
+```
 
-### File download format varies
+**Key discoveries:**
+- Directory must have `/voc/` prefix (e.g., `/voc/startercode`, `/voc/scripts`)
+- `list=true` parameter is required to get file listing
+- Without `list=true`, the endpoint behaves differently (attempts download)
+- Exception: `/work` directory doesn't use `/voc/` prefix
 
-`GET .../files?dir=...&filename=...` returns different shapes:
-- Sometimes raw string content
-- Sometimes a Buffer
-- Sometimes JSON with `content`, `data`, `file`, or `base64` field
+**Our workaround:** `toApiDirPath()` helper function adds `/voc/` prefix automatically.
 
-**Recommendation:** Standardize on one format (suggest: always base64 in JSON wrapper, or always raw bytes with Content-Disposition header).
+**Recommendation:** Document the exact parameter format, or accept both formats.
 
-### Part `seqnum` is a string
+---
 
-`seqnum` values are strings like `"0"`, `"1"`, `"2"` rather than integers.
+### 4. File download uses different format than file listing
 
-**Impact:** Must parse to int for sorting; string sort gives wrong order (`"10"` < `"2"`).
+**Problem:** File listing and download use incompatible parameter formats.
 
-**Recommendation:** Return as integers, or document the string format clearly.
+**Listing (works):**
+```
+GET .../files?dir=/voc/scripts&list=true
+→ {"files": ["grade.sh", "run.sh"]}
+```
 
-### `submission_filters` format varies
+**Download attempt with same format (fails):**
+```
+GET .../files?dir=/voc/scripts&filename=grade.sh
+→ {"transactionid": "12345"}  // Starts async ZIP download of entire part
+```
 
-API responses return `submission_filters` in array format:
+**What actually works for single-file download:**
+```
+GET .../files?filename=scripts/grade.sh
+→ {"files": [{"download_url": "https://...signed-s3-url..."}]}
+
+// Then fetch from download_url (no auth needed)
+GET https://...signed-s3-url...
+→ (file content)
+```
+
+**Key discoveries:**
+- Single-file download uses `filename={dir}/{file}` (no `/voc/` prefix, no `dir` param)
+- Response contains `download_url` - a signed S3 URL
+- Must make second HTTP request to download actual content
+- Using `dir=/voc/...` triggers async transaction returning ZIP of entire part
+
+**Our workaround:** Two-step download: get `download_url`, then fetch from it.
+
+**Recommendation:** Document the file download contract clearly; consider returning content directly.
+
+---
+
+### 5. Part `seqnum` is a string, not integer
+
+**Problem:** Sequence numbers are returned as strings.
+
+**Example:**
 ```json
-"submission_filters": ["*.py", "*.txt"]
+{
+  "parts": [
+    { "id": "111", "name": "Part 1", "seqnum": "0" },
+    { "id": "222", "name": "Part 2", "seqnum": "1" },
+    { "id": "333", "name": "Part 10", "seqnum": "10" }
+  ]
+}
 ```
 
-But the update endpoint accepts object format:
+**Impact:** String sorting gives wrong order: `"10" < "2"` in lexicographic sort.
+
+**Our workaround:** `parts.sort((a, b) => parseInt(a.seqnum) - parseInt(b.seqnum))`
+
+**Recommendation:** Return `seqnum` as JSON number, or document string format.
+
+---
+
+### 6. Numeric fields returned as strings
+
+**Problem:** Several numeric fields are returned as JSON strings instead of numbers.
+
+**Example:**
 ```json
-"submission_filters": { "include": ["*.py"], "exclude": ["*.pyc"] }
+{
+  "databricks_maxusers": "250",    // Should be: 250
+  "session_length": "600",         // Should be: 600
+  "monthly_dollar": "0",           // Should be: 0
+  "monthly_time": "0",
+  "total_time": "1200",
+  "total_dollar": "0"
+}
 ```
 
-**Impact:** Clients must normalize between formats when reading then writing.
+**Impact:**
+- Schema validation fails if expecting integers
+- Comparison `250 !== "250"` returns false positive drift
+- Arithmetic operations require parsing: `parseInt(session_length) + 60`
 
-**Recommendation:** Accept both formats on write, or standardize on one format.
+**Our workaround:**
+- Schema uses `z.coerce.number()` to accept both formats
+- Comparison functions handle string/number equivalence
 
-### Null vs undefined in responses and requests
+**Recommendation:** Return all numeric fields as JSON numbers.
 
-API responses return `null` for unset optional fields:
+---
+
+### 7. `submission_filters` format differs between read and write
+
+**Problem:** API returns one format but expects another for updates.
+
+**What API returns (array):**
 ```json
-{ "container_image": null, "labtype": null }
+{
+  "submission_filters": ["*.py", "*.txt"]
+}
 ```
 
-But update requests reject `null` values - must omit the field entirely (undefined).
+**What update endpoint expects (object):**
+```json
+{
+  "submission_filters": {
+    "include": ["*.py"],
+    "exclude": ["*.pyc"]
+  }
+}
+```
 
-**Impact:** Clients must filter out null values before sending updates, or get validation errors.
+**Impact:** Cannot round-trip data without transformation.
 
-**Recommendation:** Either:
-- Accept `null` on updates (treat as "clear this field")
-- Return absent fields as undefined (omit from response) instead of null
+**Our workaround:** `normalizeSubmissionFilters()` converts between formats.
 
-### Field presence inconsistent
+**Recommendation:** Accept both formats on write, or standardize on one format for both.
 
-When reading assignment/part settings, some unset fields are:
-- Completely absent from response (undefined)
-- Present with `null` value
-- Present with empty string `""`
+---
 
-**Impact:** Comparison logic must treat null, undefined, and absent as equivalent to avoid false positives.
+### 8. Null handling differs between read and write
 
-**Recommendation:** Standardize on one representation for "unset" (suggest: omit field entirely).
+**Problem:** API returns `null` but rejects it on update.
+
+**What API returns:**
+```json
+{
+  "container_image": null,
+  "labtype": null,
+  "session_length": "600"
+}
+```
+
+**Update with null (fails):**
+```
+PUT .../parts/123
+{ "container_image": null }
+→ 400: "Invalid Request"
+```
+
+**Update without field (works):**
+```
+PUT .../parts/123
+{ "name": "Part 1" }  // omit null fields entirely
+→ 200: Success
+```
+
+**Impact:** Clients must strip all `null` values before sending updates.
+
+**Our workaround:** `nullToUndefined()` helper filters nulls before API calls.
+
+**Recommendation:** Either accept `null` on updates, or omit null fields from responses.
+
+---
+
+### 9. Unset fields represented inconsistently
+
+**Problem:** Unset optional fields appear in three different forms.
+
+**Examples from same response type:**
+```json
+// Field completely absent
+{ "name": "Part 1" }
+
+// Field present with null
+{ "name": "Part 1", "container_image": null }
+
+// Field present with empty string
+{ "name": "Part 1", "description": "" }
+```
+
+**Impact:** Comparison logic must treat `undefined`, `null`, and `""` as equivalent to avoid false positives.
+
+**Our workaround:** `settingsDiffer()` normalizes all three to `undefined` before comparing.
+
+**Recommendation:** Standardize: either always omit unset fields, or always include with `null`.
+
+---
+
+## Known Limitations
+
+### Course directory (`/voc/course`) not synced
+
+We explicitly exclude the `course` directory from listing and download operations.
+
+**Reason:** The `course` directory contains course-wide shared files that are symlinked across all assignments in a course. On the Vocareum side, these appear as symbolic links, but the file listing API may return them as actual files/directories.
+
+**Problem if synced:**
+1. Changes to `course` files would affect ALL assignments in the course
+2. Each assignment sync would detect "drift" in course files
+3. This creates infinite update loops: sync assignment A → course file changes → assignment B detects drift → sync B → etc.
+
+**Our approach:**
+- `downloadContent()` skips the `course` directory
+- Pull command ignores `course` directory files
+- Only part-level directories are synced: `startercode`, `scripts`, `docs`, `data`, `lib`, `asnlib`, `private`
+
+**If you need course-wide files:** Manage them directly in the Vocareum UI, not through this sync tool.
 
 ---
 
@@ -238,6 +416,7 @@ When reading assignment/part settings, some unset fields are:
 | Content upload | Full schema for `content[]` payload |
 | Valid `target` values | List by scope (part vs course) |
 | File listing | `dir=/voc/{directory}` format, `list=true` parameter |
+| File download | Two-step process: get `download_url`, then fetch |
 | Transaction polling | Endpoint, states, recommended intervals |
 | Assignment copy | Full request/response schema |
 | Required fields | `name` required for part updates |
@@ -269,6 +448,7 @@ When reading assignment/part settings, some unset fields are:
 | Medium | Document which fields work via API vs UI-only |
 | Medium | Standardize null handling (accept null on updates or omit from responses) |
 | Medium | Standardize `submission_filters` format (array vs object) |
+| Medium | Return numeric fields as JSON numbers, not strings |
 | Low | Add capabilities/introspection endpoint |
 | Low | Standardize file download response format |
 
@@ -282,14 +462,15 @@ When reading assignment/part settings, some unset fields are:
 | Upload contract undocumented | Discovered via Postman collection + trial-and-error |
 | Generic 400 errors | Extensive probing to find valid field combinations |
 | File listing format undocumented | Use `dir=/voc/{directory}&list=true` format |
+| File download format undocumented | Use `filename={dir}/{file}` to get `download_url`, then fetch |
 | ID type varies | Normalize all IDs to strings |
 | Content-Type inconsistent | Parse body regardless of Content-Type |
-| File download format varies | Try multiple response shapes, fallback gracefully |
 | Rate limiting on rapid requests | Retry with exponential backoff |
 | Async operations | Poll `/api/v2/transaction/{id}` until complete |
 | `submission_filters` format varies | `normalizeSubmissionFilters()` converts array to object format |
 | Null values in responses | `nullToUndefined()` helper filters nulls before API calls |
 | Null/undefined comparison | `settingsDiffer()` treats null and undefined as equivalent |
+| Numeric fields as strings | `z.coerce.number()` in schema, type-aware comparison in `valuesEqual()` |
 
 ---
 

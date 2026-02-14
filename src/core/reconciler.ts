@@ -335,6 +335,15 @@ function settingsDiffer(local: unknown, remote: unknown): boolean {
   // Treat null and undefined as equivalent
   const localNorm = local === null ? undefined : local;
   const remoteNorm = remote === null ? undefined : remote;
+
+  // Handle string/number comparison (API returns strings for some numbers)
+  if (typeof localNorm === 'number' && typeof remoteNorm === 'string') {
+    return localNorm !== parseInt(remoteNorm, 10);
+  }
+  if (typeof localNorm === 'string' && typeof remoteNorm === 'number') {
+    return parseInt(localNorm, 10) !== remoteNorm;
+  }
+
   return localNorm !== remoteNorm;
 }
 

@@ -107,6 +107,13 @@ export async function getUniqueDirectoryName(basePath: string, desiredName: stri
 export function valuesEqual(a: unknown, b: unknown): boolean {
   if (a === b) { return true; }
   if (a === undefined || b === undefined) { return false; }
+  // Handle string/number comparison (API returns strings for some numbers)
+  if (typeof a === 'number' && typeof b === 'string') {
+    return a === parseInt(b, 10);
+  }
+  if (typeof a === 'string' && typeof b === 'number') {
+    return parseInt(a, 10) === b;
+  }
   if (typeof a !== typeof b) { return false; }
   if (typeof a === 'object' && a !== null && b !== null) {
     return JSON.stringify(a) === JSON.stringify(b);
@@ -401,7 +408,8 @@ function detectDirectories(files: FileMap): DirectoryType[] {
     const parts = filePath.split('/');
     if (parts.length > 0) {
       const dir = parts[0] as DirectoryType;
-      if (['startercode', 'scripts', 'docs', 'data', 'private', 'lib', 'asnlib', 'course'].includes(dir)) {
+      // Note: 'course' excluded - shared course-wide files not synced to avoid update loops
+      if (['startercode', 'scripts', 'docs', 'data', 'private', 'lib', 'asnlib'].includes(dir)) {
         dirs.add(dir);
       }
     }

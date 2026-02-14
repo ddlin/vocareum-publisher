@@ -5,6 +5,7 @@
  *
  * CRITICAL: Content upload uses part PUT with content[].zipcontent payload.
  */
+import axios from 'axios';
 import { VocareumClient, APIError, VocareumError } from './client';
 import type { DirectoryType } from '../types/config';
 import type { UploadResult, FileMap, FileInfo } from '../types/api';
@@ -93,6 +94,20 @@ function parseFileListResponse(response: unknown): ParsedFileEntry[] {
   return parsed;
 }
 
+interface FileDownloadResponse {
+  status: string;
+  files?: Array<{
+    filename: string;
+    download_url: string;
+  }>;
+}
+
+/**
+ * Fetch file content from Vocareum
+ *
+ * API returns a signed download_url that we fetch directly.
+ * Format: GET .../files?filename={directory}/{filename}
+ */
 async function fetchFileContent(
   client: VocareumClient,
   courseId: string,
@@ -100,68 +115,30 @@ async function fetchFileContent(
   partId: string,
   directory: DirectoryType,
   filePath: string
-): Promise<unknown> {
+): Promise<string | Buffer> {
   const url = `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
-  let last400Error: unknown;
-  try {
-    return await client.request<unknown>({
-      method: 'GET',
-      url,
-      params: {
-        dir: directory,
-        filename: filePath,
-      },
-    });
-  } catch (error) {
-    if (!isHttp400(error)) {
-      throw error;
-    }
-    last400Error = error;
+  const fullPath = `${directory}/${filePath}`;
 
-    try {
-      return await client.request<unknown>({
-        method: 'GET',
-        url,
-        params: {
-          target: directory,
-          filename: filePath,
-        },
-      });
-    } catch (retryError) {
-      if (!isHttp400(retryError)) {
-        throw retryError;
-      }
-      last400Error = retryError;
+  // Request download URL from API
+  const response = await client.request<FileDownloadResponse>({
+    method: 'GET',
+    url,
+    params: { filename: fullPath },
+  });
 
-      try {
-        return await client.request<unknown>({
-          method: 'GET',
-          url,
-          params: { filename: filePath },
-        });
-      } catch (retryError2) {
-        if (!isHttp400(retryError2)) {
-          throw retryError2;
-        }
-        last400Error = retryError2;
-
-        const prefixedPath = `${directory}/${filePath}`;
-        try {
-          return await client.request<unknown>({
-            method: 'GET',
-            url,
-            params: { filename: prefixedPath },
-          });
-        } catch (retryError3) {
-          if (!isHttp400(retryError3)) {
-            throw retryError3;
-          }
-          last400Error = retryError3;
-          throw last400Error;
-        }
-      }
-    }
+  // Extract download URL
+  const downloadUrl = response.files?.[0]?.download_url;
+  if (!downloadUrl) {
+    throw new APIError(`No download URL returned for ${fullPath}`);
   }
+
+  // Fetch content from signed URL (no auth needed)
+  const downloadResponse = await axios.get(downloadUrl, {
+    responseType: 'arraybuffer',
+    timeout: 30000,
+  });
+
+  return Buffer.from(downloadResponse.data);
 }
 
 /**
@@ -362,14 +339,16 @@ export function downloadContent(
   partId: string
 ): Promise<FileMap> {
   return (async (): Promise<FileMap> => {
-    const directories: DirectoryType[] = ['startercode', 'scripts', 'docs', 'data', 'private', 'lib', 'asnlib', 'course'];
+    // Note: 'course' directory excluded - it contains course-wide shared files (symlinks)
+    // that are shared across all assignments and could cause infinite update loops
+    const directories: DirectoryType[] = ['startercode', 'scripts', 'docs', 'data', 'private', 'lib', 'asnlib'];
     const downloaded: FileMap = {};
 
     for (const directory of directories) {
       const files = await listFiles(client, courseId, assignmentId, partId, directory);
       for (const file of files) {
         try {
-          const response = await fetchFileContent(
+          const content = await fetchFileContent(
             client,
             courseId,
             assignmentId,
@@ -377,27 +356,8 @@ export function downloadContent(
             directory,
             file.path
           );
-
           const key = `${directory}/${file.path}`;
-          if (Buffer.isBuffer(response)) {
-            downloaded[key] = response;
-            continue;
-          }
-
-          if (typeof response === 'string') {
-            downloaded[key] = response;
-            continue;
-          }
-
-          if (response !== null && typeof response === 'object') {
-            const obj = response as { content?: string; data?: string; file?: string; base64?: string };
-            const content = obj.content ?? obj.data ?? obj.file ?? obj.base64;
-            if (typeof content === 'string') {
-              const decoded = Buffer.from(content, 'base64');
-              // If content is not base64, keep as text.
-              downloaded[key] = decoded.length > 0 ? decoded : content;
-            }
-          }
+          downloaded[key] = content;
         } catch (error) {
           logger.warn(`Failed to download ${directory}/${file.path}: ${error instanceof Error ? error.message : 'Unknown'}`);
         }
@@ -465,10 +425,13 @@ export async function listFiles(
 /**
  * Delete a file from a workspace directory
  *
- * Note: This is experimental and may not be supported.
- * Handle 404/405 gracefully.
+ * WARNING: File deletion may not be fully supported by the API.
+ * We recommend using `reset: 1` in upload payload to clear directories instead.
+ * This function handles errors gracefully and won't throw on 400/404/405.
  *
  * @param client - Vocareum API client
+ * @param courseId - Course ID (string!)
+ * @param assignmentId - Assignment ID (string!)
  * @param partId - Part ID (string!)
  * @param directory - Directory type
  * @param filePath - Relative path of file to delete
@@ -481,23 +444,25 @@ export async function deleteFile(
   directory: DirectoryType,
   filePath: string
 ): Promise<void> {
+  const apiDirPath = toApiDirPath(directory);
   try {
     await client.request({
       method: 'DELETE',
       url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`,
       params: {
-        dir: directory,
+        dir: apiDirPath,
         filename: filePath,
       },
     });
   } catch (error: unknown) {
-    // Handle 404/405 gracefully as per requirements
+    // Handle errors gracefully - deletion may not be supported
     if (error instanceof VocareumError) {
-      if (error.statusCode === 404 || error.statusCode === 405) {
-        logger.warn(`File deletion not supported or file not found: ${filePath}`);
+      if (error.statusCode === 400 || error.statusCode === 404 || error.statusCode === 405) {
+        logger.debug(`File deletion not supported or file not found: ${filePath}`);
         return;
       }
     }
-    throw error;
+    // For other errors, just log and continue (don't fail the operation)
+    logger.warn(`Failed to delete ${filePath}: ${error instanceof Error ? error.message : 'Unknown'}`);
   }
 }
