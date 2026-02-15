@@ -404,6 +404,8 @@ async function importAssignment(
 
   // Calculate content hashes for each directory in each part
   // Key format must match reconciler: assignmentPath/partPath/directory
+  // IMPORTANT: Must exclude .gitkeep files to match reconciler behavior
+  const excludePatterns = ['.gitkeep', '**/.gitkeep'];
   const contentState: Record<string, string> = {};
   for (const configPart of configParts) {
     const partPath = configPart.path;
@@ -420,7 +422,7 @@ async function importAssignment(
         : path.join(localPath, partPath, dir);
 
       try {
-        const hash = await calculateDirectoryHash(dirPath);
+        const hash = await calculateDirectoryHash(dirPath, excludePatterns);
         contentState[stateKey] = hash;
 
         if (verbose) {
