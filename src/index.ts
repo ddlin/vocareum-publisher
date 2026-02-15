@@ -14,7 +14,7 @@ import { join } from 'path';
 function getVersion(): string {
   try {
     const pkgPath = join(__dirname, '..', 'package.json');
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { version: string };
     return pkg.version;
   } catch {
     return '1.0.0'; // Fallback

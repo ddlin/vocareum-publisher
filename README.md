@@ -189,12 +189,14 @@ The `pull` command helps you manage assignment sync issues:
 1. **Orphaned assignments** - exist in Vocareum but not in your local config
 2. **Stale assignments** - exist in your config but were deleted from Vocareum
 3. **Settings drift** - settings in Vocareum differ from your local config
+4. **Content drift** - files in Vocareum differ from your local files
 
 This is useful when:
 - You've created assignments directly in the Vocareum UI
 - You're onboarding an existing course to Git-based management
 - Assignments were created or deleted by another team member
 - Settings were changed in Vocareum UI and you want to sync them locally
+- Files were edited directly in Vocareum and you want to pull those changes
 
 ```bash
 vocareum-publish pull                # Interactive mode
@@ -216,6 +218,11 @@ vocareum-publish pull --non-interactive  # Skip all issues
 **For settings drift** (local settings differ from Vocareum):
 - **Pull**: Update local config with settings from Vocareum
 - **Keep**: Keep local settings (will overwrite Vocareum on next push)
+- **Skip**: Do nothing for now
+
+**For content drift** (files in Vocareum differ from local):
+- **Pull**: Download remote files (overwrites local files)
+- **Keep**: Keep local files (will overwrite Vocareum on next push)
 - **Skip**: Do nothing for now
 
 Example workflow:
@@ -249,9 +256,19 @@ $ vocareum-publish pull
 ? What would you like to do? Pull settings from Vocareum (update local config)
 ✓ Will update local settings for "Lab 1: Introduction"
 
+ℹ Found 1 assignment(s) with content changes on Vocareum.
+
+[1/1] Lab 2: Data Analysis (ID: 22222)
+  Content changes:
+    ~ docs/README.md (modified)
+    + scripts/new_test.py (new on remote)
+? What would you like to do? Pull remote files (overwrite local)
+✓ Pulled content changes for "Lab 2: Data Analysis"
+
 Summary:
   Imported:        1
   Settings pulled: 1
+  Content pulled:  1
   Excluded:        0
   Removed:         0
   Reset:           1

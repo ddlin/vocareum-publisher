@@ -37,6 +37,7 @@ interface PullSummary {
   removed: number;
   reset: number;
   settingsPulled: number;
+  contentPulled: number;
 }
 
 type PullAction = 'import' | 'exclude' | 'skip';
@@ -74,6 +75,31 @@ interface AssignmentSettingsDrift {
   remoteAssignmentSettings: NonNullable<AssignmentSettings>;
   partsDrift: PartSettingsDrift[];
 }
+
+/** Represents a file that differs between local and remote */
+interface FileDiff {
+  filePath: string;
+  status: 'modified' | 'added' | 'deleted';
+}
+
+/** Represents content drift for a part */
+interface PartContentDrift {
+  partId: string;
+  partName: string;
+  partPath: string;
+  fileDiffs: FileDiff[];
+  remoteFiles: FileMap;
+}
+
+/** Represents content drift for an assignment */
+interface AssignmentContentDrift {
+  assignmentId: string;
+  assignmentName: string;
+  assignmentPath: string;
+  partsDrift: PartContentDrift[];
+}
+
+type ContentDriftAction = 'pull' | 'keep' | 'skip';
 
 /**
  * Convert assignment name to directory-safe slug
@@ -301,6 +327,129 @@ async function detectSettingsDrift(
       const message = error instanceof Error ? error.message : 'Unknown error';
       logger.warn(`Could not fetch settings for assignment "${assignment.name}" (ID: ${assignment.assignment_id}): ${message}`);
       continue;
+    }
+  }
+
+  return driftList;
+}
+
+/**
+ * Detect content drift between local files and Vocareum
+ *
+ * Compares local files against remote files and identifies:
+ * - Modified files (exist both locally and remotely but content differs)
+ * - Added files (exist remotely but not locally)
+ * - Deleted files (exist locally but not remotely)
+ *
+ * @param config - Configuration with assignments
+ * @param client - Vocareum API client
+ * @param skipAssignmentIds - Assignment IDs to skip (stale or excluded)
+ * @param verbose - Enable verbose logging
+ */
+async function detectContentDrift(
+  config: { assignments: Assignment[]; vocareum: { course_id: string; excluded_assignments?: string[] } },
+  client: VocareumClient,
+  skipAssignmentIds: Set<string>,
+  verbose: boolean
+): Promise<AssignmentContentDrift[]> {
+  const driftList: AssignmentContentDrift[] = [];
+  const excludedIds = new Set(config.vocareum.excluded_assignments ?? []);
+
+  for (const assignment of config.assignments) {
+    if (!assignment.assignment_id) { continue; }
+    if (skipAssignmentIds.has(assignment.assignment_id)) { continue; }
+    if (excludedIds.has(assignment.assignment_id)) { continue; }
+
+    try {
+      const partsDrift: PartContentDrift[] = [];
+
+      for (const configPart of assignment.parts) {
+        if (!configPart.part_id) { continue; }
+
+        // Download remote content for this part
+        const remoteFiles = await downloadContent(
+          client,
+          config.vocareum.course_id,
+          assignment.assignment_id,
+          configPart.part_id
+        );
+
+        const fileDiffs: FileDiff[] = [];
+        const localBasePath = configPart.path === '.'
+          ? assignment.path
+          : path.join(assignment.path, configPart.path);
+
+        // Compare remote files with local files
+        for (const [remotePath, remoteContent] of Object.entries(remoteFiles)) {
+          const localPath = path.join(localBasePath, remotePath);
+
+          if (await pathExists(localPath)) {
+            // File exists locally - check if content differs
+            const fs = await import('fs/promises');
+            const localContent = await fs.readFile(localPath);
+            const remoteBuffer = Buffer.isBuffer(remoteContent)
+              ? remoteContent
+              : Buffer.from(remoteContent);
+
+            if (!localContent.equals(remoteBuffer)) {
+              fileDiffs.push({ filePath: remotePath, status: 'modified' });
+            }
+          } else {
+            // File exists remotely but not locally
+            fileDiffs.push({ filePath: remotePath, status: 'added' });
+          }
+        }
+
+        // Check for files that exist locally but not remotely (deleted on remote)
+        const directories = configPart.directories ?? DEFAULT_PART_DIRECTORIES;
+        for (const dir of directories) {
+          const localDirPath = path.join(localBasePath, dir);
+          if (!await pathExists(localDirPath)) { continue; }
+
+          const fs = await import('fs/promises');
+          try {
+            // Read directory recursively and check for files not on remote
+            const localFilesRaw = await fs.readdir(localDirPath, { recursive: true });
+            for (const entry of localFilesRaw) {
+              const file = String(entry);
+              if (file === '.gitkeep' || file.endsWith('/.gitkeep')) { continue; }
+
+              const relativePath = path.join(dir, file);
+              const fullPath = path.join(localDirPath, file);
+              const stat = await fs.stat(fullPath);
+              if (stat.isFile() && remoteFiles[relativePath] === undefined) {
+                fileDiffs.push({ filePath: relativePath, status: 'deleted' });
+              }
+            }
+          } catch {
+            // Directory doesn't exist or can't be read
+          }
+        }
+
+        if (fileDiffs.length > 0) {
+          partsDrift.push({
+            partId: configPart.part_id,
+            partName: configPart.name ?? 'Part',
+            partPath: configPart.path,
+            fileDiffs,
+            remoteFiles,
+          });
+        }
+      }
+
+      if (partsDrift.length > 0) {
+        driftList.push({
+          assignmentId: assignment.assignment_id,
+          assignmentName: assignment.name,
+          assignmentPath: assignment.path,
+          partsDrift,
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      if (verbose) {
+        logger.warn(`Could not check content for "${assignment.name}": ${message}`);
+      }
     }
   }
 
@@ -571,11 +720,15 @@ export async function pullCommand(options: PullOptions): Promise<void> {
     const staleAssignmentIds = new Set(plan.staleInConfig.map(s => s.assignment_id));
     const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds);
 
+    // Detect content drift (files changed on Vocareum)
+    const contentDrift = await detectContentDrift(config, client, staleAssignmentIds, verbose);
+
     const hasOrphans = plan.orphanedInVocareum.length > 0;
     const hasStale = plan.staleInConfig.length > 0;
-    const hasDrift = settingsDrift.length > 0;
+    const hasSettingsDrift = settingsDrift.length > 0;
+    const hasContentDrift = contentDrift.length > 0;
 
-    if (!hasOrphans && !hasStale && !hasDrift) {
+    if (!hasOrphans && !hasStale && !hasSettingsDrift && !hasContentDrift) {
       logger.success('No sync issues found.');
       return;
     }
@@ -588,6 +741,7 @@ export async function pullCommand(options: PullOptions): Promise<void> {
       removed: 0,
       reset: 0,
       settingsPulled: 0,
+      contentPulled: 0,
     };
 
     const newAssignments: Partial<Assignment>[] = [];
@@ -722,7 +876,7 @@ export async function pullCommand(options: PullOptions): Promise<void> {
     }
 
     // Process settings drift (local settings differ from Vocareum)
-    if (hasDrift) {
+    if (hasSettingsDrift) {
       logger.info(`Found ${settingsDrift.length} assignment(s) with settings drift.`);
       logger.newline();
 
@@ -784,6 +938,117 @@ export async function pullCommand(options: PullOptions): Promise<void> {
           logger.success(`Will update local settings for "${drift.assignmentName}"`);
         } else if (action === 'keep') {
           logger.plain('  Keeping local settings (will push to Vocareum on next publish)');
+        } else {
+          summary.skipped++;
+          logger.plain('  Skipped');
+        }
+
+        logger.newline();
+      }
+    }
+
+    // Process content drift (files changed on Vocareum)
+    if (hasContentDrift) {
+      logger.info(`Found ${contentDrift.length} assignment(s) with content changes on Vocareum.`);
+      logger.newline();
+
+      for (let i = 0; i < contentDrift.length; i++) {
+        const drift = contentDrift[i];
+
+        logger.plain(`[${i + 1}/${contentDrift.length}] ${drift.assignmentName} (ID: ${drift.assignmentId})`);
+
+        // Show file changes per part
+        for (const partDrift of drift.partsDrift) {
+          const partLabel = partDrift.partPath === '.' ? '' : ` (${partDrift.partName})`;
+          logger.plain(`  Content changes${partLabel}:`);
+
+          // Group by status
+          const modified = partDrift.fileDiffs.filter(f => f.status === 'modified');
+          const added = partDrift.fileDiffs.filter(f => f.status === 'added');
+          const deleted = partDrift.fileDiffs.filter(f => f.status === 'deleted');
+
+          for (const file of modified) {
+            logger.plain(`    ~ ${file.filePath} (modified)`);
+          }
+          for (const file of added) {
+            logger.plain(`    + ${file.filePath} (new on remote)`);
+          }
+          for (const file of deleted) {
+            logger.plain(`    - ${file.filePath} (deleted on remote)`);
+          }
+        }
+
+        let action: ContentDriftAction = 'skip';
+
+        if (nonInteractive) {
+          action = 'skip';
+          logger.plain('  Skipped (non-interactive mode)');
+        } else {
+          const choice = await promptChoice('What would you like to do?', [
+            'Pull remote files (overwrite local)',
+            'Keep local files (will overwrite remote on next push)',
+            'Skip (do nothing for now)',
+          ]);
+
+          if (choice === 'Pull remote files (overwrite local)') {
+            action = 'pull';
+          } else if (choice === 'Keep local files (will overwrite remote on next push)') {
+            action = 'keep';
+          } else {
+            action = 'skip';
+          }
+        }
+
+        if (action === 'pull') {
+          // Write remote files to local
+          for (const partDrift of drift.partsDrift) {
+            const localBasePath = partDrift.partPath === '.'
+              ? drift.assignmentPath
+              : path.join(drift.assignmentPath, partDrift.partPath);
+
+            // Write the remote files
+            await writeFilesToDirectory(drift.assignmentPath, partDrift.partPath, partDrift.remoteFiles, verbose);
+
+            // Handle deleted files (files that exist locally but not remotely)
+            for (const fileDiff of partDrift.fileDiffs) {
+              if (fileDiff.status === 'deleted') {
+                const localFilePath = path.join(localBasePath, fileDiff.filePath);
+                try {
+                  const fs = await import('fs/promises');
+                  await fs.unlink(localFilePath);
+                  if (verbose) {
+                    logger.debug(`Deleted ${localFilePath}`);
+                  }
+                } catch {
+                  // File may already be gone
+                }
+              }
+            }
+
+            // Update content state for these directories
+            const excludePatterns = ['.gitkeep', '**/.gitkeep'];
+            const directories = new Set<DirectoryType>();
+            for (const fileDiff of partDrift.fileDiffs) {
+              const dir = fileDiff.filePath.split('/')[0] as DirectoryType;
+              directories.add(dir);
+            }
+
+            for (const dir of directories) {
+              const dirPath = path.join(localBasePath, dir);
+              const stateKey = path.join(localBasePath, dir);
+              try {
+                const hash = await calculateDirectoryHash(dirPath, excludePatterns);
+                importedContentState[stateKey] = hash;
+              } catch {
+                // Directory may not exist
+              }
+            }
+          }
+
+          summary.contentPulled++;
+          logger.success(`Pulled content changes for "${drift.assignmentName}"`);
+        } else if (action === 'keep') {
+          logger.plain('  Keeping local files (will push to Vocareum on next push)');
         } else {
           summary.skipped++;
           logger.plain('  Skipped');
@@ -875,6 +1140,7 @@ export async function pullCommand(options: PullOptions): Promise<void> {
     logger.info('Summary:');
     logger.plain(`  Imported:        ${summary.imported}`);
     logger.plain(`  Settings pulled: ${summary.settingsPulled}`);
+    logger.plain(`  Content pulled:  ${summary.contentPulled}`);
     logger.plain(`  Excluded:        ${summary.excluded}`);
     logger.plain(`  Removed:         ${summary.removed}`);
     logger.plain(`  Reset:           ${summary.reset}`);
