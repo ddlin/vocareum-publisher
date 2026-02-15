@@ -5,7 +5,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "vocareum-publish": "./dist/index.js"
+    "vocgit": "./dist/index.js"
   },
   "scripts": {
     "build": "tsc",

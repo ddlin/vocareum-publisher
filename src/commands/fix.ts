@@ -45,7 +45,7 @@ export async function fixCommand(options: FixOptions): Promise<void> {
     logger.info(`Found ${missingFolders.length} missing folders.`);
 
     for (const error of missingFolders) {
-      // Fix: "Run: vocareum-publish new ..." or "Create directory: ..."
+      // Fix: "Run: vocgit new ..." or "Create directory: ..."
       // The error object has a 'fix' message, but we want to ACT on it.
       // We can infer the path from `error.path`.
 

@@ -24,7 +24,7 @@ function getVersion(): string {
 const program = new Command();
 
 program
-  .name('vocareum-publish')
+  .name('vocgit')
   .description('Sync assignment content between GitHub and Vocareum')
   .version(getVersion());
 
@@ -55,8 +55,8 @@ Description:
     - Template assignment(s) with names and source course IDs
 
 Examples:
-  $ vocareum-publish init              # Interactive setup
-  $ vocareum-publish init --force      # Overwrite existing config
+  $ vocgit init              # Interactive setup
+  $ vocgit init --force      # Overwrite existing config
 `)
   .action(async (options: InitOptions) => {
     try {
@@ -90,8 +90,8 @@ Description:
     - template_assignment_id: <selected template>
 
 Examples:
-  $ vocareum-publish new lab1          # Create lab1/ with default structure
-  $ vocareum-publish new               # Prompt for assignment name
+  $ vocgit new lab1          # Create lab1/ with default structure
+  $ vocgit new               # Prompt for assignment name
 `)
   .action(async (assignmentPath: string) => {
     try {
@@ -128,9 +128,9 @@ Description:
     - Part IDs match remote parts
 
 Examples:
-  $ vocareum-publish validate           # Local validation only
-  $ vocareum-publish validate --strict  # Fail on warnings
-  $ vocareum-publish validate --vocareum  # Include API validation
+  $ vocgit validate           # Local validation only
+  $ vocgit validate --strict  # Fail on warnings
+  $ vocgit validate --vocareum  # Include API validation
 `)
   .action(async (options: ValidateOptions) => {
     try {
@@ -161,8 +161,8 @@ Description:
   Use --non-interactive to see issues without being prompted for fixes.
 
 Examples:
-  $ vocareum-publish fix                  # Interactive mode
-  $ vocareum-publish fix --non-interactive  # Report only, no changes
+  $ vocgit fix                  # Interactive mode
+  $ vocgit fix --non-interactive  # Report only, no changes
 `)
   .action(async (options: FixOptions) => {
     try {
@@ -207,9 +207,9 @@ Description:
     - Another team member made changes
 
 Examples:
-  $ vocareum-publish pull               # Interactive sync
-  $ vocareum-publish pull --verbose     # Show file details during import
-  $ vocareum-publish pull --non-interactive  # Report issues only
+  $ vocgit pull               # Interactive sync
+  $ vocgit pull --verbose     # Show file details during import
+  $ vocgit pull --non-interactive  # Report issues only
 `)
   .action(async (options: PullOptions) => {
     try {
@@ -238,9 +238,9 @@ Description:
     - Environment details (CI/local, API key presence)
 
 Examples:
-  $ vocareum-publish           # Default status view
-  $ vocareum-publish status
-  $ vocareum-publish status --verbose
+  $ vocgit           # Default status view
+  $ vocgit status
+  $ vocgit status --verbose
 `)
   .action(async (options: StatusCommandOptions) => {
     try {
@@ -296,11 +296,11 @@ Options explained:
   --auto-commit     Commit vocareum.yaml after push (local dev only)
 
 Examples:
-  $ vocareum-publish push               # Push all changed assignments
-  $ vocareum-publish push --dry-run     # Preview without pushing
-  $ vocareum-publish push --assignment lab1  # Push only lab1
-  $ vocareum-publish push --force-all   # Re-upload everything
-  $ vocareum-publish push --non-interactive  # CI/CD mode (no prompts)
+  $ vocgit push               # Push all changed assignments
+  $ vocgit push --dry-run     # Preview without pushing
+  $ vocgit push --assignment lab1  # Push only lab1
+  $ vocgit push --force-all   # Re-upload everything
+  $ vocgit push --non-interactive  # CI/CD mode (no prompts)
 `)
   .action(async (options: PublishCommandOptions) => {
     try {

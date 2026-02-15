@@ -16,7 +16,7 @@ A CLI tool and GitHub Action that enables instructors to maintain assignment con
 ## Installation
 
 ```bash
-npm install -g vocareum-publisher
+npm install -g vocgiter
 ```
 
 ## Quick Start
@@ -26,13 +26,13 @@ npm install -g vocareum-publisher
 ```bash
 mkdir my-course && cd my-course
 git init
-vocareum-publish init
+vocgit init
 ```
 
 ### 2. Create an Assignment
 
 ```bash
-vocareum-publish new lab1-intro
+vocgit new lab1-intro
 # Follow interactive prompts
 ```
 
@@ -54,8 +54,8 @@ lab1-intro/
 ### 4. Validate and Push
 
 ```bash
-vocareum-publish validate
-vocareum-publish push
+vocgit validate
+vocgit push
 ```
 
 ### 5. Commit and Push
@@ -158,28 +158,28 @@ publish_history:
 
 | Command | Description |
 |---------|-------------|
-| `vocareum-publish init` | Initialize a new course repository |
-| `vocareum-publish new <path>` | Create new assignment structure |
-| `vocareum-publish validate` | Validate configuration and structure |
-| `vocareum-publish fix` | Interactively fix validation issues |
-| `vocareum-publish pull` | Import or exclude orphaned assignments from Vocareum |
-| `vocareum-publish status` | Show current local sync status (default command) |
-| `vocareum-publish push` | Push content to Vocareum |
+| `vocgit init` | Initialize a new course repository |
+| `vocgit new <path>` | Create new assignment structure |
+| `vocgit validate` | Validate configuration and structure |
+| `vocgit fix` | Interactively fix validation issues |
+| `vocgit pull` | Import or exclude orphaned assignments from Vocareum |
+| `vocgit status` | Show current local sync status (default command) |
+| `vocgit push` | Push content to Vocareum |
 
 ```bash
-vocareum-publish                  # Same as: vocareum-publish status
-vocareum-publish status --verbose # Include per-assignment details
+vocgit                  # Same as: vocgit status
+vocgit status --verbose # Include per-assignment details
 ```
 
 ### Push Options
 
 ```bash
-vocareum-publish push --dry-run           # Preview changes
-vocareum-publish push --assignment lab1   # Push specific assignment
-vocareum-publish push --force-all         # Re-upload everything
-vocareum-publish push --sync-deletes      # Delete files not in Git (experimental)
-vocareum-publish push --non-interactive   # Skip confirmation prompt
-vocareum-publish push --verbose           # Detailed logging
+vocgit push --dry-run           # Preview changes
+vocgit push --assignment lab1   # Push specific assignment
+vocgit push --force-all         # Re-upload everything
+vocgit push --sync-deletes      # Delete files not in Git (experimental)
+vocgit push --non-interactive   # Skip confirmation prompt
+vocgit push --verbose           # Detailed logging
 ```
 
 ### Pull Command
@@ -199,9 +199,9 @@ This is useful when:
 - Files were edited directly in Vocareum and you want to pull those changes
 
 ```bash
-vocareum-publish pull                # Interactive mode
-vocareum-publish pull --verbose      # Show detailed output
-vocareum-publish pull --non-interactive  # Skip all issues
+vocgit pull                # Interactive mode
+vocgit pull --verbose      # Show detailed output
+vocgit pull --non-interactive  # Skip all issues
 ```
 
 **For orphaned assignments** (in Vocareum, not in config):
@@ -228,7 +228,7 @@ vocareum-publish pull --non-interactive  # Skip all issues
 Example workflow:
 
 ```
-$ vocareum-publish pull
+$ vocgit pull
 
 ℹ Scanning for assignment sync issues...
 ℹ Found 1 orphaned assignment(s) in Vocareum.
@@ -293,7 +293,7 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: Push to Vocareum
-        uses: ddlin/vocareum-publisher@v1
+        uses: ddlin/vocgiter@v1
         with:
           config-file: vocareum.yaml
           api-key: ${{ secrets.VOCAREUM_API_KEY }}
@@ -357,16 +357,16 @@ assignment_id: 12345
 
 ### Local Creation, CI/CD Updates
 
-- **Create assignments locally** using `vocareum-publish new`
+- **Create assignments locally** using `vocgit new`
 - **Commit IDs** to Git before CI/CD runs
 - **CI/CD only updates** existing assignments
 
 ### Template Selection
 
-Templates can exist in any course within your organization. When you have multiple templates configured, `vocareum-publish new` will prompt you to select which template to use:
+Templates can exist in any course within your organization. When you have multiple templates configured, `vocgit new` will prompt you to select which template to use:
 
 ```
-$ vocareum-publish new lab3
+$ vocgit new lab3
 Multiple templates available.
 ? Select template for this assignment:
 ❯ Standard Lab (99999)
@@ -432,4 +432,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 - [Documentation](docs/)
 - [Examples](examples/)
 - [Vocareum API](https://documenter.getpostman.com/view/6736336/S11Exg4b)
-- [Issues](https://github.com/ddlin/vocareum-publisher/issues)
+- [Issues](https://github.com/ddlin/vocgiter/issues)

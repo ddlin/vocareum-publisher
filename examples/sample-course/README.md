@@ -41,12 +41,12 @@ sample-course/
 
 5. Validate your configuration:
    ```bash
-   vocareum-publish --validate
+   vocgit --validate
    ```
 
 6. Publish to Vocareum:
    ```bash
-   vocareum-publish
+   vocgit
    ```
 
 ## Directory Types
@@ -69,5 +69,5 @@ See `vocareum.yaml` for the full configuration. Key sections:
 
 - All IDs are strings (not numbers)
 - Part order in YAML matches part order in template (by seqnum)
-- Run `vocareum-publish new <assignment-name>` to create new assignments
+- Run `vocgit new <assignment-name>` to create new assignments
 - Never enable `auto_commit` in CI/CD workflows

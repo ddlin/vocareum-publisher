@@ -36,7 +36,7 @@ export async function validateStructure(
         type: 'missing_folder',
         path: assignment.path,
         message: `Assignment "${assignment.name}" references path "${assignment.path}" which doesn't exist`,
-        fix: `Run: vocareum-publish new ${assignment.path}`
+        fix: `Run: vocgit new ${assignment.path}`
       });
       result.valid = false;
       continue; // Skip part checks if assignment folder missing

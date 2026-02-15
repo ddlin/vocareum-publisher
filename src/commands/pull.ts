@@ -1066,18 +1066,26 @@ export async function pullCommand(options: PullOptions): Promise<void> {
       settingsUpdates.size > 0;
 
     // Create publish_history entry for imported assignments to prevent accidental re-push
+    // CRITICAL: Merge with previous content_state to preserve hashes for existing assignments
     let newPublishHistory: PublishHistory[] | undefined;
     if (Object.keys(importedContentState).length > 0) {
       const commitSha = await getCommitSha().catch(() => 'unknown');
       const gitUserName = await getGitUserName().catch(() => null);
       const publishedBy = gitUserName ?? 'pull-command';
 
+      // Merge previous content_state with newly imported state
+      const previousContentState = config.publish_history?.[0]?.content_state ?? {};
+      const mergedContentState = {
+        ...previousContentState,
+        ...importedContentState,
+      };
+
       const historyEntry: PublishHistory = {
         timestamp: new Date().toISOString(),
         commit_sha: commitSha,
         published_by: publishedBy,
         status: 'success',
-        content_state: importedContentState,
+        content_state: mergedContentState,
       };
 
       newPublishHistory = [historyEntry];

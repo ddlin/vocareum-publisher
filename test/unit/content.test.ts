@@ -13,6 +13,10 @@ import {
   downloadContent,
 } from '../../src/api/content';
 import { VocareumClient, VocareumError } from '../../src/api/client';
+import axios from 'axios';
+
+// Mock axios for S3 downloads
+vi.mock('axios');
 
 describe('crc32', () => {
   it('should calculate CRC32 for empty buffer', () => {
@@ -513,7 +517,7 @@ describe('deleteFile', () => {
       method: 'DELETE',
       url: '/api/v2/courses/c1/assignments/a1/parts/p1/files',
       params: {
-        dir: 'startercode',
+        dir: '/voc/startercode',
         filename: 'old-file.py',
       },
     });
@@ -535,191 +539,206 @@ describe('deleteFile', () => {
     await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'scripts', 'file.sh')).resolves.toBeUndefined();
   });
 
-  it('should rethrow non-404/405 VocareumErrors', async () => {
+  it('should handle non-404/405 VocareumErrors gracefully', async () => {
     const error = new VocareumError('Server error', 'API_ERROR', 500);
     requestMock.mockRejectedValueOnce(error);
 
-    await expect(
-      deleteFile(mockClient, 'c1', 'a1', 'p1', 'data', 'file.csv')
-    ).rejects.toThrow('Server error');
+    // Should not throw - just logs and continues
+    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'data', 'file.csv')).resolves.toBeUndefined();
   });
 
-  it('should rethrow non-VocareumError errors', async () => {
+  it('should handle non-VocareumError errors gracefully', async () => {
     requestMock.mockRejectedValueOnce(new Error('Connection failed'));
 
-    await expect(
-      deleteFile(mockClient, 'c1', 'a1', 'p1', 'startercode', 'file.py')
-    ).rejects.toThrow('Connection failed');
+    // Should not throw - just logs and continues
+    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'startercode', 'file.py')).resolves.toBeUndefined();
   });
 });
 
 describe('downloadContent', () => {
   let mockClient: VocareumClient;
   let requestMock: ReturnType<typeof vi.fn>;
+  const mockedAxios = vi.mocked(axios);
 
   beforeEach(() => {
     requestMock = vi.fn();
     mockClient = {
       request: requestMock,
     } as unknown as VocareumClient;
+    vi.clearAllMocks();
   });
 
+  // Helper to set up mocks for the two-step download process
+  // Step 1: listFiles returns file list
+  // Step 2: fetchFileContent makes request to get download_url, then axios fetches from S3
+  function setupEmptyDirectoryMocks() {
+    // 7 directories: startercode, scripts, docs, data, private, lib, asnlib
+    for (let i = 0; i < 7; i++) {
+      requestMock.mockResolvedValueOnce({ files: [] });
+    }
+  }
+
   it('should iterate directories and download each file', async () => {
-    // listFiles calls for each directory
-    requestMock
-      .mockResolvedValueOnce({ files: [{ path: 'main.py', size: 50 }] }) // startercode
-      .mockResolvedValueOnce('print("hello")') // download main.py
-      .mockResolvedValueOnce({ files: [] }) // scripts
-      .mockResolvedValueOnce({ files: [] }) // docs
-      .mockResolvedValueOnce({ files: [] }) // data
-      .mockResolvedValueOnce({ files: [] }) // private
-      .mockResolvedValueOnce({ files: [] }) // lib
-      .mockResolvedValueOnce({ files: [] }); // asnlib
+    // startercode: has one file
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'main.py', size: 50 }] });
+    // fetchFileContent for main.py - returns download_url
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'startercode/main.py', download_url: 'https://s3.example.com/main.py' }],
+    });
+    // Mock axios to return file content
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.from('print("hello")') });
+
+    // Other directories empty
+    for (let i = 0; i < 6; i++) {
+      requestMock.mockResolvedValueOnce({ files: [] });
+    }
 
     const result = await downloadContent(mockClient, 'c1', 'a1', 'p1');
 
     expect(result).toHaveProperty('startercode/main.py');
-    expect(result['startercode/main.py']).toBe('print("hello")');
+    expect(Buffer.isBuffer(result['startercode/main.py'])).toBe(true);
+    expect(result['startercode/main.py'].toString()).toBe('print("hello")');
   });
 
-  it('should handle string response format', async () => {
-    requestMock
-      .mockResolvedValueOnce({ files: [{ path: 'readme.md', size: 10 }] })
-      .mockResolvedValueOnce('# Hello')
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] });
+  it('should handle Buffer response from S3', async () => {
+    const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47]); // PNG header
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'image.png', size: 4 }] });
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'startercode/image.png', download_url: 'https://s3.example.com/image.png' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: pngHeader });
 
-    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1');
-
-    expect(result['startercode/readme.md']).toBe('# Hello');
-  });
-
-  it('should handle Buffer response format', async () => {
-    const bufferContent = Buffer.from([0x89, 0x50, 0x4e, 0x47]); // PNG header
-    requestMock
-      .mockResolvedValueOnce({ files: [{ path: 'image.png', size: 4 }] })
-      .mockResolvedValueOnce(bufferContent)
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] });
+    for (let i = 0; i < 6; i++) {
+      requestMock.mockResolvedValueOnce({ files: [] });
+    }
 
     const result = await downloadContent(mockClient, 'c1', 'a1', 'p1');
 
     expect(Buffer.isBuffer(result['startercode/image.png'])).toBe(true);
-  });
-
-  it('should handle object response with content field', async () => {
-    const base64Content = Buffer.from('hello world').toString('base64');
-    requestMock
-      .mockResolvedValueOnce({ files: [{ path: 'file.txt', size: 11 }] })
-      .mockResolvedValueOnce({ content: base64Content })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] });
-
-    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1');
-
-    expect(result).toHaveProperty('startercode/file.txt');
-  });
-
-  it('should handle object response with data field', async () => {
-    const base64Content = Buffer.from('data field').toString('base64');
-    requestMock
-      .mockResolvedValueOnce({ files: [{ path: 'file.txt', size: 10 }] })
-      .mockResolvedValueOnce({ data: base64Content })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] });
-
-    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1');
-
-    expect(result).toHaveProperty('startercode/file.txt');
+    expect(result['startercode/image.png'][0]).toBe(0x89);
   });
 
   it('should download files from multiple directories', async () => {
-    requestMock
-      .mockResolvedValueOnce({ files: [{ path: 'main.py', size: 20 }] }) // startercode list
-      .mockResolvedValueOnce('code') // startercode/main.py
-      .mockResolvedValueOnce({ files: [{ path: 'grade.sh', size: 15 }] }) // scripts list
-      .mockResolvedValueOnce('#!/bin/bash') // scripts/grade.sh
-      .mockResolvedValueOnce({ files: [{ path: 'README.md', size: 5 }] }) // docs list
-      .mockResolvedValueOnce('# Doc') // docs/README.md
-      .mockResolvedValueOnce({ files: [] }) // data list
-      .mockResolvedValueOnce({ files: [] }) // private list
-      .mockResolvedValueOnce({ files: [] }) // lib list
-      .mockResolvedValueOnce({ files: [] }); // asnlib list
+    // startercode: main.py
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'main.py', size: 20 }] });
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'startercode/main.py', download_url: 'https://s3.example.com/main.py' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.from('code') });
+
+    // scripts: grade.sh
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'grade.sh', size: 15 }] });
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'scripts/grade.sh', download_url: 'https://s3.example.com/grade.sh' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.from('#!/bin/bash') });
+
+    // docs: README.md
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'README.md', size: 5 }] });
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'docs/README.md', download_url: 'https://s3.example.com/README.md' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.from('# Doc') });
+
+    // data, private, lib, asnlib: empty
+    for (let i = 0; i < 4; i++) {
+      requestMock.mockResolvedValueOnce({ files: [] });
+    }
 
     const result = await downloadContent(mockClient, 'c1', 'a1', 'p1');
 
     expect(Object.keys(result)).toHaveLength(3);
-    expect(result).toHaveProperty('startercode/main.py', 'code');
-    expect(result).toHaveProperty('scripts/grade.sh', '#!/bin/bash');
-    expect(result).toHaveProperty('docs/README.md', '# Doc');
+    expect(result['startercode/main.py'].toString()).toBe('code');
+    expect(result['scripts/grade.sh'].toString()).toBe('#!/bin/bash');
+    expect(result['docs/README.md'].toString()).toBe('# Doc');
   });
 
   it('should return empty object when no files exist', async () => {
-    // All directories empty
-    requestMock
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] });
+    setupEmptyDirectoryMocks();
 
     const result = await downloadContent(mockClient, 'c1', 'a1', 'p1');
     expect(result).toEqual({});
   });
 
-  it('should return empty when files exist but content fails', async () => {
-    requestMock
-      .mockResolvedValueOnce({ files: [{ path: 'file.txt', size: 10 }] })
-      .mockRejectedValueOnce(new Error('Download failed')) // file download fails
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] });
+  it('should return empty when files exist but download_url fetch fails', async () => {
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'file.txt', size: 10 }] });
+    // fetchFileContent request fails
+    requestMock.mockRejectedValueOnce(new Error('Download failed'));
+
+    for (let i = 0; i < 6; i++) {
+      requestMock.mockResolvedValueOnce({ files: [] });
+    }
+
+    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1');
+    expect(result).toEqual({});
+  });
+
+  it('should return empty when S3 download fails', async () => {
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'file.txt', size: 10 }] });
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'startercode/file.txt', download_url: 'https://s3.example.com/file.txt' }],
+    });
+    // axios S3 download fails
+    mockedAxios.get.mockRejectedValueOnce(new Error('S3 download failed'));
+
+    for (let i = 0; i < 6; i++) {
+      requestMock.mockResolvedValueOnce({ files: [] });
+    }
 
     const result = await downloadContent(mockClient, 'c1', 'a1', 'p1');
     expect(result).toEqual({});
   });
 
   it('should skip individual file failures and continue', async () => {
-    requestMock
-      .mockResolvedValueOnce({
-        files: [
-          { path: 'good.py', size: 10 },
-          { path: 'bad.py', size: 10 },
-        ],
-      })
-      .mockResolvedValueOnce('good content') // good.py succeeds
-      .mockRejectedValueOnce(new Error('fail')) // bad.py fails
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] })
-      .mockResolvedValueOnce({ files: [] });
+    requestMock.mockResolvedValueOnce({
+      files: [
+        { path: 'good.py', size: 10 },
+        { path: 'bad.py', size: 10 },
+      ],
+    });
+    // good.py download_url request
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'startercode/good.py', download_url: 'https://s3.example.com/good.py' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.from('good content') });
+
+    // bad.py download_url request fails
+    requestMock.mockRejectedValueOnce(new Error('fail'));
+
+    for (let i = 0; i < 6; i++) {
+      requestMock.mockResolvedValueOnce({ files: [] });
+    }
 
     const result = await downloadContent(mockClient, 'c1', 'a1', 'p1');
 
-    expect(result).toHaveProperty('startercode/good.py', 'good content');
+    expect(result['startercode/good.py'].toString()).toBe('good content');
     expect(result).not.toHaveProperty('startercode/bad.py');
+  });
+
+  it('should call axios with correct options for S3 download', async () => {
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'test.txt', size: 5 }] });
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'startercode/test.txt', download_url: 'https://s3.example.com/signed-url' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.from('test') });
+
+    for (let i = 0; i < 6; i++) {
+      requestMock.mockResolvedValueOnce({ files: [] });
+    }
+
+    await downloadContent(mockClient, 'c1', 'a1', 'p1');
+
+    expect(mockedAxios.get).toHaveBeenCalledWith('https://s3.example.com/signed-url', {
+      responseType: 'arraybuffer',
+      timeout: 30000,
+    });
   });
 });

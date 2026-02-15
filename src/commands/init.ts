@@ -95,7 +95,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     await writeFile(configPath, yaml.dump(config));
 
     logger.success(`Configuration saved to ${configPath}`);
-    logger.info('Run "vocareum-publish new <name>" to create your first assignment.');
+    logger.info('Run "vocgit new <name>" to create your first assignment.');
 
   } catch (error) {
     logger.error(`Failed to write configuration: ${error instanceof Error ? error.message : 'Unknown'}`);

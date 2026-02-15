@@ -26,7 +26,7 @@ export async function newCommand(assignmentPath: string | undefined): Promise<vo
   const configPath = 'vocareum.yaml';
 
   if (!await pathExists(configPath)) {
-    logger.error('vocareum.yaml not found. Run "vocareum-publish init" first.');
+    logger.error('vocareum.yaml not found. Run "vocgit init" first.');
     return;
   }
 
@@ -37,7 +37,7 @@ export async function newCommand(assignmentPath: string | undefined): Promise<vo
   let name = assignmentPath;
   // If path is provided, use it as name or path? 
   // Argument name is `path` in my interface but `assignment-path` in doc.
-  // Usually `vocareum-publish new <name>`
+  // Usually `vocgit new <name>`
 
   if (name === undefined || name === '') {
     name = await prompt('Assignment Name (folder name):');
