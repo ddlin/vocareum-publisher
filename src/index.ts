@@ -7,13 +7,26 @@
  */
 
 import { Command } from 'commander';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+// Read version from package.json
+function getVersion(): string {
+  try {
+    const pkgPath = join(__dirname, '..', 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    return pkg.version;
+  } catch {
+    return '1.0.0'; // Fallback
+  }
+}
 
 const program = new Command();
 
 program
   .name('vocareum-publish')
   .description('Sync assignment content between GitHub and Vocareum')
-  .version('1.0.0');
+  .version(getVersion());
 
 import { initCommand, InitOptions } from './commands/init';
 import { newCommand } from './commands/new';
