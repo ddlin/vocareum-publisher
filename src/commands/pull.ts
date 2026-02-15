@@ -402,25 +402,35 @@ async function importAssignment(
     parts: configParts,
   };
 
-  // Calculate content hashes for each part to track state
+  // Calculate content hashes for each directory in each part
+  // Key format must match reconciler: assignmentPath/partPath/directory
   const contentState: Record<string, string> = {};
   for (const configPart of configParts) {
-    const partDir = configPart.path === '.'
-      ? localPath
-      : path.join(localPath, configPart.path);
+    const partPath = configPart.path;
+    const directories = configPart.directories ?? DEFAULT_PART_DIRECTORIES;
 
-    try {
-      const hash = await calculateDirectoryHash(partDir);
-      const stateKey = configPart.path === '.' ? localPath : `${localPath}/${configPart.path}`;
-      contentState[stateKey] = hash;
+    for (const dir of directories) {
+      // Build the directory path and state key to match reconciler format
+      const dirPath = partPath === '.'
+        ? path.join(localPath, dir)
+        : path.join(localPath, partPath, dir);
 
-      if (verbose) {
-        logger.debug(`Content hash for ${stateKey}: ${hash.substring(0, 8)}...`);
-      }
-    } catch (error) {
-      // Directory might not exist if no files were downloaded
-      if (verbose) {
-        logger.debug(`Could not hash ${partDir}: ${error instanceof Error ? error.message : 'Unknown'}`);
+      const stateKey = partPath === '.'
+        ? path.join(localPath, dir)
+        : path.join(localPath, partPath, dir);
+
+      try {
+        const hash = await calculateDirectoryHash(dirPath);
+        contentState[stateKey] = hash;
+
+        if (verbose) {
+          logger.debug(`Content hash for ${stateKey}: ${hash.substring(0, 8)}...`);
+        }
+      } catch (error) {
+        // Directory might not exist - skip it
+        if (verbose) {
+          logger.debug(`Could not hash ${dirPath}: ${error instanceof Error ? error.message : 'Unknown'}`);
+        }
       }
     }
   }
