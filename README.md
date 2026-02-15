@@ -16,7 +16,7 @@ A CLI tool and GitHub Action that enables instructors to maintain assignment con
 ## Installation
 
 ```bash
-npm install -g vocgiter
+npm install -g vocareum-publisher
 ```
 
 ## Quick Start
@@ -293,7 +293,7 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: Push to Vocareum
-        uses: ddlin/vocgiter@v1
+        uses: ddlin/vocareum-publisher@v1
         with:
           config-file: vocareum.yaml
           api-key: ${{ secrets.VOCAREUM_API_KEY }}
@@ -432,4 +432,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 - [Documentation](docs/)
 - [Examples](examples/)
 - [Vocareum API](https://documenter.getpostman.com/view/6736336/S11Exg4b)
-- [Issues](https://github.com/ddlin/vocgiter/issues)
+- [Issues](https://github.com/ddlin/vocareum-publisher/issues)
