@@ -417,6 +417,55 @@ When an assignment or part ID is missing from config but exists in Vocareum:
 - Part IDs are discovered by seqnum mapping
 - Discovered IDs are automatically saved to `vocareum.yaml`
 
+## API Credentials
+
+To use vocgit, you need a Vocareum Personal Access Token with the appropriate permissions.
+
+### Generating a Token
+
+1. Log in to [Vocareum Labs](https://labs.vocareum.com)
+2. Go to **Profile > Settings > Personal Access Tokens**
+3. Click **Generate New Token**
+4. Enter a description (e.g., "git-api")
+5. Set **Token scope** to **Global**
+6. Select the required permissions (see below)
+7. Click **Generate** and copy the token immediately (it won't be shown again)
+
+### Required Permissions
+
+Select the following permissions when creating your token:
+
+| Category | Permissions | Notes |
+|----------|-------------|-------|
+| **courses** | GET: List courses | |
+| **assignments** | GET: List assignments for a course | |
+| | POST: Create or copy an assignment for a course | |
+| | PUT: Update an assignment for a course | |
+| **parts** | GET: List parts for an assignment | |
+| | PUT: Update a part's data content | |
+| **files** | GET: Get the URL of a content file | |
+| **rubrics** | GET, POST, PUT, DELETE | Optional (future feature) |
+
+All other permissions are optional.
+
+![Token permissions - part 1](docs/images/token-permissions-1.png)
+![Token permissions - part 2](docs/images/token-permissions-2.png)
+
+### Storing Your Token
+
+**For local CLI use:**
+```bash
+export VOCAREUM_API_KEY="your-token-here"
+```
+
+Or add to your shell profile (`~/.bashrc`, `~/.zshrc`).
+
+**For GitHub Actions:**
+1. Go to your repository's **Settings > Secrets and variables > Actions**
+2. Click **New repository secret**
+3. Name: `VOCAREUM_API_KEY`
+4. Value: Your token
+
 ## Environment Variables
 
 | Variable | Description |
