@@ -1,0 +1,342 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Vocareum Configuration",
+    "description": "Configuration file for VocGit push to Vocareum",
+    "type": "object",
+    "required": [
+        "version",
+        "vocareum"
+    ],
+    "additionalProperties": false,
+    "properties": {
+        "version": {
+            "type": "string",
+            "enum": [
+                "1.0"
+            ],
+            "description": "Schema version (must be '1.0')"
+        },
+        "vocareum": {
+            "type": "object",
+            "description": "Core organization and course settings",
+            "required": [
+                "org_id",
+                "course_id"
+            ],
+            "additionalProperties": false,
+            "properties": {
+                "org_id": {
+                    "type": "string",
+                    "description": "Vocareum Organization ID (must be a string)"
+                },
+                "course_id": {
+                    "type": "string",
+                    "description": "Vocareum Course ID (must be a string)"
+                },
+                "templates": {
+                    "type": "array",
+                    "description": "Named templates for creating new assignments",
+                    "items": {
+                        "type": "object",
+                        "required": [
+                            "id",
+                            "name"
+                        ],
+                        "additionalProperties": false,
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "The assignment ID of the template"
+                            },
+                            "name": {
+                                "type": "string",
+                                "description": "A human-readable name for this template (e.g. 'Standard Lab')"
+                            },
+                            "course_id": {
+                                "type": "string",
+                                "description": "Optional: Course ID if the template is in a different course than the target"
+                            }
+                        }
+                    }
+                },
+                "excluded_assignments": {
+                    "type": "array",
+                    "description": "Assignment IDs to hide from tracking or orphan detection",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "course_settings": {
+                    "type": "object",
+                    "description": "Optional metadata to sync to the Vocareum course",
+                    "properties": {
+                        "name": {
+                            "type": "string"
+                        },
+                        "description": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "assignments": {
+            "type": "array",
+            "description": "List of assignments managed by this repository",
+            "items": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "path"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                    "assignment_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Vocareum Assignment ID. Set to null for automatic discovery or creation."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Display name of the assignment in Vocareum"
+                    },
+                    "assignment_name_for_lookup": {
+                        "type": "string",
+                        "description": "If assignment_id is null, vocgit will search for an existing assignment with this exact name before creating a new one. Default: matching 'name'."
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to the assignment directory in the repository"
+                    },
+                    "template_assignment_id": {
+                        "type": "string",
+                        "description": "If creating a new assignment, copy it from this template ID (from the vocareum.templates list)"
+                    },
+                    "settings": {
+                        "type": "object",
+                        "description": "Configuration settings for the assignment level",
+                        "properties": {
+                            "description": {
+                                "type": "string"
+                            },
+                            "nosubmit": {
+                                "type": "boolean"
+                            },
+                            "publish": {
+                                "type": "boolean"
+                            },
+                            "auto_submit": {
+                                "type": "boolean"
+                            },
+                            "grading_on_submit": {
+                                "type": "boolean"
+                            },
+                            "exam_mode": {
+                                "type": "string",
+                                "enum": [
+                                    "timed",
+                                    "scheduled",
+                                    "timed_scheduled"
+                                ]
+                            },
+                            "exam_duration": {
+                                "type": "integer"
+                            },
+                            "num_attempts": {
+                                "type": "integer"
+                            }
+                        }
+                    },
+                    "parts": {
+                        "type": "array",
+                        "description": "Sections or components of the assignment",
+                        "items": {
+                            "type": "object",
+                            "required": [
+                                "path",
+                                "name"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                                "part_id": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "description": "Vocareum Part ID. Set to null for automatic discovery."
+                                },
+                                "path": {
+                                    "type": "string",
+                                    "description": "Relative path to the part directory inside the assignment directory"
+                                },
+                                "name": {
+                                    "type": "string",
+                                    "description": "Name of the part in Vocareum"
+                                },
+                                "directories": {
+                                    "type": "array",
+                                    "description": "Specific subdirectories to sync (e.g., ['startercode', 'scripts']). If omitted, all supported subdirectories are synced.",
+                                    "items": {
+                                        "type": "string",
+                                        "enum": [
+                                            "startercode",
+                                            "scripts",
+                                            "lib",
+                                            "asnlib",
+                                            "docs",
+                                            "data",
+                                            "private"
+                                        ]
+                                    }
+                                },
+                                "settings": {
+                                    "type": "object",
+                                    "description": "Configuration settings for this specific part",
+                                    "properties": {
+                                        "cloud_labs": {
+                                            "type": "boolean"
+                                        },
+                                        "labtype": {
+                                            "type": "string"
+                                        },
+                                        "endlab": {
+                                            "type": "string",
+                                            "enum": [
+                                                "stop",
+                                                "terminate"
+                                            ]
+                                        },
+                                        "session_length": {
+                                            "type": "string",
+                                            "description": "Duration in minutes"
+                                        },
+                                        "late_penalty_percent": {
+                                            "type": "integer"
+                                        },
+                                        "late_penalty_percent_rule": {
+                                            "type": "string",
+                                            "enum": [
+                                                "max score",
+                                                "student score"
+                                            ]
+                                        },
+                                        "deadlinedate": {
+                                            "type": "string",
+                                            "format": "date-time"
+                                        },
+                                        "number_of_submissions": {
+                                            "type": "integer"
+                                        },
+                                        "submission_filters": {
+                                            "type": "object",
+                                            "properties": {
+                                                "include": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "string"
+                                                    }
+                                                },
+                                                "exclude": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "string"
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "lab_interface": {
+                                            "type": "object",
+                                            "properties": {
+                                                "panels": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "string"
+                                                    }
+                                                },
+                                                "controls": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "string"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "publish_options": {
+            "type": "object",
+            "description": "Configuration for CLI execution behavior",
+            "properties": {
+                "on_missing_id": {
+                    "type": "string",
+                    "enum": [
+                        "skip",
+                        "create"
+                    ],
+                    "default": "skip"
+                },
+                "auto_commit": {
+                    "type": "boolean",
+                    "description": "If true, vocgit will automatically commit 'vocareum.yaml' if it discovers missing IDs. False in CI environments."
+                },
+                "sync_deletes": {
+                    "type": "boolean",
+                    "description": "Experimental: If true, files deleted from Git will be deleted from Vocareum"
+                }
+            }
+        },
+        "publish_history": {
+            "type": "array",
+            "description": "Generated by CI/CD tracking failed updates. Do not edit manually.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "timestamp": {
+                        "type": "string"
+                    },
+                    "commit_sha": {
+                        "type": "string"
+                    },
+                    "published_by": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "success",
+                            "failed"
+                        ]
+                    },
+                    "content_state": {
+                        "type": "object"
+                    },
+                    "failed": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string"
+                                },
+                                "id": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

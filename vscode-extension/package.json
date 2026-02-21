@@ -1,0 +1,192 @@
+{
+    "name": "vocgit",
+    "displayName": "VocGit Studio",
+    "description": "Integrated GUI and configuration schema for Vocareum Publisher (vocgit)",
+    "version": "1.0.0",
+    "engines": {
+        "vscode": "^1.80.0"
+    },
+    "publisher": "vocareum",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/ddlin/vocareum-publisher.git"
+    },
+    "license": "MIT",
+    "icon": "resources/icon.png",
+    "homepage": "https://github.com/ddlin/vocareum-publisher#readme",
+    "bugs": {
+        "url": "https://github.com/ddlin/vocareum-publisher/issues"
+    },
+    "keywords": [
+        "vocareum",
+        "education",
+        "lms",
+        "course",
+        "assignment",
+        "grading"
+    ],
+    "galleryBanner": {
+        "color": "#6B46C1",
+        "theme": "dark"
+    },
+    "activationEvents": [
+        "onView:vocgit.actionsView",
+        "onView:vocgit.yamlView",
+        "workspaceContains:vocareum.yaml"
+    ],
+    "categories": [
+        "Other",
+        "SCM Providers"
+    ],
+    "main": "./dist/extension.js",
+    "contributes": {
+        "configuration": {
+            "title": "VocGit Studio",
+            "type": "object",
+            "properties": {
+                "vocgit.apiKey": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Your Vocareum API Key for pushing assignments."
+                }
+            }
+        },
+        "yamlValidation": [
+            {
+                "fileMatch": "vocareum.yaml",
+                "url": "./schemas/vocareum.schema.json"
+            }
+        ],
+        "commands": [
+            {
+                "command": "vocgit.push",
+                "title": "VocGit: Push to Vocareum",
+                "icon": "$(cloud-upload)"
+            },
+            {
+                "command": "vocgit.pull",
+                "title": "VocGit: Pull Sync Data",
+                "icon": "$(cloud-download)"
+            },
+            {
+                "command": "vocgit.status",
+                "title": "VocGit: Check Status",
+                "icon": "$(sync)"
+            },
+            {
+                "command": "vocgit.validate",
+                "title": "VocGit: Validate Config",
+                "icon": "$(check-all)"
+            },
+            {
+                "command": "vocgit.pushAssignment",
+                "title": "Push This Assignment",
+                "icon": "$(cloud-upload)"
+            },
+            {
+                "command": "vocgit.init",
+                "title": "VocGit: Initialize Course Repo",
+                "icon": "$(add)"
+            },
+            {
+                "command": "vocgit.new",
+                "title": "Add Assignment",
+                "icon": "$(add)"
+            },
+            {
+                "command": "vocgit.openFolder",
+                "title": "Open in Explorer",
+                "icon": "$(folder-opened)"
+            },
+            {
+                "command": "vocgit.refresh",
+                "title": "VocGit: Refresh",
+                "icon": "$(refresh)"
+            },
+            {
+                "command": "vocgit.openConfig",
+                "title": "VocGit: Open Config",
+                "icon": "$(settings-gear)"
+            }
+        ],
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "vocgit-explorer",
+                    "title": "VocGit Studio",
+                    "icon": "resources/sidebar-icon.svg"
+                }
+            ]
+        },
+        "views": {
+            "vocgit-explorer": [
+                {
+                    "type": "webview",
+                    "id": "vocgit.actionsView",
+                    "name": "Actions"
+                },
+                {
+                    "id": "vocgit.yamlView",
+                    "name": "Configuration",
+                    "contextualTitle": "VocGit"
+                }
+            ]
+        },
+        "menus": {
+            "view/title": [
+                {
+                    "command": "vocgit.refresh",
+                    "when": "view == vocgit.yamlView",
+                    "group": "navigation@1"
+                },
+                {
+                    "command": "vocgit.openConfig",
+                    "when": "view == vocgit.yamlView",
+                    "group": "navigation@2"
+                }
+            ],
+            "view/item/context": [
+                {
+                    "command": "vocgit.new",
+                    "when": "view == vocgit.yamlView && viewItem == course",
+                    "group": "inline"
+                },
+                {
+                    "command": "vocgit.new",
+                    "when": "view == vocgit.yamlView && viewItem == course",
+                    "group": "vocgit@0"
+                },
+                {
+                    "command": "vocgit.pushAssignment",
+                    "when": "view == vocgit.yamlView && viewItem == assignment",
+                    "group": "inline"
+                },
+                {
+                    "command": "vocgit.pushAssignment",
+                    "when": "view == vocgit.yamlView && viewItem == assignment",
+                    "group": "vocgit@1"
+                },
+                {
+                    "command": "vocgit.openFolder",
+                    "when": "view == vocgit.yamlView && viewItem =~ /assignment|part|directory/",
+                    "group": "vocgit@2"
+                }
+            ]
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "package": "vsce package"
+    },
+    "devDependencies": {
+        "@types/vscode": "^1.80.0",
+        "@types/node": "20.x",
+        "@types/js-yaml": "^4.0.5",
+        "typescript": "^5.0.0"
+    },
+    "dependencies": {
+        "js-yaml": "^4.1.0"
+    }
+}
