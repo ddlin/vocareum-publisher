@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execFileSync } from 'child_process';
 import * as yaml from 'js-yaml';
 
 interface VocareumPart {
@@ -85,7 +86,7 @@ export class VocGitTreeDataProvider implements vscode.TreeDataProvider<VocGitTre
             const assignments = element.data?.assignments as VocareumAssignment[] || [];
             return assignments.map((asn) => {
                 const assignmentPath = path.join(this.workspaceRoot!, asn.path);
-                const hasLocalChanges = this.hasModifiedFiles(assignmentPath);
+                const hasLocalChanges = this.hasModifiedFiles(asn.path, assignmentPath);
                 return new VocGitTreeItem(
                     asn.name || 'Unnamed Assignment',
                     vscode.TreeItemCollapsibleState.Collapsed,
@@ -190,11 +191,23 @@ export class VocGitTreeDataProvider implements vscode.TreeDataProvider<VocGitTre
         }
     }
 
-    private hasModifiedFiles(dirPath: string): boolean {
-        // Simple check: see if directory exists and has been modified recently
-        // A more sophisticated version would compare with git status
+    private hasModifiedFiles(assignmentPath: string, assignmentFullPath: string): boolean {
+        // Prefer git status for accurate dirty-state detection
+        if (this.workspaceRoot) {
+            try {
+                const output = execFileSync(
+                    'git',
+                    ['-C', this.workspaceRoot, 'status', '--porcelain', '--', assignmentPath],
+                    { encoding: 'utf8' }
+                );
+                return output.trim().length > 0;
+            } catch {
+                // Fall back to a filesystem heuristic when git is unavailable
+            }
+        }
+
         try {
-            const stats = fs.statSync(dirPath);
+            const stats = fs.statSync(assignmentFullPath);
             const hourAgo = Date.now() - (60 * 60 * 1000);
             return stats.mtimeMs > hourAgo;
         } catch {

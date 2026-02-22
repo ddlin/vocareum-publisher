@@ -19,6 +19,7 @@ Or if using the GitHub Action workflow, vocgit is installed automatically in CI/
   - Pull from Vocareum
   - Check Status
   - Validate Configuration
+  - Set `VOCAREUM_API_KEY`
 
 - **Configuration Tree View** - Visual representation of your `vocareum.yaml`:
   - Browse courses, assignments, and parts
@@ -28,30 +29,24 @@ Or if using the GitHub Action workflow, vocgit is installed automatically in CI/
 
 - **YAML Schema Validation** - Autocomplete and error checking for `vocareum.yaml`
 
-- **Secure API Key Handling** - API key is passed via environment variables, not displayed in terminal
+- **Secure API Key Handling** - API keys are stored in VS Code Secret Storage and passed via environment variables
 
 ## Setup
 
 1. **Install the vocgit CLI**: `npm install -g vocareum-publisher`
 
-2. **Configure your API key** in VS Code settings:
-   - Open Settings (Cmd+,)
-   - Search for "vocgit"
-   - Enter your Vocareum API key
+2. **Configure your API key** using Command Palette:
+   - Run `VocGit: Set VOCAREUM_API_KEY`
+   - Enter your Vocareum API key when prompted
 
-   Or add to `.vscode/settings.json`:
-   ```json
-   {
-     "vocgit.apiKey": "your-api-key-here"
-   }
-   ```
+   Legacy `vocgit.apiKey` settings are still read for backward compatibility, but are deprecated.
 
 3. **Create a `vocareum.yaml`** in your project root (see [vocgit documentation](https://github.com/ddlin/vocareum-publisher) for schema)
 
 ## Usage
 
 1. Click the VocGit icon in the Activity Bar (left sidebar)
-2. Use the action buttons to push, pull, check status, or validate
+2. Use the action buttons to push, pull, check status, validate, or set `VOCAREUM_API_KEY`
 3. Browse your course structure in the Configuration tree
 4. Right-click an assignment to push just that assignment
 
@@ -59,7 +54,7 @@ Or if using the GitHub Action workflow, vocgit is installed automatically in CI/
 
 | Setting | Description |
 |---------|-------------|
-| `vocgit.apiKey` | Your Vocareum API key for authentication |
+| `vocgit.apiKey` | Deprecated fallback setting (use `VocGit: Set VOCAREUM_API_KEY`) |
 
 ## Requirements
 

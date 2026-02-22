@@ -1,49 +1,148 @@
 import * as vscode from 'vscode';
 import { VocGitTreeDataProvider } from './VocGitTreeDataProvider';
 import { VocGitActionsProvider } from './VocGitActionsProvider';
+import { buildVocGitCommand, extractAssignmentPath, extractOpenPath, shellEscape } from './commandUtils';
 
 // Output channel for logging
 let outputChannel: vscode.OutputChannel;
+const API_KEY_SECRET = 'vocgit.apiKey';
 
 function log(message: string) {
     const timestamp = new Date().toISOString();
     outputChannel.appendLine(`[${timestamp}] ${message}`);
-    console.log(`[VocGit] ${message}`);
 }
 
 // Store terminal reference with API key baked into env
 let vocgitTerminal: vscode.Terminal | undefined;
 let terminalApiKey: string | undefined;
+let terminalWorkspaceFolder: string | undefined;
+let legacyApiKeyWarningShown = false;
 
-function getVocGitTerminal(): vscode.Terminal {
-    // Get current API key from settings
+async function clearLegacyApiKeySettings(): Promise<void> {
     const config = vscode.workspace.getConfiguration('vocgit');
-    const apiKey = config.get<string>('apiKey')?.trim() || '';
+    const targets = [
+        vscode.ConfigurationTarget.Global,
+        vscode.ConfigurationTarget.Workspace,
+        vscode.ConfigurationTarget.WorkspaceFolder
+    ];
+
+    for (const target of targets) {
+        try {
+            await config.update('apiKey', '', target);
+        } catch {
+            // Ignore update failures for unavailable scopes
+        }
+    }
+}
+
+async function getApiKey(context: vscode.ExtensionContext): Promise<string> {
+    const stored = (await context.secrets.get(API_KEY_SECRET))?.trim();
+    if (stored) {
+        return stored;
+    }
+
+    // Backward-compatible fallback for existing users
+    const config = vscode.workspace.getConfiguration('vocgit');
+    const legacyApiKey = config.get<string>('apiKey')?.trim() || '';
+
+    if (legacyApiKey && !legacyApiKeyWarningShown) {
+        legacyApiKeyWarningShown = true;
+        log('Using deprecated vocgit.apiKey setting fallback');
+        void vscode.window.showWarningMessage(
+            'VocGit is using an API key from Settings. Run "VocGit: Set VOCAREUM_API_KEY" to move it to Secret Storage.',
+            'Set API Key'
+        ).then(async (selection) => {
+            if (selection === 'Set API Key') {
+                await vscode.commands.executeCommand('vocgit.setApiKey');
+            }
+        });
+    }
+
+    return legacyApiKey;
+}
+
+async function setApiKey(context: vscode.ExtensionContext): Promise<void> {
+    const apiKey = await vscode.window.showInputBox({
+        title: 'VocGit API Key',
+        prompt: 'Enter your Vocareum API key',
+        password: true,
+        ignoreFocusOut: true,
+        placeHolder: 'Paste API key'
+    });
+
+    if (apiKey === undefined) {
+        return;
+    }
+
+    const trimmed = apiKey.trim();
+    if (!trimmed) {
+        vscode.window.showWarningMessage('API key was empty; no changes were made.');
+        return;
+    }
+
+    await context.secrets.store(API_KEY_SECRET, trimmed);
+    await clearLegacyApiKeySettings();
+    legacyApiKeyWarningShown = true;
+
+    // Force terminal recreation so the new key is injected into the environment
+    if (vocgitTerminal) {
+        vocgitTerminal.dispose();
+        vocgitTerminal = undefined;
+    }
+    terminalApiKey = undefined;
+
+    vscode.window.showInformationMessage('VocGit API key saved to VS Code Secret Storage.');
+}
+
+async function clearApiKey(context: vscode.ExtensionContext): Promise<void> {
+    await context.secrets.delete(API_KEY_SECRET);
+    await clearLegacyApiKeySettings();
+    legacyApiKeyWarningShown = true;
+
+    if (vocgitTerminal) {
+        vocgitTerminal.dispose();
+        vocgitTerminal = undefined;
+    }
+    terminalApiKey = undefined;
+
+    vscode.window.showInformationMessage('VocGit API key cleared.');
+}
+
+async function getVocGitTerminal(
+    context: vscode.ExtensionContext,
+    workspaceFolder: string | undefined
+): Promise<vscode.Terminal> {
+    // Get current API key from secret storage (with legacy fallback)
+    const apiKey = await getApiKey(context);
 
     // Check if existing terminal is still alive AND has the same API key
-    if (vocgitTerminal && vscode.window.terminals.includes(vocgitTerminal) && terminalApiKey === apiKey) {
+    if (
+        vocgitTerminal &&
+        vscode.window.terminals.includes(vocgitTerminal) &&
+        terminalApiKey === apiKey &&
+        terminalWorkspaceFolder === workspaceFolder
+    ) {
         return vocgitTerminal;
     }
 
-    // Close any old VocGit terminals (including ones not created by us)
-    vscode.window.terminals.forEach(t => {
-        if (t.name === 'VocGit') {
-            t.dispose();
-        }
-    });
+    if (vocgitTerminal && vscode.window.terminals.includes(vocgitTerminal)) {
+        vocgitTerminal.dispose();
+    }
     vocgitTerminal = undefined;
 
     // Create terminal with API key in environment (hidden from display)
-    const env: { [key: string]: string } = {};
+    const env: Record<string, string> = {};
     if (apiKey) {
         env['VOCAREUM_API_KEY'] = apiKey;
     }
 
     vocgitTerminal = vscode.window.createTerminal({
         name: 'VocGit',
-        env: env
+        env: env,
+        cwd: workspaceFolder
     });
     terminalApiKey = apiKey;
+    terminalWorkspaceFolder = workspaceFolder;
 
     return vocgitTerminal;
 }
@@ -86,27 +185,36 @@ export function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(yamlWatcher);
 
-    // Helper to run commands in the integrated terminal
-    function runVocGitCommand(args: string) {
-        const terminal = getVocGitTerminal();
+    // Helper to run commands in the integrated terminal with shell-safe arguments
+    async function runVocGitCommand(args: string[]) {
+        const terminal = await getVocGitTerminal(context, workspaceFolder);
         terminal.show();
-        terminal.sendText(`vocgit ${args}`);
+
+        const command = buildVocGitCommand(args);
+        if (workspaceFolder) {
+            // Always execute from workspace root even if users changed terminal cwd
+            terminal.sendText(`cd ${shellEscape(workspaceFolder)} && ${command}`);
+            return;
+        }
+
+        terminal.sendText(command);
     }
 
     // Register vocgit CLI commands
     context.subscriptions.push(
-        vscode.commands.registerCommand('vocgit.push', () => runVocGitCommand('push')),
-        vscode.commands.registerCommand('vocgit.pull', () => runVocGitCommand('pull')),
-        vscode.commands.registerCommand('vocgit.status', () => runVocGitCommand('status')),
-        vscode.commands.registerCommand('vocgit.validate', () => runVocGitCommand('validate'))
+        vscode.commands.registerCommand('vocgit.push', async () => runVocGitCommand(['push'])),
+        vscode.commands.registerCommand('vocgit.pull', async () => runVocGitCommand(['pull'])),
+        vscode.commands.registerCommand('vocgit.status', async () => runVocGitCommand(['status'])),
+        vscode.commands.registerCommand('vocgit.validate', async () => runVocGitCommand(['validate']))
     );
 
     // Push specific assignment
     context.subscriptions.push(
-        vscode.commands.registerCommand('vocgit.pushAssignment', (item: any) => {
-            if (item?.data?.assignmentPath) {
-                log(`Pushing assignment: ${item.data.assignmentPath}`);
-                runVocGitCommand(`push --assignment "${item.data.assignmentPath}"`);
+        vscode.commands.registerCommand('vocgit.pushAssignment', async (item: unknown) => {
+            const assignmentPath = extractAssignmentPath(item);
+            if (assignmentPath) {
+                log(`Pushing assignment: ${assignmentPath}`);
+                await runVocGitCommand(['push', '--assignment', assignmentPath]);
             } else {
                 vscode.window.showWarningMessage('No assignment path found');
             }
@@ -115,11 +223,14 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Open folder in explorer
     context.subscriptions.push(
-        vscode.commands.registerCommand('vocgit.openFolder', (folderPath: string) => {
+        vscode.commands.registerCommand('vocgit.openFolder', (folderArg: unknown) => {
+            const folderPath = extractOpenPath(folderArg);
             if (folderPath) {
                 const uri = vscode.Uri.file(folderPath);
-                vscode.commands.executeCommand('revealInExplorer', uri);
+                void vscode.commands.executeCommand('revealInExplorer', uri);
                 log(`Opened folder: ${folderPath}`);
+            } else {
+                vscode.window.showWarningMessage('No folder path found');
             }
         })
     );
@@ -134,26 +245,28 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Open vocareum.yaml
     context.subscriptions.push(
-        vscode.commands.registerCommand('vocgit.openConfig', () => {
+        vscode.commands.registerCommand('vocgit.openConfig', async () => {
             if (workspaceFolder) {
                 const yamlPath = vscode.Uri.file(`${workspaceFolder}/vocareum.yaml`);
-                vscode.window.showTextDocument(yamlPath);
+                await vscode.window.showTextDocument(yamlPath);
             }
         })
     );
 
     // Initialize course repo
     context.subscriptions.push(
-        vscode.commands.registerCommand('vocgit.init', () => {
-            runVocGitCommand('init');
-        })
+        vscode.commands.registerCommand('vocgit.init', async () => runVocGitCommand(['init']))
     );
 
     // Add new assignment
     context.subscriptions.push(
-        vscode.commands.registerCommand('vocgit.new', () => {
-            runVocGitCommand('new');
-        })
+        vscode.commands.registerCommand('vocgit.new', async () => runVocGitCommand(['new']))
+    );
+
+    // Manage API key with VS Code secret storage
+    context.subscriptions.push(
+        vscode.commands.registerCommand('vocgit.setApiKey', async () => setApiKey(context)),
+        vscode.commands.registerCommand('vocgit.clearApiKey', async () => clearApiKey(context))
     );
 
     log('Extension activated successfully');

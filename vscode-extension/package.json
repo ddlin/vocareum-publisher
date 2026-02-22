@@ -47,7 +47,9 @@
                 "vocgit.apiKey": {
                     "type": "string",
                     "default": "",
-                    "description": "Your Vocareum API Key for pushing assignments."
+                    "scope": "machine",
+                    "description": "Deprecated: use the \"VocGit: Set VOCAREUM_API_KEY\" command (stored in VS Code Secret Storage).",
+                    "deprecationMessage": "Use the command \"VocGit: Set VOCAREUM_API_KEY\" instead. This setting remains for backward compatibility."
                 }
             }
         },
@@ -107,6 +109,16 @@
                 "command": "vocgit.openConfig",
                 "title": "VocGit: Open Config",
                 "icon": "$(settings-gear)"
+            },
+            {
+                "command": "vocgit.setApiKey",
+                "title": "VocGit: Set VOCAREUM_API_KEY",
+                "icon": "$(key)"
+            },
+            {
+                "command": "vocgit.clearApiKey",
+                "title": "VocGit: Clear API Key",
+                "icon": "$(trash)"
             }
         ],
         "viewsContainers": {
@@ -135,14 +147,24 @@
         "menus": {
             "view/title": [
                 {
+                    "command": "vocgit.setApiKey",
+                    "when": "view == vocgit.actionsView",
+                    "group": "navigation@1"
+                },
+                {
+                    "command": "vocgit.clearApiKey",
+                    "when": "view == vocgit.actionsView",
+                    "group": "navigation@2"
+                },
+                {
                     "command": "vocgit.refresh",
                     "when": "view == vocgit.yamlView",
-                    "group": "navigation@1"
+                    "group": "navigation@3"
                 },
                 {
                     "command": "vocgit.openConfig",
                     "when": "view == vocgit.yamlView",
-                    "group": "navigation@2"
+                    "group": "navigation@4"
                 }
             ],
             "view/item/context": [
@@ -177,8 +199,10 @@
     "scripts": {
         "vscode:prepublish": "npm run compile",
         "compile": "tsc -p ./",
+        "test": "npm run compile && npm run test:unit",
+        "test:unit": "node --test test/*.test.js",
         "watch": "tsc -watch -p ./",
-        "package": "vsce package"
+        "package": "npx --yes @vscode/vsce package"
     },
     "devDependencies": {
         "@types/vscode": "^1.80.0",

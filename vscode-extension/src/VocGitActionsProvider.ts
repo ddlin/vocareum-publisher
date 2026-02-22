@@ -62,6 +62,12 @@ export class VocGitActionsProvider implements vscode.WebviewViewProvider {
                 case 'init':
                     vscode.commands.executeCommand('vocgit.init');
                     break;
+                case 'setApiKey':
+                    vscode.commands.executeCommand('vocgit.setApiKey');
+                    break;
+                case 'clearApiKey':
+                    vscode.commands.executeCommand('vocgit.clearApiKey');
+                    break;
             }
         });
     }
@@ -74,12 +80,14 @@ export class VocGitActionsProvider implements vscode.WebviewViewProvider {
     }
 
     private _getInitHtml(): string {
+        const nonce = this._getNonce();
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
+    <style nonce="${nonce}">
         * {
             box-sizing: border-box;
             margin: 0;
@@ -118,17 +126,36 @@ export class VocGitActionsProvider implements vscode.WebviewViewProvider {
         .init-button:active {
             transform: translateY(0);
         }
+        .secondary-button {
+            margin-top: 8px;
+            background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
+        }
+        .secondary-button:hover {
+            background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
+        }
     </style>
 </head>
 <body>
     <p class="message">No vocareum.yaml found in this workspace.</p>
-    <button class="init-button" onclick="sendCommand('init')">
+    <button id="init-button" class="init-button">
         Initialize Course Repo
     </button>
-    <script>
+    <button id="set-key-button" class="init-button secondary-button">
+        Set VOCAREUM_API_KEY
+    </button>
+    <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
-        function sendCommand(cmd) {
-            vscode.postMessage({ command: cmd });
+        const initButton = document.getElementById('init-button');
+        const setKeyButton = document.getElementById('set-key-button');
+        if (initButton) {
+            initButton.addEventListener('click', () => {
+                vscode.postMessage({ command: 'init' });
+            });
+        }
+        if (setKeyButton) {
+            setKeyButton.addEventListener('click', () => {
+                vscode.postMessage({ command: 'setApiKey' });
+            });
         }
     </script>
 </body>
@@ -136,12 +163,14 @@ export class VocGitActionsProvider implements vscode.WebviewViewProvider {
     }
 
     private _getActionsHtml(): string {
+        const nonce = this._getNonce();
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
+    <style nonce="${nonce}">
         * {
             box-sizing: border-box;
             margin: 0;
@@ -155,6 +184,9 @@ export class VocGitActionsProvider implements vscode.WebviewViewProvider {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 8px;
+        }
+        .button-wide {
+            grid-column: 1 / span 2;
         }
         .action-button {
             display: flex;
@@ -209,30 +241,64 @@ export class VocGitActionsProvider implements vscode.WebviewViewProvider {
         .validate-btn:hover {
             background: linear-gradient(135deg, #fb923c 0%, #f97316 100%);
         }
+
+        .apikey-btn {
+            background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
+        }
+        .apikey-btn:hover {
+            background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
+        }
     </style>
 </head>
 <body>
     <div class="button-grid">
-        <button class="action-button push-btn" onclick="sendCommand('push')">
+        <button id="push-button" class="action-button push-btn">
             <span class="label">Push to Vocareum</span>
         </button>
-        <button class="action-button pull-btn" onclick="sendCommand('pull')">
+        <button id="pull-button" class="action-button pull-btn">
             <span class="label">Pull from Vocareum</span>
         </button>
-        <button class="action-button status-btn" onclick="sendCommand('status')">
+        <button id="status-button" class="action-button status-btn">
             <span class="label">Check Status</span>
         </button>
-        <button class="action-button validate-btn" onclick="sendCommand('validate')">
+        <button id="validate-button" class="action-button validate-btn">
             <span class="label">Validate Configuration</span>
         </button>
+        <button id="set-key-button" class="action-button apikey-btn button-wide">
+            <span class="label">Set VOCAREUM_API_KEY</span>
+        </button>
     </div>
-    <script>
+    <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
-        function sendCommand(cmd) {
-            vscode.postMessage({ command: cmd });
+
+        const commands = [
+            ['push-button', 'push'],
+            ['pull-button', 'pull'],
+            ['status-button', 'status'],
+            ['validate-button', 'validate'],
+            ['set-key-button', 'setApiKey']
+        ];
+
+        for (const [id, command] of commands) {
+            const button = document.getElementById(id);
+            if (!button) {
+                continue;
+            }
+            button.addEventListener('click', () => {
+                vscode.postMessage({ command });
+            });
         }
     </script>
 </body>
 </html>`;
+    }
+
+    private _getNonce(): string {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        let nonce = '';
+        for (let i = 0; i < 32; i++) {
+            nonce += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        return nonce;
     }
 }

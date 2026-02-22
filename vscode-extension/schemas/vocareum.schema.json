@@ -40,7 +40,8 @@
                         "type": "object",
                         "required": [
                             "id",
-                            "name"
+                            "name",
+                            "course_id"
                         ],
                         "additionalProperties": false,
                         "properties": {
@@ -54,7 +55,7 @@
                             },
                             "course_id": {
                                 "type": "string",
-                                "description": "Optional: Course ID if the template is in a different course than the target"
+                                "description": "Course ID where the template assignment exists"
                             }
                         }
                     }
@@ -77,6 +78,21 @@
                             "type": "string"
                         }
                     }
+                },
+                "template_assignment_id": {
+                    "type": "string",
+                    "description": "Legacy single template assignment ID."
+                },
+                "template_assignment_ids": {
+                    "type": "array",
+                    "description": "Legacy list of template assignment IDs.",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "api_base_url": {
+                    "type": "string",
+                    "description": "Optional Vocareum API base URL override."
                 }
             }
         },
@@ -86,8 +102,10 @@
             "items": {
                 "type": "object",
                 "required": [
+                    "assignment_id",
                     "name",
-                    "path"
+                    "path",
+                    "parts"
                 ],
                 "additionalProperties": false,
                 "properties": {
@@ -113,6 +131,10 @@
                     "template_assignment_id": {
                         "type": "string",
                         "description": "If creating a new assignment, copy it from this template ID (from the vocareum.templates list)"
+                    },
+                    "create_from_template": {
+                        "type": "boolean",
+                        "description": "If true, missing assignments are created from a template."
                     },
                     "settings": {
                         "type": "object",
@@ -155,8 +177,8 @@
                         "items": {
                             "type": "object",
                             "required": [
-                                "path",
-                                "name"
+                                "part_id",
+                                "path"
                             ],
                             "additionalProperties": false,
                             "properties": {
@@ -187,7 +209,8 @@
                                             "asnlib",
                                             "docs",
                                             "data",
-                                            "private"
+                                            "private",
+                                            "course"
                                         ]
                                     }
                                 },
@@ -279,9 +302,13 @@
                     "type": "string",
                     "enum": [
                         "skip",
-                        "create"
+                        "abort"
                     ],
                     "default": "skip"
+                },
+                "abort_on_error": {
+                    "type": "boolean",
+                    "description": "If true, stop immediately on the first publish error."
                 },
                 "auto_commit": {
                     "type": "boolean",
@@ -290,6 +317,13 @@
                 "sync_deletes": {
                     "type": "boolean",
                     "description": "Experimental: If true, files deleted from Git will be deleted from Vocareum"
+                },
+                "exclude_patterns": {
+                    "type": "array",
+                    "description": "Glob patterns to exclude from content sync.",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
