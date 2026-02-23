@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as yaml from 'js-yaml';
-import { AssignmentSyncStatus, computeSyncSnapshot } from './syncState';
+import { AssignmentSyncStatus, buildDirectoryStatusKey, buildPartStatusKey, computeSyncSnapshot } from './syncState';
 
 interface VocareumPart {
     name?: string;
@@ -110,9 +110,15 @@ export class VocGitTreeDataProvider implements vscode.TreeDataProvider<VocGitTre
         if (element.contextValue === 'assignment') {
             const parts = element.data?.parts as VocareumPart[] || [];
             const assignmentPath = element.data?.fullPath as string;
+            const assignmentConfigPath = element.data?.assignmentPath as string | undefined;
+            const syncSnapshot = await computeSyncSnapshot(this.workspaceRoot);
+            const partStatuses = syncSnapshot?.partStatuses ?? new Map<string, AssignmentSyncStatus>();
 
             return parts.map((part) => {
                 const partPath = path.join(assignmentPath, part.path);
+                const partStatus = assignmentConfigPath
+                    ? partStatuses.get(buildPartStatusKey(assignmentConfigPath, part.path))
+                    : undefined;
                 return new VocGitTreeItem(
                     part.name || 'Unnamed Part',
                     vscode.TreeItemCollapsibleState.Collapsed,
@@ -121,7 +127,8 @@ export class VocGitTreeDataProvider implements vscode.TreeDataProvider<VocGitTre
                         path: part.path,
                         fullPath: partPath,
                         assignmentPath: element.data?.assignmentPath
-                    }
+                    },
+                    partStatus
                 );
             });
         }
@@ -135,15 +142,23 @@ export class VocGitTreeDataProvider implements vscode.TreeDataProvider<VocGitTre
 
             const knownDirs = ['startercode', 'scripts', 'lib', 'asnlib', 'docs', 'data', 'private'];
             const items: VocGitTreeItem[] = [];
+            const syncSnapshot = await computeSyncSnapshot(this.workspaceRoot);
+            const directoryStatuses = syncSnapshot?.directoryStatuses ?? new Map<string, AssignmentSyncStatus>();
+            const assignmentConfigPath = element.data?.assignmentPath as string | undefined;
+            const partConfigPath = element.data?.path as string | undefined;
 
             for (const dir of knownDirs) {
                 const dirPath = path.join(partPath, dir);
                 if (this.pathExists(dirPath)) {
+                    const directoryStatus = assignmentConfigPath && partConfigPath
+                        ? directoryStatuses.get(buildDirectoryStatusKey(assignmentConfigPath, partConfigPath, dir))
+                        : undefined;
                     items.push(new VocGitTreeItem(
                         dir,
                         vscode.TreeItemCollapsibleState.Collapsed,
                         'directory',
-                        { fullPath: dirPath }
+                        { fullPath: dirPath },
+                        directoryStatus
                     ));
                 }
             }
@@ -235,7 +250,7 @@ export class VocGitTreeItem extends vscode.TreeItem {
                 }
                 break;
             case 'part':
-                this.iconPath = new vscode.ThemeIcon('symbol-folder');
+                this.setPartIcon(syncStatus);
                 this.description = data?.path || '';
                 if (data?.fullPath) {
                     this.command = {
@@ -246,7 +261,7 @@ export class VocGitTreeItem extends vscode.TreeItem {
                 }
                 break;
             case 'directory':
-                this.iconPath = new vscode.ThemeIcon('folder');
+                this.setDirectoryIcon(syncStatus);
                 if (data?.fullPath) {
                     this.resourceUri = vscode.Uri.file(data.fullPath);
                 }
@@ -289,6 +304,44 @@ export class VocGitTreeItem extends vscode.TreeItem {
                 break;
             default:
                 this.iconPath = new vscode.ThemeIcon('book');
+        }
+    }
+
+    private setPartIcon(status?: 'synced' | 'needs_publish' | 'unknown' | 'error') {
+        switch (status) {
+            case 'needs_publish':
+                this.iconPath = new vscode.ThemeIcon('symbol-folder', new vscode.ThemeColor('gitDecoration.modifiedResourceForeground'));
+                this.tooltip = `${this.label} (contains local changes pending publish)`;
+                break;
+            case 'unknown':
+                this.iconPath = new vscode.ThemeIcon('symbol-folder', new vscode.ThemeColor('descriptionForeground'));
+                this.tooltip = `${this.label} (no publish baseline yet)`;
+                break;
+            case 'error':
+                this.iconPath = new vscode.ThemeIcon('error', new vscode.ThemeColor('errorForeground'));
+                this.tooltip = `${this.label} (status check error)`;
+                break;
+            default:
+                this.iconPath = new vscode.ThemeIcon('symbol-folder');
+        }
+    }
+
+    private setDirectoryIcon(status?: 'synced' | 'needs_publish' | 'unknown' | 'error') {
+        switch (status) {
+            case 'needs_publish':
+                this.iconPath = new vscode.ThemeIcon('folder', new vscode.ThemeColor('gitDecoration.modifiedResourceForeground'));
+                this.tooltip = `${this.label} (changed since last publish)`;
+                break;
+            case 'unknown':
+                this.iconPath = new vscode.ThemeIcon('folder', new vscode.ThemeColor('descriptionForeground'));
+                this.tooltip = `${this.label} (no publish baseline yet)`;
+                break;
+            case 'error':
+                this.iconPath = new vscode.ThemeIcon('error', new vscode.ThemeColor('errorForeground'));
+                this.tooltip = `${this.label} (status check error)`;
+                break;
+            default:
+                this.iconPath = new vscode.ThemeIcon('folder');
         }
     }
 }

@@ -35,6 +35,8 @@ export type AssignmentSyncStatus = 'synced' | 'needs_publish' | 'unknown' | 'err
 
 export interface SyncSnapshot {
     assignmentStatuses: Map<string, AssignmentSyncStatus>;
+    partStatuses: Map<string, AssignmentSyncStatus>;
+    directoryStatuses: Map<string, AssignmentSyncStatus>;
     latestLocalChangeAt?: Date;
     lastRemoteCheckAt?: Date;
     hasPendingLocalChanges: boolean;
@@ -184,6 +186,20 @@ function getPreviousHash(contentState: Record<string, string>, assignmentPath: s
         ?? contentState[posixKey];
 }
 
+function normalizeStatusKeySegment(segment: string): string {
+    return segment.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+}
+
+export function buildPartStatusKey(assignmentPath: string, partPath: string): string {
+    const normalizedAssignment = normalizeStatusKeySegment(assignmentPath);
+    const normalizedPart = normalizeStatusKeySegment(partPath);
+    return `${normalizedAssignment}/${normalizedPart}`;
+}
+
+export function buildDirectoryStatusKey(assignmentPath: string, partPath: string, directory: string): string {
+    return `${buildPartStatusKey(assignmentPath, partPath)}/${normalizeStatusKeySegment(directory)}`;
+}
+
 export async function computeSyncSnapshot(workspaceRoot: string | undefined): Promise<SyncSnapshot | undefined> {
     if (!workspaceRoot) {
         return undefined;
@@ -205,11 +221,14 @@ export async function computeSyncSnapshot(workspaceRoot: string | undefined): Pr
 
     let latestLocalChangeMs = 0;
     const assignmentStatuses = new Map<string, AssignmentSyncStatus>();
+    const partStatuses = new Map<string, AssignmentSyncStatus>();
+    const directoryStatuses = new Map<string, AssignmentSyncStatus>();
 
     for (const assignment of assignments) {
         if (typeof assignment.path !== 'string' || assignment.path.trim() === '') {
             continue;
         }
+        const parts = Array.isArray(assignment.parts) ? assignment.parts : [];
 
         const assignmentRoot = path.join(workspaceRoot, assignment.path);
         const assignmentLatest = await getLatestModifiedTime(assignmentRoot);
@@ -219,37 +238,60 @@ export async function computeSyncSnapshot(workspaceRoot: string | undefined): Pr
 
         if (!contentState || typeof contentState !== 'object') {
             assignmentStatuses.set(assignment.path, 'unknown');
+            for (const part of parts) {
+                if (typeof part.path !== 'string' || part.path.trim() === '') {
+                    continue;
+                }
+                partStatuses.set(buildPartStatusKey(assignment.path, part.path), 'unknown');
+                for (const directory of partDirectories(part)) {
+                    directoryStatuses.set(buildDirectoryStatusKey(assignment.path, part.path, directory), 'unknown');
+                }
+            }
             continue;
         }
 
         try {
-            const parts = Array.isArray(assignment.parts) ? assignment.parts : [];
-            let needsPublish = false;
+            let assignmentStatus: AssignmentSyncStatus = 'synced';
 
             for (const part of parts) {
                 if (typeof part.path !== 'string' || part.path.trim() === '') {
                     continue;
                 }
 
+                const partKey = buildPartStatusKey(assignment.path, part.path);
+                let partStatus: AssignmentSyncStatus = 'synced';
+
                 for (const directory of partDirectories(part)) {
                     const previousHash = getPreviousHash(contentState, assignment.path, part.path, directory);
                     const fullDirectoryPath = path.join(workspaceRoot, assignment.path, part.path, directory);
                     const currentHash = await calculateDirectoryHash(fullDirectoryPath, excludePatterns);
+                    const directoryKey = buildDirectoryStatusKey(assignment.path, part.path, directory);
+                    const directoryStatus: AssignmentSyncStatus = previousHash === undefined || currentHash !== previousHash
+                        ? 'needs_publish'
+                        : 'synced';
+                    directoryStatuses.set(directoryKey, directoryStatus);
 
-                    if (previousHash === undefined || currentHash !== previousHash) {
-                        needsPublish = true;
-                        break;
+                    if (directoryStatus === 'needs_publish') {
+                        partStatus = 'needs_publish';
+                        assignmentStatus = 'needs_publish';
                     }
                 }
 
-                if (needsPublish) {
-                    break;
-                }
+                partStatuses.set(partKey, partStatus);
             }
 
-            assignmentStatuses.set(assignment.path, needsPublish ? 'needs_publish' : 'synced');
+            assignmentStatuses.set(assignment.path, assignmentStatus);
         } catch {
             assignmentStatuses.set(assignment.path, 'error');
+            for (const part of parts) {
+                if (typeof part.path !== 'string' || part.path.trim() === '') {
+                    continue;
+                }
+                partStatuses.set(buildPartStatusKey(assignment.path, part.path), 'error');
+                for (const directory of partDirectories(part)) {
+                    directoryStatuses.set(buildDirectoryStatusKey(assignment.path, part.path, directory), 'error');
+                }
+            }
         }
     }
 
@@ -259,6 +301,8 @@ export async function computeSyncSnapshot(workspaceRoot: string | undefined): Pr
 
     return {
         assignmentStatuses,
+        partStatuses,
+        directoryStatuses,
         hasPendingLocalChanges,
         hasUnknownAssignments,
         latestLocalChangeAt: latestLocalChangeMs > 0 ? new Date(latestLocalChangeMs) : undefined,

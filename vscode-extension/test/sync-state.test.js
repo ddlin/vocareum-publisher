@@ -54,6 +54,11 @@ test('computeSyncSnapshot marks assignment as unknown when publish history is mi
   const snapshot = await computeSyncSnapshot(workspaceRoot);
   assert.ok(snapshot);
   assert.equal(snapshot.assignmentStatuses.get('lab1'), 'unknown');
+  assert.equal(snapshot.partStatuses.get('lab1/part1'), 'unknown');
+  assert.equal(snapshot.directoryStatuses.get('lab1/part1/startercode'), 'unknown');
+  assert.equal(snapshot.directoryStatuses.get('lab1/part1/scripts'), 'unknown');
+  assert.equal(snapshot.directoryStatuses.get('lab1/part1/docs'), 'unknown');
+  assert.equal(snapshot.directoryStatuses.get('lab1/part1/data'), 'unknown');
   assert.equal(snapshot.hasUnknownAssignments, true);
   assert.equal(snapshot.hasPendingLocalChanges, false);
   assert.equal(snapshot.lastRemoteCheckAt, undefined);
@@ -76,6 +81,9 @@ publish_history:
   const snapshot = await computeSyncSnapshot(workspaceRoot);
   assert.ok(snapshot);
   assert.equal(snapshot.assignmentStatuses.get('lab1'), 'needs_publish');
+  assert.equal(snapshot.partStatuses.get('lab1/part1'), 'needs_publish');
+  assert.equal(snapshot.directoryStatuses.get('lab1/part1/startercode'), 'needs_publish');
+  assert.equal(snapshot.directoryStatuses.get('lab1/part1/scripts'), 'needs_publish');
   assert.equal(snapshot.hasPendingLocalChanges, true);
   assert.ok(snapshot.lastRemoteCheckAt instanceof Date);
 });
@@ -104,6 +112,11 @@ publish_history:
   const snapshot = await computeSyncSnapshot(workspaceRoot);
   assert.ok(snapshot);
   assert.equal(snapshot.assignmentStatuses.get('lab1'), 'synced');
+  assert.equal(snapshot.partStatuses.get('lab1/part1'), 'synced');
+  assert.equal(snapshot.directoryStatuses.get('lab1/part1/startercode'), 'synced');
+  assert.equal(snapshot.directoryStatuses.get('lab1/part1/scripts'), 'synced');
+  assert.equal(snapshot.directoryStatuses.get('lab1/part1/docs'), 'synced');
+  assert.equal(snapshot.directoryStatuses.get('lab1/part1/data'), 'synced');
   assert.equal(snapshot.hasPendingLocalChanges, false);
   assert.equal(snapshot.hasUnknownAssignments, false);
   assert.ok(snapshot.latestLocalChangeAt instanceof Date);
