@@ -61,6 +61,16 @@ async function getApiKey(context: vscode.ExtensionContext): Promise<string> {
     return legacyApiKey;
 }
 
+async function isApiKeyConfigured(context: vscode.ExtensionContext): Promise<boolean> {
+    const stored = (await context.secrets.get(API_KEY_SECRET))?.trim();
+    if (stored) {
+        return true;
+    }
+
+    const legacyApiKey = vscode.workspace.getConfiguration('vocgit').get<string>('apiKey')?.trim() || '';
+    return legacyApiKey.length > 0;
+}
+
 async function setApiKey(context: vscode.ExtensionContext): Promise<void> {
     const apiKey = await vscode.window.showInputBox({
         title: 'VocGit API Key',
@@ -158,7 +168,11 @@ export function activate(context: vscode.ExtensionContext) {
     log(`Workspace folder: ${workspaceFolder || 'NONE'}`);
 
     // Register the actions webview
-    const actionsProvider = new VocGitActionsProvider(context.extensionUri, workspaceFolder);
+    const actionsProvider = new VocGitActionsProvider(
+        context.extensionUri,
+        workspaceFolder,
+        () => isApiKeyConfigured(context)
+    );
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('vocgit.actionsView', actionsProvider)
     );
@@ -167,23 +181,51 @@ export function activate(context: vscode.ExtensionContext) {
     const treeDataProvider = new VocGitTreeDataProvider(workspaceFolder);
     vscode.window.registerTreeDataProvider('vocgit.yamlView', treeDataProvider);
 
+    const refreshViews = () => {
+        treeDataProvider.refresh();
+        actionsProvider.refresh();
+    };
+    let refreshTimer: NodeJS.Timeout | undefined;
+    const scheduleRefresh = () => {
+        if (refreshTimer) {
+            clearTimeout(refreshTimer);
+        }
+        refreshTimer = setTimeout(() => {
+            refreshViews();
+        }, 150);
+    };
+    context.subscriptions.push(new vscode.Disposable(() => {
+        if (refreshTimer) {
+            clearTimeout(refreshTimer);
+        }
+    }));
+
     log('Views registered');
 
     // Watch for changes to vocareum.yaml to automatically refresh views
     const yamlWatcher = vscode.workspace.createFileSystemWatcher('**/vocareum.yaml');
     yamlWatcher.onDidChange(() => {
-        treeDataProvider.refresh();
-        actionsProvider.refresh();
+        scheduleRefresh();
     });
     yamlWatcher.onDidCreate(() => {
-        treeDataProvider.refresh();
-        actionsProvider.refresh();
+        scheduleRefresh();
     });
     yamlWatcher.onDidDelete(() => {
-        treeDataProvider.refresh();
-        actionsProvider.refresh();
+        scheduleRefresh();
     });
     context.subscriptions.push(yamlWatcher);
+
+    context.subscriptions.push(
+        vscode.workspace.onDidSaveTextDocument(() => scheduleRefresh()),
+        vscode.workspace.onDidCreateFiles(() => scheduleRefresh()),
+        vscode.workspace.onDidDeleteFiles(() => scheduleRefresh()),
+        vscode.workspace.onDidRenameFiles(() => scheduleRefresh()),
+        vscode.window.onDidChangeWindowState((state) => {
+            if (state.focused) {
+                scheduleRefresh();
+            }
+        })
+    );
 
     // Helper to run commands in the integrated terminal with shell-safe arguments
     async function runVocGitCommand(args: string[]) {
@@ -194,10 +236,12 @@ export function activate(context: vscode.ExtensionContext) {
         if (workspaceFolder) {
             // Always execute from workspace root even if users changed terminal cwd
             terminal.sendText(`cd ${shellEscape(workspaceFolder)} && ${command}`);
+            setTimeout(() => scheduleRefresh(), 1500);
             return;
         }
 
         terminal.sendText(command);
+        setTimeout(() => scheduleRefresh(), 1500);
     }
 
     // Register vocgit CLI commands
@@ -238,7 +282,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Refresh tree view
     context.subscriptions.push(
         vscode.commands.registerCommand('vocgit.refresh', () => {
-            treeDataProvider.refresh();
+            refreshViews();
             log('Tree view refreshed');
         })
     );
@@ -265,8 +309,14 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Manage API key with VS Code secret storage
     context.subscriptions.push(
-        vscode.commands.registerCommand('vocgit.setApiKey', async () => setApiKey(context)),
-        vscode.commands.registerCommand('vocgit.clearApiKey', async () => clearApiKey(context))
+        vscode.commands.registerCommand('vocgit.setApiKey', async () => {
+            await setApiKey(context);
+            scheduleRefresh();
+        }),
+        vscode.commands.registerCommand('vocgit.clearApiKey', async () => {
+            await clearApiKey(context);
+            scheduleRefresh();
+        })
     );
 
     log('Extension activated successfully');

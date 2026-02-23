@@ -6,9 +6,10 @@ const path = require('node:path');
 const sourcePath = path.join(__dirname, '..', 'src', 'VocGitActionsProvider.ts');
 const source = fs.readFileSync(sourcePath, 'utf8');
 
-test('actions panel includes set API key button', () => {
+test('actions panel includes dynamic API key button labels', () => {
   assert.match(source, /id="set-key-button"/);
   assert.match(source, /Set VOCAREUM_API_KEY/);
+  assert.match(source, /Update VOC API KEY/);
   assert.match(source, /'setApiKey'/);
 });
 

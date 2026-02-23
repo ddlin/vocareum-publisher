@@ -1,6 +1,12 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { SyncSnapshot, computeSyncSnapshot } from './syncState';
+
+interface StatusLineViewModel {
+    indicatorClass: 'ok' | 'warn' | 'stale' | 'unknown';
+    value: string;
+}
 
 export class VocGitActionsProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'vocgit.actionsView';
@@ -9,7 +15,8 @@ export class VocGitActionsProvider implements vscode.WebviewViewProvider {
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
-        private readonly _workspaceRoot: string | undefined
+        private readonly _workspaceRoot: string | undefined,
+        private readonly _isApiKeyConfigured: () => Promise<boolean>
     ) {
         this._checkConfig();
     }
@@ -26,7 +33,7 @@ export class VocGitActionsProvider implements vscode.WebviewViewProvider {
     public refresh(): void {
         this._checkConfig();
         if (this._view) {
-            this._view.webview.html = this._getHtmlContent();
+            void this._render();
         }
     }
 
@@ -42,7 +49,7 @@ export class VocGitActionsProvider implements vscode.WebviewViewProvider {
             localResourceRoots: [this._extensionUri]
         };
 
-        webviewView.webview.html = this._getHtmlContent();
+        void this._render();
 
         // Handle messages from the webview
         webviewView.webview.onDidReceiveMessage(data => {
@@ -72,14 +79,23 @@ export class VocGitActionsProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    private _getHtmlContent(): string {
-        if (!this._hasConfig) {
-            return this._getInitHtml();
+    private async _render(): Promise<void> {
+        if (!this._view) {
+            return;
         }
-        return this._getActionsHtml();
+        this._view.webview.html = await this._getHtmlContent();
     }
 
-    private _getInitHtml(): string {
+    private async _getHtmlContent(): Promise<string> {
+        const apiKeyConfigured = await this._isApiKeyConfigured();
+        if (!this._hasConfig) {
+            return this._getInitHtml(apiKeyConfigured);
+        }
+        return this._getActionsHtml(await computeSyncSnapshot(this._workspaceRoot), apiKeyConfigured);
+    }
+
+    private _getInitHtml(apiKeyConfigured: boolean): string {
+        const apiKeyButtonLabel = apiKeyConfigured ? 'Update VOC API KEY' : 'Set VOCAREUM_API_KEY';
         const nonce = this._getNonce();
         return `<!DOCTYPE html>
 <html lang="en">
@@ -141,7 +157,7 @@ export class VocGitActionsProvider implements vscode.WebviewViewProvider {
         Initialize Course Repo
     </button>
     <button id="set-key-button" class="init-button secondary-button">
-        Set VOCAREUM_API_KEY
+        ${apiKeyButtonLabel}
     </button>
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
@@ -162,7 +178,84 @@ export class VocGitActionsProvider implements vscode.WebviewViewProvider {
 </html>`;
     }
 
-    private _getActionsHtml(): string {
+    private _formatTimestamp(date?: Date): string {
+        if (!date) {
+            return 'Never';
+        }
+        return date.toLocaleString();
+    }
+
+    private _formatRelativeAge(date?: Date): string {
+        if (!date) {
+            return 'not recorded';
+        }
+        const ageMs = Date.now() - date.getTime();
+        const ageMinutes = Math.floor(ageMs / 60000);
+        if (ageMinutes < 1) {
+            return 'just now';
+        }
+        if (ageMinutes < 60) {
+            return `${ageMinutes}m ago`;
+        }
+
+        const ageHours = Math.floor(ageMinutes / 60);
+        if (ageHours < 24) {
+            return `${ageHours}h ago`;
+        }
+
+        const ageDays = Math.floor(ageHours / 24);
+        return `${ageDays}d ago`;
+    }
+
+    private _localStatusLine(snapshot: SyncSnapshot | undefined): StatusLineViewModel {
+        if (!snapshot || !snapshot.latestLocalChangeAt) {
+            return { indicatorClass: 'unknown', value: 'Never' };
+        }
+
+        if (snapshot.hasUnknownAssignments) {
+            return {
+                indicatorClass: 'unknown',
+                value: `${this._formatTimestamp(snapshot.latestLocalChangeAt)} (baseline missing)`
+            };
+        }
+
+        if (snapshot.hasPendingLocalChanges) {
+            return {
+                indicatorClass: 'warn',
+                value: `${this._formatTimestamp(snapshot.latestLocalChangeAt)} (pending publish)`
+            };
+        }
+
+        return {
+            indicatorClass: 'ok',
+            value: `${this._formatTimestamp(snapshot.latestLocalChangeAt)} (in sync)`
+        };
+    }
+
+    private _remoteStatusLine(snapshot: SyncSnapshot | undefined): StatusLineViewModel {
+        if (!snapshot || !snapshot.lastRemoteCheckAt) {
+            return { indicatorClass: 'unknown', value: 'Never' };
+        }
+
+        const ageMs = Date.now() - snapshot.lastRemoteCheckAt.getTime();
+        const ageHours = ageMs / (60 * 60 * 1000);
+        let indicatorClass: StatusLineViewModel['indicatorClass'] = 'ok';
+        if (ageHours > 72) {
+            indicatorClass = 'stale';
+        } else if (ageHours > 24) {
+            indicatorClass = 'warn';
+        }
+
+        return {
+            indicatorClass,
+            value: `${this._formatTimestamp(snapshot.lastRemoteCheckAt)} (${this._formatRelativeAge(snapshot.lastRemoteCheckAt)})`
+        };
+    }
+
+    private _getActionsHtml(snapshot: SyncSnapshot | undefined, apiKeyConfigured: boolean): string {
+        const localLine = this._localStatusLine(snapshot);
+        const remoteLine = this._remoteStatusLine(snapshot);
+        const apiKeyButtonLabel = apiKeyConfigured ? 'Update VOC API KEY' : 'Set VOCAREUM_API_KEY';
         const nonce = this._getNonce();
         return `<!DOCTYPE html>
 <html lang="en">
@@ -184,6 +277,7 @@ export class VocGitActionsProvider implements vscode.WebviewViewProvider {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 8px;
+            margin-bottom: 10px;
         }
         .button-wide {
             grid-column: 1 / span 2;
@@ -248,6 +342,51 @@ export class VocGitActionsProvider implements vscode.WebviewViewProvider {
         .apikey-btn:hover {
             background: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 100%);
         }
+        .status-lines {
+            border: 1px solid var(--vscode-widget-border);
+            border-radius: 6px;
+            padding: 8px;
+            background: var(--vscode-editorWidget-background);
+        }
+        .status-line {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+            line-height: 1.5;
+        }
+        .status-line + .status-line {
+            margin-top: 4px;
+        }
+        .status-label {
+            min-width: 112px;
+            color: var(--vscode-foreground);
+        }
+        .status-value {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex: 0 0 8px;
+            background: var(--vscode-disabledForeground);
+        }
+        .status-dot.ok {
+            background: #22c55e;
+        }
+        .status-dot.warn {
+            background: #f59e0b;
+        }
+        .status-dot.stale {
+            background: #ef4444;
+        }
+        .status-dot.unknown {
+            background: var(--vscode-disabledForeground);
+        }
     </style>
 </head>
 <body>
@@ -265,8 +404,20 @@ export class VocGitActionsProvider implements vscode.WebviewViewProvider {
             <span class="label">Validate Configuration</span>
         </button>
         <button id="set-key-button" class="action-button apikey-btn button-wide">
-            <span class="label">Set VOCAREUM_API_KEY</span>
+            <span class="label">${apiKeyButtonLabel}</span>
         </button>
+    </div>
+    <div class="status-lines">
+        <div class="status-line">
+            <span class="status-dot ${localLine.indicatorClass}"></span>
+            <span class="status-label">Last local change</span>
+            <span class="status-value">${localLine.value}</span>
+        </div>
+        <div class="status-line">
+            <span class="status-dot ${remoteLine.indicatorClass}"></span>
+            <span class="status-label">Last remote check</span>
+            <span class="status-value">${remoteLine.value}</span>
+        </div>
     </div>
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();

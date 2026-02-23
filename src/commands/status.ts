@@ -69,6 +69,7 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
     const apiKeyConfigured =
       (process.env.VOCAREUM_API_KEY !== undefined && process.env.VOCAREUM_API_KEY !== '') ||
       (process.env.VOCAREUM_API_TOKEN !== undefined && process.env.VOCAREUM_API_TOKEN !== '');
+    const runtime = isCI() ? `CI (${getCIProvider() ?? 'unknown'})` : 'local';
 
     const insideRepo = await isGitRepo();
     let branch = 'n/a';
@@ -88,24 +89,35 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
       dirty = await hasUncommittedChanges();
     }
 
+    const gitStatus = insideRepo ? `repo on ${branch} @ ${commit}${dirty ? ' (dirty)' : ''}` : 'not a git repository';
+
     logger.plain('Current Vocareum Publisher status');
-    logger.plain(`Config: ${configPath}`);
-    logger.plain(`Org/Course: ${config.vocareum.org_id}/${config.vocareum.course_id}`);
-    logger.plain(`Assignments: ${assignmentCount} total (${linkedAssignmentCount} linked, ${assignmentCount - linkedAssignmentCount} pending create)`);
-    logger.plain(`Parts: ${totalPartCount} total (${linkedPartCount} linked, ${totalPartCount - linkedPartCount} pending map)`);
-    logger.plain(`Templates configured: ${templateCount}`);
-    logger.plain(`Excluded assignment IDs: ${excludedCount}`);
+    logger.newline();
+    logger.plain('Readiness');
+    logger.plain(`- API key: ${apiKeyConfigured ? 'configured' : 'missing'}`);
+    logger.plain(`- Runtime: ${runtime}`);
+
+    logger.newline();
+    logger.plain('Workspace');
+    logger.plain(`- Config: ${configPath}`);
+    logger.plain(`- Org/Course: ${config.vocareum.org_id}/${config.vocareum.course_id}`);
+    logger.plain(`- Git: ${gitStatus}`);
+
+    logger.newline();
+    logger.plain('Sync Summary');
     if (lastPush === undefined) {
-      logger.plain('Last push: never');
+      logger.plain('- Last push: never');
     } else {
-      logger.plain(`Last push: ${lastPush.timestamp} (${lastPush.status ?? 'success'}) by ${lastPush.published_by} @ ${lastPush.commit_sha}`);
+      logger.plain(`- Last push: ${lastPush.timestamp} (${lastPush.status ?? 'success'}) by ${lastPush.published_by} @ ${lastPush.commit_sha}`);
     }
-    logger.plain(`Git: ${insideRepo ? `repo on ${branch} @ ${commit}${dirty ? ' (dirty)' : ''}` : 'not a git repository'}`);
-    logger.plain(`Environment: ${isCI() ? `CI (${getCIProvider() ?? 'unknown'})` : 'local'}; API key ${apiKeyConfigured ? 'configured' : 'missing'}`);
+    logger.plain(`- Assignments: ${assignmentCount} total (${linkedAssignmentCount} linked, ${assignmentCount - linkedAssignmentCount} pending create)`);
+    logger.plain(`- Parts: ${totalPartCount} total (${linkedPartCount} linked, ${totalPartCount - linkedPartCount} pending map)`);
+    logger.plain(`- Templates configured: ${templateCount}`);
+    logger.plain(`- Excluded assignment IDs: ${excludedCount}`);
 
     if (options.verbose === true) {
       logger.newline();
-      logger.plain('Assignments:');
+      logger.plain('Assignment Details');
       for (const assignment of config.assignments) {
         const linkedParts = assignment.parts.filter(p => hasNonEmptyId(p.part_id)).length;
         const assignmentId = hasNonEmptyId(assignment.assignment_id) ? assignment.assignment_id : 'pending';

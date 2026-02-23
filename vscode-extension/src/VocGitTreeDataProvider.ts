@@ -1,12 +1,13 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { execFileSync } from 'child_process';
 import * as yaml from 'js-yaml';
+import { AssignmentSyncStatus, computeSyncSnapshot } from './syncState';
 
 interface VocareumPart {
     name?: string;
     path: string;
+    directories?: string[];
 }
 
 interface VocareumAssignment {
@@ -84,9 +85,12 @@ export class VocGitTreeDataProvider implements vscode.TreeDataProvider<VocGitTre
         // Assignments under course
         if (element.contextValue === 'course') {
             const assignments = element.data?.assignments as VocareumAssignment[] || [];
+            const syncSnapshot = await computeSyncSnapshot(this.workspaceRoot);
+            const assignmentStatuses = syncSnapshot?.assignmentStatuses ?? new Map<string, AssignmentSyncStatus>();
+
             return assignments.map((asn) => {
                 const assignmentPath = path.join(this.workspaceRoot!, asn.path);
-                const hasLocalChanges = this.hasModifiedFiles(asn.path, assignmentPath);
+                const syncStatus = assignmentStatuses.get(asn.path) ?? 'unknown';
                 return new VocGitTreeItem(
                     asn.name || 'Unnamed Assignment',
                     vscode.TreeItemCollapsibleState.Collapsed,
@@ -97,7 +101,7 @@ export class VocGitTreeDataProvider implements vscode.TreeDataProvider<VocGitTre
                         fullPath: assignmentPath,
                         assignmentPath: asn.path
                     },
-                    hasLocalChanges ? 'modified' : 'synced'
+                    syncStatus
                 );
             });
         }
@@ -191,30 +195,6 @@ export class VocGitTreeDataProvider implements vscode.TreeDataProvider<VocGitTre
         }
     }
 
-    private hasModifiedFiles(assignmentPath: string, assignmentFullPath: string): boolean {
-        // Prefer git status for accurate dirty-state detection
-        if (this.workspaceRoot) {
-            try {
-                const output = execFileSync(
-                    'git',
-                    ['-C', this.workspaceRoot, 'status', '--porcelain', '--', assignmentPath],
-                    { encoding: 'utf8' }
-                );
-                return output.trim().length > 0;
-            } catch {
-                // Fall back to a filesystem heuristic when git is unavailable
-            }
-        }
-
-        try {
-            const stats = fs.statSync(assignmentFullPath);
-            const hourAgo = Date.now() - (60 * 60 * 1000);
-            return stats.mtimeMs > hourAgo;
-        } catch {
-            return false;
-        }
-    }
-
     private pathExists(p: string): boolean {
         try {
             fs.accessSync(p);
@@ -231,7 +211,7 @@ export class VocGitTreeItem extends vscode.TreeItem {
         public readonly collapsibleState: vscode.TreeItemCollapsibleState,
         public readonly contextValue: NodeType,
         public readonly data?: NodeData,
-        public readonly syncStatus?: 'synced' | 'modified' | 'error'
+        public readonly syncStatus?: 'synced' | 'needs_publish' | 'unknown' | 'error'
     ) {
         super(label, collapsibleState);
 
@@ -293,13 +273,19 @@ export class VocGitTreeItem extends vscode.TreeItem {
         }
     }
 
-    private setAssignmentIcon(status?: 'synced' | 'modified' | 'error') {
+    private setAssignmentIcon(status?: 'synced' | 'needs_publish' | 'unknown' | 'error') {
         switch (status) {
-            case 'modified':
+            case 'needs_publish':
                 this.iconPath = new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('gitDecoration.modifiedResourceForeground'));
+                this.tooltip = `${this.label} (local changes pending publish)`;
+                break;
+            case 'unknown':
+                this.iconPath = new vscode.ThemeIcon('question', new vscode.ThemeColor('descriptionForeground'));
+                this.tooltip = `${this.label} (no publish baseline yet)`;
                 break;
             case 'error':
                 this.iconPath = new vscode.ThemeIcon('error', new vscode.ThemeColor('errorForeground'));
+                this.tooltip = `${this.label} (status check error)`;
                 break;
             default:
                 this.iconPath = new vscode.ThemeIcon('book');
