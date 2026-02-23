@@ -102,8 +102,13 @@
             },
             {
                 "command": "vocgit.goToVocareum",
-                "title": "Go to Vocareum",
+                "title": "Go to Teacher IDE",
                 "icon": "$(link-external)"
+            },
+            {
+                "command": "vocgit.goToStudentView",
+                "title": "Go to Student View",
+                "icon": "$(account)"
             },
             {
                 "command": "vocgit.refresh",
@@ -196,7 +201,7 @@
                 {
                     "command": "vocgit.goToVocareum",
                     "when": "view == vocgit.yamlView && viewItem == part",
-                    "group": "inline"
+                    "group": "inline@1"
                 },
                 {
                     "command": "vocgit.goToVocareum",
@@ -204,9 +209,19 @@
                     "group": "vocgit@1"
                 },
                 {
+                    "command": "vocgit.goToStudentView",
+                    "when": "view == vocgit.yamlView && viewItem == part",
+                    "group": "inline@2"
+                },
+                {
+                    "command": "vocgit.goToStudentView",
+                    "when": "view == vocgit.yamlView && viewItem == part",
+                    "group": "vocgit@2"
+                },
+                {
                     "command": "vocgit.openFolder",
                     "when": "view == vocgit.yamlView && viewItem =~ /assignment|part|directory/",
-                    "group": "vocgit@2"
+                    "group": "vocgit@3"
                 }
             ]
         }

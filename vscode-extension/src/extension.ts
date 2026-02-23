@@ -279,7 +279,7 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Open part in Vocareum editor (browser)
+    // Open part in Vocareum Teacher IDE (browser)
     context.subscriptions.push(
         vscode.commands.registerCommand('vocgit.goToVocareum', async (item: unknown) => {
             const ids = extractVocareumLaunchIds(item);
@@ -297,7 +297,29 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            log(`Opened Vocareum editor URL: ${url}`);
+            log(`Opened Vocareum Teacher IDE URL: ${url}`);
+        })
+    );
+
+    // Open part in Vocareum Student View (browser)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('vocgit.goToStudentView', async (item: unknown) => {
+            const ids = extractVocareumLaunchIds(item);
+            if (!ids) {
+                vscode.window.showWarningMessage(
+                    'Cannot open Vocareum: missing assignment_id or part_id in vocareum.yaml for this part.'
+                );
+                return;
+            }
+
+            const url = `https://labs.vocareum.com/main/main.php?m=editor&mode=s&asnid=${encodeURIComponent(ids.assignmentId)}&stepid=${encodeURIComponent(ids.partId)}`;
+            const opened = await vscode.env.openExternal(vscode.Uri.parse(url));
+            if (!opened) {
+                vscode.window.showErrorMessage('Failed to open Vocareum URL in browser.');
+                return;
+            }
+
+            log(`Opened Vocareum Student View URL: ${url}`);
         })
     );
 
