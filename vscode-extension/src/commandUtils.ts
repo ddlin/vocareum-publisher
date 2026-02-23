@@ -43,3 +43,30 @@ export function extractAssignmentPath(argument: unknown): string | undefined {
 
     return undefined;
 }
+
+export interface VocareumLaunchIds {
+    assignmentId: string;
+    partId: string;
+}
+
+/**
+ * Extracts Vocareum assignment + part IDs from a tree item payload.
+ */
+export function extractVocareumLaunchIds(argument: unknown): VocareumLaunchIds | undefined {
+    if (typeof argument !== 'object' || argument === null) {
+        return undefined;
+    }
+
+    const candidate = argument as { data?: { assignmentId?: unknown; partId?: unknown } };
+    if (typeof candidate.data?.assignmentId !== 'string' || candidate.data.assignmentId.trim() === '') {
+        return undefined;
+    }
+    if (typeof candidate.data?.partId !== 'string' || candidate.data.partId.trim() === '') {
+        return undefined;
+    }
+
+    return {
+        assignmentId: candidate.data.assignmentId,
+        partId: candidate.data.partId
+    };
+}

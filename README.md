@@ -4,6 +4,10 @@ Push assignment content from GitHub to Vocareum.
 
 A CLI tool and GitHub Action that enables instructors to maintain assignment content in Git with full version control while seamlessly syncing to Vocareum.
 
+Current stable release in this repository:
+- CLI package: `vocareum-publisher@1.0.10`
+- VS Code extension: `vocgit@1.0.1`
+
 **[Video Walkthrough](https://www.loom.com/share/2af5f925c0244db0bf9825f8e7e133bd)** - Watch a quick demo of vocgit in action.
 
 ## Features
@@ -47,11 +51,14 @@ lab1-intro/
 ├── part1/
 │   ├── startercode/   # Student-visible starter code
 │   ├── scripts/       # Grading scripts
-│   ├── lib/           # Grading libraries (hidden from students)
-│   ├── asnlib/        # Assignment libraries
 │   ├── docs/          # Documentation
-│   └── data/          # Datasets
+│   ├── data/          # Datasets
+│   └── private/       # Private files
 ```
+
+`vocgit new` scaffolds one part (`part1`) with default directories:
+`startercode`, `scripts`, `docs`, `data`, and `private`.
+If needed, add `lib` and `asnlib` manually and include them in `parts[].directories`.
 
 ### 4. Validate and Push
 
@@ -292,7 +299,7 @@ jobs:
   push-to-vocareum:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Push to Vocareum
         uses: ddlin/vocareum-publisher@v1
@@ -301,6 +308,8 @@ jobs:
           api-key: ${{ secrets.VOCAREUM_API_KEY }}
           non-interactive: true
 ```
+
+Supported action inputs in `action/action.yml`: `config-file`, `api-key`, `dry-run`, `non-interactive`, `assignment`, `part`, `force-all`, `sync-deletes`, `auto-commit`, `verbose`.
 
 ## Directory Structure
 
@@ -314,7 +323,8 @@ course-repo/
 │       ├── lib/          # Grading libraries (hidden)
 │       ├── asnlib/       # Assignment libraries
 │       ├── docs/         # Documentation
-│       └── data/         # Datasets
+│       ├── data/         # Datasets
+│       └── private/      # Private files
 └── lab2-analysis/
     └── ...
 ```

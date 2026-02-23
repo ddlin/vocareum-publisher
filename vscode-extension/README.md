@@ -25,7 +25,12 @@ Or if using the GitHub Action workflow, vocgit is installed automatically in CI/
   - Browse courses, assignments, and parts
   - Click to open folders in Explorer
   - Right-click assignments to push individually
+  - Inline "Go to Vocareum" action on each part (opens Vocareum editor in browser)
   - Expand parts to see files (startercode, scripts, etc.)
+  - Sync status indicators in the tree:
+    - assignment-level pending publish marker
+    - part-level inherited pending marker
+    - directory-level changed/unknown/error marker
 
 - **YAML Schema Validation** - Autocomplete and error checking for `vocareum.yaml`
 
@@ -61,6 +66,7 @@ Or if using the GitHub Action workflow, vocgit is installed automatically in CI/
 - VS Code 1.80.0 or higher
 - vocgit CLI installed and available in PATH
 - A valid `vocareum.yaml` configuration file
+- Extension package version in this repo: `1.0.1`
 
 ## Links
 

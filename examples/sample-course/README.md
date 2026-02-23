@@ -29,7 +29,8 @@ sample-course/
 2. Update `vocareum.yaml` with your actual Vocareum IDs:
    - `org_id`: Your organization ID
    - `course_id`: Your course ID
-   - `template_assignment_id`: ID of an assignment to use as template
+   - `templates`: Preferred list of named template assignments
+   - `template_assignment_id`: Legacy single-template fallback (still supported)
 
 3. Replace assignment and part IDs with your actual IDs (or use `null` for new assignments)
 
@@ -41,12 +42,12 @@ sample-course/
 
 5. Validate your configuration:
    ```bash
-   vocgit --validate
+   vocgit validate
    ```
 
 6. Publish to Vocareum:
    ```bash
-   vocgit
+   vocgit push
    ```
 
 ## Directory Types

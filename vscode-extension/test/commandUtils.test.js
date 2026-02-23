@@ -5,7 +5,8 @@ const {
   shellEscape,
   buildVocGitCommand,
   extractOpenPath,
-  extractAssignmentPath
+  extractAssignmentPath,
+  extractVocareumLaunchIds
 } = require('../dist/commandUtils.js');
 
 test('shellEscape wraps values and escapes single quotes', () => {
@@ -32,4 +33,14 @@ test('extractAssignmentPath reads assignment path from tree payload', () => {
   );
   assert.equal(extractAssignmentPath({ data: {} }), undefined);
   assert.equal(extractAssignmentPath('labs/lab1'), undefined);
+});
+
+test('extractVocareumLaunchIds reads assignment and part IDs from tree payload', () => {
+  assert.deepEqual(
+    extractVocareumLaunchIds({ data: { assignmentId: '4959492', partId: '4959493' } }),
+    { assignmentId: '4959492', partId: '4959493' }
+  );
+  assert.equal(extractVocareumLaunchIds({ data: { assignmentId: '4959492', partId: '' } }), undefined);
+  assert.equal(extractVocareumLaunchIds({ data: { assignmentId: '', partId: '4959493' } }), undefined);
+  assert.equal(extractVocareumLaunchIds(undefined), undefined);
 });

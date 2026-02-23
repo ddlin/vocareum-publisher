@@ -101,6 +101,11 @@
                 "icon": "$(folder-opened)"
             },
             {
+                "command": "vocgit.goToVocareum",
+                "title": "Go to Vocareum",
+                "icon": "$(link-external)"
+            },
+            {
                 "command": "vocgit.refresh",
                 "title": "VocGit: Refresh",
                 "icon": "$(refresh)"
@@ -186,6 +191,16 @@
                 {
                     "command": "vocgit.pushAssignment",
                     "when": "view == vocgit.yamlView && viewItem == assignment",
+                    "group": "vocgit@1"
+                },
+                {
+                    "command": "vocgit.goToVocareum",
+                    "when": "view == vocgit.yamlView && viewItem == part",
+                    "group": "inline"
+                },
+                {
+                    "command": "vocgit.goToVocareum",
+                    "when": "view == vocgit.yamlView && viewItem == part",
                     "group": "vocgit@1"
                 },
                 {

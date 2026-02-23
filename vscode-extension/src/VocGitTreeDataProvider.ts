@@ -7,12 +7,14 @@ import { AssignmentSyncStatus, buildDirectoryStatusKey, buildPartStatusKey, comp
 interface VocareumPart {
     name?: string;
     path: string;
+    part_id?: string | null;
     directories?: string[];
 }
 
 interface VocareumAssignment {
     name?: string;
     path: string;
+    assignment_id?: string | null;
     parts?: VocareumPart[];
 }
 
@@ -34,6 +36,8 @@ interface NodeData {
     path?: string;
     fullPath?: string;
     assignmentPath?: string;
+    assignmentId?: string;
+    partId?: string;
 }
 
 export class VocGitTreeDataProvider implements vscode.TreeDataProvider<VocGitTreeItem> {
@@ -99,7 +103,8 @@ export class VocGitTreeDataProvider implements vscode.TreeDataProvider<VocGitTre
                         parts: asn.parts,
                         path: asn.path,
                         fullPath: assignmentPath,
-                        assignmentPath: asn.path
+                        assignmentPath: asn.path,
+                        assignmentId: typeof asn.assignment_id === 'string' ? asn.assignment_id : undefined
                     },
                     syncStatus
                 );
@@ -126,7 +131,9 @@ export class VocGitTreeDataProvider implements vscode.TreeDataProvider<VocGitTre
                     {
                         path: part.path,
                         fullPath: partPath,
-                        assignmentPath: element.data?.assignmentPath
+                        assignmentPath: element.data?.assignmentPath,
+                        assignmentId: element.data?.assignmentId,
+                        partId: typeof part.part_id === 'string' ? part.part_id : undefined
                     },
                     partStatus
                 );

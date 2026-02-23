@@ -15,6 +15,17 @@ test('manifest contributes API key management commands', () => {
   assert.ok(findCommand('vocgit.clearApiKey'));
 });
 
+test('manifest contributes go-to-vocareum command for part items', () => {
+  assert.ok(findCommand('vocgit.goToVocareum'));
+
+  const itemContextMenu = manifest.contributes.menus['view/item/context'] || [];
+  const inlineEntry = itemContextMenu.find(
+    (item) => item.command === 'vocgit.goToVocareum' && item.group === 'inline'
+  );
+  assert.ok(inlineEntry);
+  assert.equal(inlineEntry.when, 'view == vocgit.yamlView && viewItem == part');
+});
+
 test('actions view title menu exposes set/clear API key commands', () => {
   const viewTitleMenu = manifest.contributes.menus['view/title'] || [];
   const keyMenuItem = viewTitleMenu.find((item) => item.command === 'vocgit.setApiKey');
