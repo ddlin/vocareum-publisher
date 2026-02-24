@@ -106,11 +106,6 @@
                 "icon": "$(link-external)"
             },
             {
-                "command": "vocgit.goToStudentView",
-                "title": "Go to Student View",
-                "icon": "$(account)"
-            },
-            {
                 "command": "vocgit.refresh",
                 "title": "VocGit: Refresh",
                 "icon": "$(refresh)"
@@ -207,16 +202,6 @@
                     "command": "vocgit.goToVocareum",
                     "when": "view == vocgit.yamlView && viewItem == part",
                     "group": "vocgit@1"
-                },
-                {
-                    "command": "vocgit.goToStudentView",
-                    "when": "view == vocgit.yamlView && viewItem == part",
-                    "group": "inline@2"
-                },
-                {
-                    "command": "vocgit.goToStudentView",
-                    "when": "view == vocgit.yamlView && viewItem == part",
-                    "group": "vocgit@2"
                 },
                 {
                     "command": "vocgit.openFolder",

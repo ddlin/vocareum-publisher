@@ -15,21 +15,15 @@ test('manifest contributes API key management commands', () => {
   assert.ok(findCommand('vocgit.clearApiKey'));
 });
 
-test('manifest contributes teacher and student Vocareum commands for part items', () => {
+test('manifest contributes teacher Vocareum command for part items', () => {
   assert.ok(findCommand('vocgit.goToVocareum'));
-  assert.ok(findCommand('vocgit.goToStudentView'));
 
   const itemContextMenu = manifest.contributes.menus['view/item/context'] || [];
   const teacherInlineEntry = itemContextMenu.find(
     (item) => item.command === 'vocgit.goToVocareum' && item.group === 'inline@1'
   );
-  const studentInlineEntry = itemContextMenu.find(
-    (item) => item.command === 'vocgit.goToStudentView' && item.group === 'inline@2'
-  );
   assert.ok(teacherInlineEntry);
-  assert.ok(studentInlineEntry);
   assert.equal(teacherInlineEntry.when, 'view == vocgit.yamlView && viewItem == part');
-  assert.equal(studentInlineEntry.when, 'view == vocgit.yamlView && viewItem == part');
 });
 
 test('actions view title menu exposes set/clear API key commands', () => {

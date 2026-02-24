@@ -26,7 +26,6 @@ Or if using the GitHub Action workflow, vocgit is installed automatically in CI/
   - Click to open folders in Explorer
   - Right-click assignments to push individually
   - Inline "Go to Teacher IDE" action on each part (opens Vocareum teacher editor in browser)
-  - Inline "Go to Student View" action on each part (opens Vocareum student editor in browser)
   - Expand parts to see files (startercode, scripts, etc.)
   - Sync status indicators in the tree:
     - assignment-level pending publish marker
