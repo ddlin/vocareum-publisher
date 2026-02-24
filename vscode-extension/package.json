@@ -2,7 +2,7 @@
     "name": "vocgit",
     "displayName": "VocGit Studio",
     "description": "Integrated GUI and configuration schema for Vocareum Publisher (vocgit)",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "engines": {
         "vscode": "^1.80.0"
     },
