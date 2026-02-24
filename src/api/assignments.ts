@@ -66,7 +66,10 @@ export async function getAssignment(
     url: `/api/v2/courses/${courseId}/assignments/${assignmentId}`,
   });
   if (!response.assignments || response.assignments.length === 0) {
-    throw new Error(`Assignment not found: ${assignmentId}`);
+    throw new Error(
+      `Assignment not found: ${assignmentId} in course ${courseId}.\n` +
+      `The assignment may have been deleted or moved to another course.`
+    );
   }
   return response.assignments[0];
 }
@@ -125,7 +128,14 @@ export async function copyAssignment(
 
   if (assignmentId === undefined || assignmentId === '') {
     throw new Error(
-      `Assignment copy failed: no assignment ID returned (template=${templateId}, course=${courseId})`
+      `Assignment copy failed: Vocareum did not return an assignment ID.\n\n` +
+      `Template: ${templateId}\n` +
+      `Course: ${courseId}\n\n` +
+      `Possible causes:\n` +
+      `  - The template assignment doesn't exist or was deleted\n` +
+      `  - You don't have permission to copy from this template\n` +
+      `  - The Vocareum API is experiencing issues\n\n` +
+      `To fix: Verify the template ID exists and you have access to it.`
     );
   }
 

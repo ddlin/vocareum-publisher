@@ -462,10 +462,10 @@ function detectPartSettingsChanged(
     if (JSON.stringify(s.lab_interface) !== JSON.stringify(remoteInterface)) { return true; }
   }
 
-  // Compare tags
+  // Compare tags (API returns object, config may have array or object)
   if (s.tags !== undefined) {
-    const remoteTags = (remotePart as unknown as Record<string, unknown>).tags as string[] | undefined;
-    if (JSON.stringify(s.tags) !== JSON.stringify(remoteTags ?? [])) { return true; }
+    const remoteTags = (remotePart as unknown as Record<string, unknown>).tags as Record<string, string> | undefined;
+    if (JSON.stringify(s.tags) !== JSON.stringify(remoteTags ?? {})) { return true; }
   }
 
   return false;

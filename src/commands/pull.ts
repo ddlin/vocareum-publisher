@@ -15,7 +15,7 @@ import { downloadContent } from '../api/content';
 import { logger } from '../utils/logger';
 import { loadDotEnvIfPresent, isCI } from '../utils/env';
 import { prompt, promptChoice } from '../utils/prompts';
-import { pathExists, ensureDirectory, writeFile, calculateDirectoryHash } from '../utils/files';
+import { pathExists, ensureDirectory, writeFile, calculateDirectoryHash, validatePath } from '../utils/files';
 import { getCommitSha, getGitUserName } from '../utils/git';
 import type { PublishHistory } from '../types/config';
 import { mapAssignmentSettings, mapPartSettings } from '../utils/settings';
@@ -381,6 +381,8 @@ async function detectContentDrift(
 
         // Compare remote files with local files
         for (const [remotePath, remoteContent] of Object.entries(remoteFiles)) {
+          // Validate path to prevent traversal attacks from malicious remote paths
+          validatePath(localBasePath, remotePath);
           const localPath = path.join(localBasePath, remotePath);
 
           if (await pathExists(localPath)) {
@@ -669,12 +671,16 @@ async function writeFilesToDirectory(
 ): Promise<void> {
   const createdDirs = new Set<string>();
 
+  // Compute base path for validation
+  const basePath = partPath === '.' ? assignmentPath : path.join(assignmentPath, partPath);
+
   for (const [relativePath, content] of Object.entries(files)) {
+    // Validate path to prevent traversal attacks from malicious remote paths
+    validatePath(basePath, relativePath);
+
     // File path format from downloadContent: "{dirType}/{filePath}"
     // We want: "{assignmentPath}/{partPath}/{dirType}/{filePath}"
-    const targetPath = partPath === '.'
-      ? path.join(assignmentPath, relativePath)
-      : path.join(assignmentPath, partPath, relativePath);
+    const targetPath = path.join(basePath, relativePath);
 
     await ensureDirectory(path.dirname(targetPath));
     await writeFile(targetPath, content);
@@ -705,7 +711,13 @@ export async function pullCommand(options: PullOptions): Promise<void> {
     // API Key - support both env var names
     const apiKey = process.env.VOCAREUM_API_KEY ?? process.env.VOCAREUM_API_TOKEN;
     if (apiKey === undefined || apiKey === '') {
-      logger.error('VOCAREUM_API_KEY (or VOCAREUM_API_TOKEN) environment variable is required.');
+      logger.error('VOCAREUM_API_KEY environment variable is required.');
+      logger.error('');
+      logger.error('To fix:');
+      logger.error('  1. Generate a token at Vocareum: Profile > Settings > Personal Access Tokens');
+      logger.error('  2. Set it using one of these methods:');
+      logger.error('     - Create a .env file with: VOCAREUM_API_KEY=your_token');
+      logger.error('     - Export in shell: export VOCAREUM_API_KEY=your_token');
       process.exit(1);
     }
 

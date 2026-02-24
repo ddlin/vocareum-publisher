@@ -158,8 +158,8 @@ export const PartSettingsSchema = z
     lab_interface: LabInterfaceSchema.nullish(),
     /** Maximum users for Databricks labs (API returns string, coerce to number) */
     databricks_maxusers: z.coerce.number().nullish(),
-    /** Tags for the part */
-    tags: z.array(z.string()).nullish(),
+    /** Tags for the part (API returns object, but older configs may have empty array) */
+    tags: z.union([z.array(z.string()), z.record(z.string(), z.string())]).nullish(),
   })
   .optional();
 

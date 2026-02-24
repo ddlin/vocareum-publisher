@@ -65,7 +65,7 @@ describe('mapParts', () => {
 
     expect(() => mapParts(configParts, apiParts)).toThrow(PartMappingError);
     expect(() => mapParts(configParts, apiParts)).toThrow(
-      'Part count mismatch: config has 1 parts, template has 2 parts'
+      /Part count mismatch: config has 1 part\(s\), but Vocareum has 2 part\(s\)/
     );
   });
 

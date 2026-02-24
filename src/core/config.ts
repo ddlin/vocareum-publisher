@@ -46,7 +46,13 @@ export async function loadConfig(configPath: string): Promise<Config> {
       : await explorer.search();
 
     if (result === null || result === undefined || result.config === undefined) {
-      throw new ConfigError('Configuration file not found', 'CONFIG_NOT_FOUND');
+      throw new ConfigError(
+        'Configuration file (vocareum.yaml) not found.\n\n' +
+        'To fix:\n' +
+        '  Run "vocgit init" to create a new configuration, or\n' +
+        '  Make sure you are in a directory with a vocareum.yaml file.',
+        'CONFIG_NOT_FOUND'
+      );
     }
 
     const validation = validateConfig(result.config);
@@ -86,11 +92,27 @@ export function validateConfig(config: unknown): ValidationResult {
     };
   }
 
-  const errors: ValidationError[] = result.error.errors.map((err) => ({
-    type: 'invalid_structure',
-    path: err.path.join('.'),
-    message: `${err.path.join('.')}: ${err.message}`,
-  }));
+  const errors: ValidationError[] = result.error.errors.map((err) => {
+    const path = err.path.join('.');
+    let message = `${path}: ${err.message}`;
+
+    // Add helpful hints for common errors
+    if (path.includes('tags') && err.message.includes('Expected')) {
+      message += '\n  Hint: tags should be an object like { key: "value" } or an empty array []';
+    } else if ((path.includes('_id') || path.includes('Id')) && err.message.includes('Expected string')) {
+      message += '\n  Hint: All IDs must be quoted strings (e.g., "12345" not 12345)';
+    } else if (err.message.includes('Expected array, received object')) {
+      message += '\n  Hint: This field expects an array [...] but got an object {...}';
+    } else if (err.message.includes('Expected object, received array')) {
+      message += '\n  Hint: This field expects an object {...} but got an array [...]';
+    }
+
+    return {
+      type: 'invalid_structure' as const,
+      path,
+      message,
+    };
+  });
 
   return {
     valid: false,

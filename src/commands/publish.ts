@@ -30,7 +30,14 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
     // API Key - support both env var names
     const apiKey = process.env.VOCAREUM_API_KEY ?? process.env.VOCAREUM_API_TOKEN;
     if (apiKey === undefined || apiKey === '') {
-      logger.error('VOCAREUM_API_KEY (or VOCAREUM_API_TOKEN) environment variable is required.');
+      logger.error('VOCAREUM_API_KEY environment variable is required.');
+      logger.error('');
+      logger.error('To fix:');
+      logger.error('  1. Generate a token at Vocareum: Profile > Settings > Personal Access Tokens');
+      logger.error('  2. Set it using one of these methods:');
+      logger.error('     - Create a .env file with: VOCAREUM_API_KEY=your_token');
+      logger.error('     - Export in shell: export VOCAREUM_API_KEY=your_token');
+      logger.error('     - In CI/CD: add VOCAREUM_API_KEY as a repository secret');
       process.exit(1);
     }
 

@@ -39,12 +39,36 @@ export function validateSchema<T>(schema: ZodSchema<T>, data: unknown): T {
 }
 
 /**
- * Format Zod errors into a readable message
+ * Get a hint for common validation errors
+ */
+function getErrorHint(path: string, message: string): string | null {
+  // Tags field type mismatch
+  if (path.includes('tags') && message.includes('Expected')) {
+    return 'Hint: tags should be an object like { key: "value" } or an empty array []';
+  }
+  // ID type mismatch
+  if ((path.includes('_id') || path.includes('Id')) && message.includes('Expected string')) {
+    return 'Hint: All IDs must be strings (e.g., "12345" not 12345)';
+  }
+  // Array vs object mismatch
+  if (message.includes('Expected array, received object')) {
+    return 'Hint: This field expects an array [...] but got an object {...}';
+  }
+  if (message.includes('Expected object, received array')) {
+    return 'Hint: This field expects an object {...} but got an array [...]';
+  }
+  return null;
+}
+
+/**
+ * Format Zod errors into a readable message with helpful hints
  */
 export function formatZodError(error: ZodError): string {
   const messages = error.errors.map((err) => {
     const path = err.path.join('.');
-    return path ? `${path}: ${err.message}` : err.message;
+    const baseMsg = path ? `${path}: ${err.message}` : err.message;
+    const hint = getErrorHint(path, err.message);
+    return hint ? `${baseMsg}\n  ${hint}` : baseMsg;
   });
 
   return messages.join('\n');

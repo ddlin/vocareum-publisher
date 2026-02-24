@@ -65,7 +65,10 @@ export async function getPart(
     url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
   });
   if (!response.parts || response.parts.length === 0) {
-    throw new Error(`Part not found: ${partId}`);
+    throw new Error(
+      `Part not found: ${partId} in assignment ${assignmentId}.\n` +
+      `The part may have been deleted or the assignment structure changed.`
+    );
   }
   return response.parts[0];
 }

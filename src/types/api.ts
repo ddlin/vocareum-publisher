@@ -106,7 +106,7 @@ export interface VocareumPartResponse {
   };
   // Other settings
   databricks_maxusers?: number;
-  tags?: string[];
+  tags?: Record<string, string>;  // API returns object like {"average_lab_time": "300"}
 }
 
 /**
@@ -231,7 +231,7 @@ export interface ApiPartSettings {
   lab_interface?: ApiLabInterface;  // Lab interface configuration
   // Optional/advanced settings
   databricks_maxusers?: number;  // Max users for Databricks
-  tags?: string[];  // Tags for the part
+  tags?: Record<string, string>;  // Tags object like {"average_lab_time": "300"}
 }
 
 /**

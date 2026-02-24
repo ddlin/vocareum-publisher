@@ -69,6 +69,75 @@ export class NotFoundError extends VocareumError {
 }
 
 /**
+ * Error for forbidden access (403)
+ */
+export class ForbiddenError extends VocareumError {
+  constructor(message: string, public resource?: string) {
+    const hint = resource
+      ? `\n\nPossible causes:\n` +
+        `  - Your API token doesn't have access to this ${resource}\n` +
+        `  - The ${resource} was deleted or moved to another org\n` +
+        `  - Your permissions were revoked\n\n` +
+        `To fix:\n` +
+        `  1. Verify the ${resource} exists in Vocareum web UI\n` +
+        `  2. Check that your account has instructor/admin access\n` +
+        `  3. Generate a new token: Profile > Settings > Personal Access Tokens`
+      : '';
+    super(message + hint, 'FORBIDDEN', 403);
+    this.name = 'ForbiddenError';
+  }
+}
+
+/**
+ * Error for insecure API base URL configuration
+ */
+export class InsecureBaseUrlError extends VocareumError {
+  constructor(url: string) {
+    super(
+      `Insecure API base URL: "${url}". ` +
+      `Only https://api.vocareum.com is allowed by default. ` +
+      `Set VOCAREUM_ALLOW_CUSTOM_BASE_URL=1 to override (use with caution).`,
+      'INSECURE_BASE_URL'
+    );
+    this.name = 'InsecureBaseUrlError';
+  }
+}
+
+/** Default allowed API hosts */
+const ALLOWED_API_HOSTS = ['api.vocareum.com'];
+
+/**
+ * Validate that the API base URL is safe to use with credentials
+ * @throws InsecureBaseUrlError if URL is not allowed and override not set
+ */
+function validateBaseUrl(baseUrl: string): void {
+  const allowCustom = process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL === '1';
+
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new InsecureBaseUrlError(baseUrl);
+  }
+
+  // Must be HTTPS
+  if (parsed.protocol !== 'https:') {
+    if (!allowCustom) {
+      throw new InsecureBaseUrlError(baseUrl);
+    }
+    logger.warn(`WARNING: Using non-HTTPS API URL: ${baseUrl}`);
+  }
+
+  // Must be an allowed host (unless override is set)
+  if (!ALLOWED_API_HOSTS.includes(parsed.hostname)) {
+    if (!allowCustom) {
+      throw new InsecureBaseUrlError(baseUrl);
+    }
+    logger.warn(`WARNING: Using non-standard API host: ${parsed.hostname}. Your API token will be sent to this host.`);
+  }
+}
+
+/**
  * Retry options for API requests
  */
 interface RetryOptions {
@@ -130,6 +199,9 @@ export class VocareumClient {
   private apiKey: string;
 
   constructor(apiKey: string, baseUrl: string = 'https://api.vocareum.com') {
+    // Validate base URL to prevent token theft via malicious config
+    validateBaseUrl(baseUrl);
+
     this.apiKey = apiKey;
     this.axios = axios.create({
       baseURL: baseUrl,
@@ -192,11 +264,20 @@ export class VocareumClient {
       // Vocareum API returns errors as { error: { message: "..." } } or { message: "..." }
       const message = data?.error?.message ?? data?.message ?? error.message;
 
+      // Try to detect resource type from URL for better error messages
+      const url = error.config?.url ?? '';
+      const resourceType = this.detectResourceType(url);
+
       switch (status) {
         case 401:
-          return new AuthenticationError(message);
+          return new AuthenticationError(
+            message + '\n\nYour API token may be invalid or expired. ' +
+            'Generate a new token at: Profile > Settings > Personal Access Tokens'
+          );
+        case 403:
+          return new ForbiddenError(message, resourceType);
         case 404:
-          return new NotFoundError('Resource', 'unknown');
+          return new NotFoundError(resourceType || 'Resource', 'unknown');
         case 429:
           return new RateLimitError();
         default:
@@ -209,6 +290,17 @@ export class VocareumClient {
     }
 
     return new APIError('Unknown error');
+  }
+
+  /**
+   * Detect resource type from API URL for better error messages
+   */
+  private detectResourceType(url: string): string | undefined {
+    if (url.includes('/parts/')) { return 'part'; }
+    if (url.includes('/assignments/')) { return 'assignment'; }
+    if (url.includes('/courses/')) { return 'course'; }
+    if (url.includes('/orgs/')) { return 'organization'; }
+    return undefined;
   }
 
   /**

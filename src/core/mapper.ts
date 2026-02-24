@@ -57,8 +57,14 @@ export function mapParts(
 ): PartMapping[] {
   if (configParts.length !== apiParts.length) {
     throw new PartMappingError(
-      `Part count mismatch: config has ${configParts.length} parts, ` +
-      `template has ${apiParts.length} parts`,
+      `Part count mismatch: config has ${configParts.length} part(s), ` +
+      `but Vocareum has ${apiParts.length} part(s).\n\n` +
+      `This can happen when:\n` +
+      `  - The template assignment has a different number of parts\n` +
+      `  - Parts were added/removed in Vocareum but not synced to config\n\n` +
+      `To fix:\n` +
+      `  - Run "vocgit pull" to sync your config with Vocareum\n` +
+      `  - Or manually update the parts array in vocareum.yaml`,
       configParts.length,
       apiParts.length
     );

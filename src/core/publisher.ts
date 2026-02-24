@@ -43,6 +43,30 @@ function sanitizeSubmissionFilters(
   return { include, exclude, list };
 }
 
+/**
+ * Normalize tags from config format (array or object) to API format (object).
+ * Empty arrays are converted to undefined (no tags).
+ */
+function normalizeTags(
+  tags: string[] | Record<string, string> | null | undefined
+): Record<string, string> | undefined {
+  if (tags === null || tags === undefined) { return undefined; }
+  if (Array.isArray(tags)) {
+    // Empty array means no tags
+    if (tags.length === 0) { return undefined; }
+    // Non-empty array: shouldn't happen with current schema, but handle gracefully
+    // Convert ["key:value", ...] to {key: value, ...}
+    const result: Record<string, string> = {};
+    for (const tag of tags) {
+      const [key, ...valueParts] = tag.split(':');
+      if (key) { result[key] = valueParts.join(':') || ''; }
+    }
+    return Object.keys(result).length > 0 ? result : undefined;
+  }
+  // Already an object
+  return Object.keys(tags).length > 0 ? tags : undefined;
+}
+
 function buildPartSettingsPayload(
   partName: string,
   partSettings: PartSettings | undefined,
@@ -76,7 +100,7 @@ function buildPartSettingsPayload(
     number_of_submissions: nullToUndefined(partSettings?.number_of_submissions),
     lab_interface: nullToUndefined(partSettings?.lab_interface),
     databricks_maxusers: nullToUndefined(partSettings?.databricks_maxusers),
-    tags: nullToUndefined(partSettings?.tags),
+    tags: normalizeTags(partSettings?.tags),
   };
 }
 
@@ -313,7 +337,15 @@ export async function publish(
 
     if (action.type === 'create' && action.willCreate === true) {
       if (action.templateId === undefined || action.templateId === null || action.templateId === '') {
-        logger.error(`Cannot create assignment ${action.assignment.name}: No template ID in config`);
+        logger.error(`Cannot create assignment "${action.assignment.name}": No template ID configured.`);
+        logger.error('');
+        logger.error('To fix, add a template to your vocareum.yaml:');
+        logger.error('  vocareum:');
+        logger.error('    templates:');
+        logger.error('      - id: "YOUR_TEMPLATE_ID"');
+        logger.error('        name: default');
+        logger.error('');
+        logger.error('Then reference it in your assignment with create_from_template: default');
         result.failed.push({ type: 'assignment', id: action.assignment.name, error: 'Missing template ID' });
         result.success = false;
         if (abortOnError) {
