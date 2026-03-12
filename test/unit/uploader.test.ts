@@ -222,7 +222,7 @@ describe('syncDirectory', () => {
     );
 
     expect(mockDeleteFile).toHaveBeenCalledWith(
-      mockClient, 'c1', 'a1', 'p1', 'startercode', 'stale.py'
+      mockClient, 'c1', 'a1', 'p1', 'startercode', 'stale.py', undefined
     );
     expect(result.deleted).toEqual(['stale.py']);
   });

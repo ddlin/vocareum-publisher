@@ -8,6 +8,7 @@
 import axios from 'axios';
 import { VocareumClient, APIError, VocareumError } from './client';
 import type { DirectoryType } from '../types/config';
+import { DEFAULT_PART_DIRECTORIES } from '../types/config';
 import type { UploadResult, FileMap, FileInfo } from '../types/api';
 import { logger } from '../utils/logger';
 
@@ -336,16 +337,18 @@ export function downloadContent(
   client: VocareumClient,
   courseId: string,
   assignmentId: string,
-  partId: string
+  partId: string,
+  directories?: DirectoryType[],
+  architecture?: 'elite' | 'container'
 ): Promise<FileMap> {
   return (async (): Promise<FileMap> => {
-    // Note: 'course' directory excluded - it contains course-wide shared files (symlinks)
-    // that are shared across all assignments and could cause infinite update loops
-    const directories: DirectoryType[] = ['startercode', 'scripts', 'docs', 'data', 'private', 'lib', 'asnlib'];
+    // 'course' excluded — shared across all assignments, syncing causes infinite loops.
+    // When no directories specified, try all non-course directories (union of both architectures).
+    const dirs: DirectoryType[] = directories ?? DEFAULT_PART_DIRECTORIES;
     const downloaded: FileMap = {};
 
-    for (const directory of directories) {
-      const files = await listFiles(client, courseId, assignmentId, partId, directory);
+    for (const directory of dirs) {
+      const files = await listFiles(client, courseId, assignmentId, partId, directory, architecture);
       for (const file of files) {
         try {
           const content = await fetchFileContent(
@@ -377,11 +380,15 @@ export function downloadContent(
  * @returns Array of file info
  */
 /**
- * Map directory type to Vocareum API path format
- * All instructor directories are under /voc/
+ * Map directory type to Vocareum API path format for file listing.
+ *
+ * Elite architecture uses /resource/ prefix, container uses /voc/.
+ * When architecture is unknown, tries /resource/ first (will 400 if wrong,
+ * caught by listFiles error handler).
  */
-function toApiDirPath(directory: DirectoryType): string {
-  return `/voc/${directory}`;
+function toApiDirPath(directory: DirectoryType, architecture?: 'elite' | 'container'): string {
+  const prefix = architecture === 'container' ? '/voc' : '/resource';
+  return `${prefix}/${directory}`;
 }
 
 export async function listFiles(
@@ -389,13 +396,14 @@ export async function listFiles(
   courseId: string,
   assignmentId: string,
   partId: string,
-  directory: DirectoryType
+  directory: DirectoryType,
+  architecture?: 'elite' | 'container'
 ): Promise<FileInfo[]> {
   const url = `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
-  const apiDirPath = toApiDirPath(directory);
+  const apiDirPath = toApiDirPath(directory, architecture);
 
   try {
-    // Use correct API format: dir=/voc/{directory}&list=true
+    // Elite uses dir=/resource/{directory}, container uses dir=/voc/{directory}
     const response = await client.request<unknown>({
       method: 'GET',
       url,
@@ -442,9 +450,10 @@ export async function deleteFile(
   assignmentId: string,
   partId: string,
   directory: DirectoryType,
-  filePath: string
+  filePath: string,
+  architecture?: 'elite' | 'container'
 ): Promise<void> {
-  const apiDirPath = toApiDirPath(directory);
+  const apiDirPath = toApiDirPath(directory, architecture);
   try {
     await client.request({
       method: 'DELETE',

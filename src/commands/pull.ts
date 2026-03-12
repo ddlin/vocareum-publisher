@@ -255,7 +255,7 @@ function comparePartSettings(
  * @param skipAssignmentIds - Assignment IDs to skip (stale or excluded)
  */
 async function detectSettingsDrift(
-  config: { assignments: Assignment[]; vocareum: { course_id: string; excluded_assignments?: string[] } },
+  config: { assignments: Assignment[]; vocareum: { course_id: string; excluded_assignments?: string[]; architecture?: 'elite' | 'container' } },
   client: VocareumClient,
   skipAssignmentIds: Set<string>
 ): Promise<AssignmentSettingsDrift[]> {
@@ -347,7 +347,7 @@ async function detectSettingsDrift(
  * @param verbose - Enable verbose logging
  */
 async function detectContentDrift(
-  config: { assignments: Assignment[]; vocareum: { course_id: string; excluded_assignments?: string[] } },
+  config: { assignments: Assignment[]; vocareum: { course_id: string; excluded_assignments?: string[]; architecture?: 'elite' | 'container' } },
   client: VocareumClient,
   skipAssignmentIds: Set<string>,
   verbose: boolean
@@ -371,7 +371,9 @@ async function detectContentDrift(
           client,
           config.vocareum.course_id,
           assignment.assignment_id,
-          configPart.part_id
+          configPart.part_id,
+          undefined, // use default directories
+          config.vocareum.architecture
         );
 
         const fileDiffs: FileDiff[] = [];
@@ -473,7 +475,8 @@ async function importAssignment(
   courseId: string,
   orphan: OrphanedEntity,
   localPath: string,
-  verbose: boolean
+  verbose: boolean,
+  architecture?: 'elite' | 'container'
 ): Promise<ImportResult> {
   const assignmentId = orphan.id;
 
@@ -506,7 +509,7 @@ async function importAssignment(
     }
 
     // Download content for this part
-    const files = await downloadContent(client, courseId, assignmentId, part.id);
+    const files = await downloadContent(client, courseId, assignmentId, part.id, undefined, architecture);
     const fileCount = Object.keys(files).length;
 
     // Determine part path (use part name or index)
@@ -602,7 +605,7 @@ function detectDirectories(files: FileMap): DirectoryType[] {
     if (parts.length > 0) {
       const dir = parts[0] as DirectoryType;
       // Note: 'course' excluded - shared course-wide files not synced to avoid update loops
-      if (['startercode', 'scripts', 'docs', 'data', 'private', 'lib', 'asnlib'].includes(dir)) {
+      if ((DEFAULT_PART_DIRECTORIES as readonly string[]).includes(dir)) {
         dirs.add(dir);
       }
     }
@@ -807,7 +810,8 @@ export async function pullCommand(options: PullOptions): Promise<void> {
               config.vocareum.course_id,
               orphan,
               finalDirName,
-              verbose
+              verbose,
+              config.vocareum.architecture
             );
 
             newAssignments.push(assignment);

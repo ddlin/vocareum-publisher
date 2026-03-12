@@ -38,12 +38,59 @@ export const DirectoryTypeSchema = z.enum([
 ]);
 
 /**
- * Default directories to create for every assignment part.
- * These provide scaffolding for course designers to drop content into
- * without needing to remember the Vocareum directory structure.
+ * Vocareum has two workspace architectures with different directory sets:
  *
- * Note: 'lib' and 'asnlib' are omitted as they're less commonly used.
- * Note: 'course' is excluded as it's shared across all assignments.
+ * Elite: Vocareum Standard, Basic, Vocareum Elite, Jupyter Elite
+ * Container: Vocareum Notebook, Databricks, VSCode, JupyterLab
+ *
+ * 'course' is excluded from both — it's shared across all assignments
+ * and syncing it would cause infinite update loops.
+ */
+export const ELITE_DIRECTORIES: DirectoryType[] = [
+  'asnlib',
+  'docs',
+  'scripts',
+  'startercode',
+  'lib',
+];
+
+export const CONTAINER_DIRECTORIES: DirectoryType[] = [
+  'docs',
+  'scripts',
+  'startercode',
+  'private',
+  'data',
+];
+
+/** Lab types that use the Elite architecture */
+const ELITE_LABTYPES = [
+  'vocareum standard',
+  'basic',
+  'vocareum elite',
+  'jupyter elite',
+];
+
+/**
+ * Detect workspace architecture from labtype string.
+ * Returns 'elite' or 'container' (default).
+ */
+export function detectArchitecture(labtype: string | null | undefined): 'elite' | 'container' {
+  if (!labtype) { return 'container'; }
+  return ELITE_LABTYPES.includes(labtype.toLowerCase()) ? 'elite' : 'container';
+}
+
+/**
+ * Get the correct directory set for a given labtype.
+ * Use this instead of hardcoded directory lists.
+ */
+export function getDirectoriesForLabtype(labtype: string | null | undefined): DirectoryType[] {
+  return detectArchitecture(labtype) === 'elite' ? ELITE_DIRECTORIES : CONTAINER_DIRECTORIES;
+}
+
+/**
+ * Default directories used when architecture cannot be determined.
+ * This is the union of both architectures (minus 'course') for backward
+ * compatibility with configs that don't specify labtype.
  */
 export const DEFAULT_PART_DIRECTORIES: DirectoryType[] = [
   'startercode',
@@ -51,6 +98,8 @@ export const DEFAULT_PART_DIRECTORIES: DirectoryType[] = [
   'docs',
   'data',
   'private',
+  'lib',
+  'asnlib',
 ];
 
 /**
@@ -286,6 +335,8 @@ export type TemplateConfig = z.infer<typeof TemplateConfigSchema>;
 export const VocareumConfigSchema = z.object({
   org_id: z.string(),
   course_id: z.string(),
+  /** Course workspace architecture: 'elite' or 'container'. Determines which directories are synced. */
+  architecture: z.enum(['elite', 'container']).optional(),
   /** @deprecated Use `templates` array instead for named templates */
   template_assignment_id: z.string().optional(),
   /** @deprecated Use `templates` array instead for named templates */

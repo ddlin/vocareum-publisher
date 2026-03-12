@@ -6,7 +6,7 @@
 
 import * as path from 'path';
 import type { Config, PublishHistory, DirectoryType, Part, Assignment } from '../types/config';
-import { normalizeSubmissionFilters } from '../types/config';
+import { normalizeSubmissionFilters, ELITE_DIRECTORIES, CONTAINER_DIRECTORIES, DEFAULT_PART_DIRECTORIES } from '../types/config';
 import type { VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
 import type {
   ReconciliationPlan,
@@ -158,21 +158,28 @@ export async function reconcile(
             partIdsDiscovered = true;
           }
 
+          // Fetch full part details for accurate settings comparison and architecture detection
+          const fullPart = await getPart(client, config.vocareum.course_id, remoteAssignment.id, mapping.apiPartId);
+          const metadataChanged = detectPartSettingsChanged(configPart, fullPart);
+
+          // Determine directories to sync based on course-level architecture
+          // Config-level part override takes precedence, then course architecture, then default
+          const archDirs = config.vocareum.architecture === 'elite' ? ELITE_DIRECTORIES
+            : config.vocareum.architecture === 'container' ? CONTAINER_DIRECTORIES
+            : DEFAULT_PART_DIRECTORIES;
+          const effectiveDirs = configPart.directories ?? archDirs;
+
           // Check for content changes
           // Use same exclude patterns as publisher for consistent hash comparison
           const excludePatterns = ['.gitkeep', '**/.gitkeep', ...(config.publish_options?.exclude_patterns ?? [])];
           const changedDirs = await detectChangedDirectories(
             configAssignment.path,
             configPart.path,
-            configPart.directories ?? ['startercode', 'scripts', 'docs', 'data'],
+            effectiveDirs,
             lastPublishHistory,
             options.forceAll,
             excludePatterns
           );
-
-          // Fetch full part details for accurate settings comparison
-          const fullPart = await getPart(client, config.vocareum.course_id, remoteAssignment.id, mapping.apiPartId);
-          const metadataChanged = detectPartSettingsChanged(configPart, fullPart);
 
           if (changedDirs.length > 0 || metadataChanged) {
             const reasons: string[] = [];
@@ -206,12 +213,17 @@ export async function reconcile(
       }
     } else if (assignmentActionType === 'create') {
       // For creation, we mark all parts as needing creation/upload
+      // Use course-level architecture; fall back to full union
+      const createArchDirs = config.vocareum.architecture === 'elite' ? ELITE_DIRECTORIES
+        : config.vocareum.architecture === 'container' ? CONTAINER_DIRECTORIES
+        : DEFAULT_PART_DIRECTORIES;
       for (const part of configAssignment.parts) {
+        const createDirs = part.directories ?? createArchDirs;
         partActions.push({
           type: 'create',
           part,
           contentChanged: true,
-          changedDirectories: part.directories ?? ['startercode', 'scripts', 'docs', 'data']
+          changedDirectories: createDirs
         });
       }
     }

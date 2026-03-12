@@ -428,7 +428,7 @@ describe('listFiles', () => {
     expect(requestMock).toHaveBeenCalledWith({
       method: 'GET',
       url: '/api/v2/courses/c1/assignments/a1/parts/p1/files',
-      params: { dir: '/voc/startercode', list: true },
+      params: { dir: '/resource/startercode', list: true },
     });
   });
 
@@ -517,7 +517,7 @@ describe('deleteFile', () => {
       method: 'DELETE',
       url: '/api/v2/courses/c1/assignments/a1/parts/p1/files',
       params: {
-        dir: '/voc/startercode',
+        dir: '/resource/startercode',
         filename: 'old-file.py',
       },
     });

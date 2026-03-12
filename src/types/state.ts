@@ -241,6 +241,8 @@ export interface UploadOptions {
   forceAll?: boolean;
   syncDeletes?: boolean;
   concurrency?: number;
+  /** Course workspace architecture — determines API path prefix for file listing */
+  architecture?: 'elite' | 'container';
   onProgress?: (progress: UploadProgress) => void;
 }
 

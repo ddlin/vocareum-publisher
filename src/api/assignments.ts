@@ -28,21 +28,42 @@ interface TransactionResponse {
 }
 
 /**
- * List all assignments in a course
+ * List all assignments in a course (with automatic pagination)
+ *
+ * The Vocareum API returns a fixed page of ~10 assignments per request
+ * and ignores limit/per_page/page_size params. This function paginates
+ * using the `page` param, guided by `total_records` in the response.
  *
  * @param client - Vocareum API client
  * @param courseId - Course ID (string!)
- * @returns Array of assignments
+ * @returns Array of all assignments across all pages
  */
 export async function listAssignments(
   client: VocareumClient,
   courseId: string
 ): Promise<VocareumAssignmentResponse[]> {
-  const response = await client.request<AssignmentsListResponse>({
-    method: 'GET',
-    url: `/api/v2/courses/${courseId}/assignments`,
-  });
-  return response.assignments;
+  const allAssignments: VocareumAssignmentResponse[] = [];
+  let page = 1;
+
+  while (true) {
+    const response = await client.request<AssignmentsListResponse>({
+      method: 'GET',
+      url: `/api/v2/courses/${courseId}/assignments`,
+      params: { page },
+    });
+
+    const assignments = response.assignments ?? [];
+    allAssignments.push(...assignments);
+
+    const totalRecords = response.total_records ?? 0;
+    if (allAssignments.length >= totalRecords || assignments.length === 0) {
+      break;
+    }
+
+    page += 1;
+  }
+
+  return allAssignments;
 }
 
 /**
