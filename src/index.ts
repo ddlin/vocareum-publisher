@@ -179,6 +179,7 @@ program
   .description('Sync assignments from Vocareum: import orphans, detect drift, handle stale entries')
   .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
   .option('--non-interactive', 'Skip all prompts (no changes made)')
+  .option('--batch', 'Apply sensible defaults without prompting (import orphans, pull drift, skip stale)')
   .option('--verbose', 'Show detailed output including file lists')
   .addHelpText('after', `
 Description:
@@ -201,6 +202,11 @@ Description:
        → Keep (keep local, will overwrite Vocareum on publish)
        → Skip (do nothing)
 
+  Modes:
+    --batch           Import orphans, pull settings/content drift, skip stale.
+                      No prompts. Ideal for bulk onboarding or CI sync.
+    --non-interactive  Report issues only, make no changes.
+
   This is useful when:
     - Onboarding an existing course to Git-based management
     - Assignments were created/modified directly in Vocareum UI
@@ -208,6 +214,7 @@ Description:
 
 Examples:
   $ vocgit pull               # Interactive sync
+  $ vocgit pull --batch       # Import all, pull all drift, no prompts
   $ vocgit pull --verbose     # Show file details during import
   $ vocgit pull --non-interactive  # Report issues only
 `)

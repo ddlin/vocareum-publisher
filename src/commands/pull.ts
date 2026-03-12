@@ -27,6 +27,8 @@ import type { FileMap } from '../types/api';
 export interface PullOptions {
   config?: string;
   nonInteractive?: boolean;
+  /** Batch mode: apply sensible defaults without prompting (import orphans, pull drift, skip stale) */
+  batch?: boolean;
   verbose?: boolean;
 }
 
@@ -704,7 +706,8 @@ async function writeFilesToDirectory(
  */
 export async function pullCommand(options: PullOptions): Promise<void> {
   const configPath = options.config ?? 'vocareum.yaml';
-  const nonInteractive = options.nonInteractive ?? isCI();
+  const batch = options.batch ?? false;
+  const nonInteractive = !batch && (options.nonInteractive ?? isCI());
   const verbose = options.verbose ?? false;
 
   try {
@@ -778,7 +781,10 @@ export async function pullCommand(options: PullOptions): Promise<void> {
 
         let action: PullAction = 'skip';
 
-        if (nonInteractive) {
+        if (batch) {
+          action = 'import';
+          logger.plain('  Importing (batch mode)');
+        } else if (nonInteractive) {
           action = 'skip';
           logger.plain('  Skipped (non-interactive mode)');
         } else {
@@ -801,8 +807,9 @@ export async function pullCommand(options: PullOptions): Promise<void> {
           const defaultSlug = slugify(orphan.name);
           const suggestedName = await getUniqueDirectoryName('.', defaultSlug);
 
-          const dirName = await prompt('Local directory name:', suggestedName);
-          const finalDirName = await getUniqueDirectoryName('.', dirName || suggestedName);
+          const finalDirName = batch
+            ? suggestedName
+            : await getUniqueDirectoryName('.', (await prompt('Local directory name:', suggestedName)) || suggestedName);
 
           try {
             const { assignment, contentState } = await importAssignment(
@@ -848,7 +855,10 @@ export async function pullCommand(options: PullOptions): Promise<void> {
 
         let action: StaleAction = 'skip';
 
-        if (nonInteractive) {
+        if (batch) {
+          action = 'skip';
+          logger.plain('  Skipped (batch mode)');
+        } else if (nonInteractive) {
           action = 'skip';
           logger.plain('  Skipped (non-interactive mode)');
         } else {
@@ -919,7 +929,10 @@ export async function pullCommand(options: PullOptions): Promise<void> {
 
         let action: SettingsDriftAction = 'skip';
 
-        if (nonInteractive) {
+        if (batch) {
+          action = 'pull';
+          logger.plain('  Pulling settings (batch mode)');
+        } else if (nonInteractive) {
           action = 'skip';
           logger.plain('  Skipped (non-interactive mode)');
         } else {
@@ -996,7 +1009,10 @@ export async function pullCommand(options: PullOptions): Promise<void> {
 
         let action: ContentDriftAction = 'skip';
 
-        if (nonInteractive) {
+        if (batch) {
+          action = 'pull';
+          logger.plain('  Pulling content (batch mode)');
+        } else if (nonInteractive) {
           action = 'skip';
           logger.plain('  Skipped (non-interactive mode)');
         } else {
