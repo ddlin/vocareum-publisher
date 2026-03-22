@@ -28,6 +28,7 @@ vi.mock('../../src/utils/logger', () => ({
 vi.mock('../../src/utils/env', () => ({
     loadDotEnvIfPresent: vi.fn(),
     isCI: vi.fn().mockReturnValue(false), // Default to false for interactive tests
+    getApiKeyOrThrow: vi.fn().mockReturnValue('test-api-key'),
 }));
 
 // Mock file system
@@ -151,7 +152,7 @@ describe('Integration: Pull Command', () => {
 
     it('should import orphan when user selects Import', async () => {
         // Setup API mocks
-        mockRequest.mockImplementation(async (config: any) => {
+        mockRequest.mockImplementation(async (config: AxiosRequestConfig) => {
             const url = config.url;
             const method = config.method;
 

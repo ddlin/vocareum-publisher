@@ -7,6 +7,7 @@ const {
   publishMock,
   loadDotEnvIfPresentMock,
   isCIMock,
+  getApiKeyOrThrowMock,
   loggerErrorMock,
   loggerWarnMock,
   loggerInfoMock,
@@ -16,6 +17,7 @@ const {
   publishMock: vi.fn(),
   loadDotEnvIfPresentMock: vi.fn(),
   isCIMock: vi.fn(),
+  getApiKeyOrThrowMock: vi.fn().mockReturnValue('test-api-key'),
   loggerErrorMock: vi.fn(),
   loggerWarnMock: vi.fn(),
   loggerInfoMock: vi.fn(),
@@ -37,6 +39,7 @@ vi.mock('../../src/api/client', () => ({
 vi.mock('../../src/utils/env', () => ({
   loadDotEnvIfPresent: loadDotEnvIfPresentMock,
   isCI: isCIMock,
+  getApiKeyOrThrow: getApiKeyOrThrowMock,
 }));
 
 vi.mock('../../src/utils/logger', () => ({

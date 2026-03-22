@@ -11,6 +11,7 @@ const {
   getPartMock,
   loadDotEnvIfPresentMock,
   isCIMock,
+  getApiKeyOrThrowMock,
   loggerWarnMock,
   loggerSuccessMock,
 } = vi.hoisted(() => ({
@@ -22,6 +23,7 @@ const {
   getPartMock: vi.fn(),
   loadDotEnvIfPresentMock: vi.fn(),
   isCIMock: vi.fn(),
+  getApiKeyOrThrowMock: vi.fn().mockReturnValue('test-api-key'),
   loggerWarnMock: vi.fn(),
   loggerSuccessMock: vi.fn(),
 }));
@@ -55,6 +57,7 @@ vi.mock('../../src/api/content', () => ({
 vi.mock('../../src/utils/env', () => ({
   loadDotEnvIfPresent: loadDotEnvIfPresentMock,
   isCI: isCIMock,
+  getApiKeyOrThrow: getApiKeyOrThrowMock,
 }));
 
 vi.mock('../../src/utils/prompts', () => ({

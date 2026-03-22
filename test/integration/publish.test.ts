@@ -28,6 +28,7 @@ vi.mock('../../src/utils/logger', () => ({
 vi.mock('../../src/utils/env', () => ({
     loadDotEnvIfPresent: vi.fn(),
     isCI: vi.fn().mockReturnValue(true),
+    getApiKeyOrThrow: vi.fn().mockReturnValue('test-api-key'),
 }));
 
 // Mock file system
