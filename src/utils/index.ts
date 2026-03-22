@@ -44,4 +44,4 @@ export {
   validateId,
   SchemaValidationError,
 } from './validation';
-export { loadDotEnvIfPresent, isCI, getCIProvider } from './env';
+export { loadDotEnvIfPresent, isCI, getCIProvider, getApiKeyOrThrow } from './env';

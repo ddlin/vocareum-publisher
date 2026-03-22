@@ -1187,7 +1187,11 @@ export async function pullCommand(options: PullOptions): Promise<void> {
     logger.plain(`  Skipped:         ${summary.skipped}`);
 
   } catch (error) {
-    logger.error(`Pull failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    if (error instanceof TypeError && error.message.includes('VOCAREUM_API_KEY')) {
+      logger.error(error.message);
+    } else {
+      logger.error(`Pull failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
     process.exit(1);
   }
 }

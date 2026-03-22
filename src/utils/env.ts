@@ -79,6 +79,31 @@ function normalizeValue(raw: string): string {
   return trimmed;
 }
 
+/**
+ * Load API key from environment variables or throw error with helpful message
+ * Supports both VOCAREUM_API_KEY and VOCAREUM_API_TOKEN
+ * 
+ * @returns The API key if found
+ * @throws TypeError with detailed instructions if API key is not set
+ */
+export function getApiKeyOrThrow(): string {
+  const apiKey = process.env.VOCAREUM_API_KEY ?? process.env.VOCAREUM_API_TOKEN;
+  if (apiKey === undefined || apiKey === '') {
+    const message = [
+      'VOCAREUM_API_KEY environment variable is required.',
+      '',
+      'To fix:',
+      '  1. Generate a token at Vocareum: Profile > Settings > Personal Access Tokens',
+      '  2. Set it using one of these methods:',
+      '     - Create a .env file with: VOCAREUM_API_KEY=your_token',
+      '     - Export in shell: export VOCAREUM_API_KEY=your_token',
+      '     - In CI/CD: add VOCAREUM_API_KEY as a repository secret',
+    ].join('\n');
+    throw new TypeError(message);
+  }
+  return apiKey;
+}
+
 export function loadDotEnvIfPresent(filePath: string = '.env'): void {
   if (!existsSync(filePath)) {
     return;

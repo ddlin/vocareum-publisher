@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { publishCommand } from '../../src/commands/publish';
 import { VocareumClient } from '../../src/api/client';
 import type { Config } from '../../src/types/config';
+import type { AxiosRequestConfig } from 'axios';
 
 // Mock dependencies
 vi.mock('../../src/core/config', () => ({
@@ -96,7 +97,7 @@ describe('Integration: Publish Command', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         process.env.VOCAREUM_API_KEY = 'test-key';
-        (loadConfig as any).mockResolvedValue(mockConfig);
+        vi.mocked(loadConfig).mockResolvedValue(mockConfig);
         mockRequest.mockReset();
     });
 
@@ -106,7 +107,7 @@ describe('Integration: Publish Command', () => {
 
     it('should run dry-run with no changes', async () => {
         // Setup API mocks
-        mockRequest.mockImplementation(async (config: any) => {
+        mockRequest.mockImplementation(async (config: AxiosRequestConfig) => {
             const url = config.url;
             const method = config.method;
 

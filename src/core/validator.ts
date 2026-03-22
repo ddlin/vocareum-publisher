@@ -106,18 +106,7 @@ export async function validateStructure(
   return result;
 }
 
-/**
- * Validate against Vocareum state
- * (Stub for now - implemented in Reconciler/Publisher phase usually, but interface needed)
- */
-/*
-export async function validateWithVocareum(
-  config: Config,
-  client: VocareumClient
-): Promise<ValidationResult> {
-  // TODO: Implement
-}
-*/
+
 /**
  * Display validation result to console
  *

@@ -8,7 +8,7 @@ import { loadConfig } from '../core/config';
 import { publish } from '../core/publisher';
 import { VocareumClient } from '../api/client';
 import { logger } from '../utils/logger';
-import { loadDotEnvIfPresent, isCI } from '../utils/env';
+import { loadDotEnvIfPresent, isCI, getApiKeyOrThrow } from '../utils/env';
 import type { PublishOperationOptions } from '../types/state';
 
 export interface PublishCommandOptions extends PublishOperationOptions {
@@ -26,21 +26,7 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
   try {
     loadDotEnvIfPresent();
     const config = await loadConfig(configPath);
-
-    // API Key - support both env var names
-    const apiKey = process.env.VOCAREUM_API_KEY ?? process.env.VOCAREUM_API_TOKEN;
-    if (apiKey === undefined || apiKey === '') {
-      logger.error('VOCAREUM_API_KEY environment variable is required.');
-      logger.error('');
-      logger.error('To fix:');
-      logger.error('  1. Generate a token at Vocareum: Profile > Settings > Personal Access Tokens');
-      logger.error('  2. Set it using one of these methods:');
-      logger.error('     - Create a .env file with: VOCAREUM_API_KEY=your_token');
-      logger.error('     - Export in shell: export VOCAREUM_API_KEY=your_token');
-      logger.error('     - In CI/CD: add VOCAREUM_API_KEY as a repository secret');
-      process.exit(1);
-    }
-
+    const apiKey = getApiKeyOrThrow();
     const client = new VocareumClient(apiKey, config.vocareum.api_base_url);
 
     const requestedAutoCommit = options.autoCommit ?? config.publish_options?.auto_commit ?? false;
@@ -91,7 +77,11 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
     }
 
   } catch (error) {
-    logger.error(`Push failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    if (error instanceof TypeError && error.message.includes('VOCAREUM_API_KEY')) {
+      logger.error(error.message);
+    } else {
+      logger.error(`Publish failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
     process.exit(1);
   }
 }

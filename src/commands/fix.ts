@@ -75,9 +75,3 @@ export async function fixCommand(options: FixOptions): Promise<void> {
   }
 }
 
-/**
- * Interactively resolve validation issues
- */
-export async function fixValidationIssues(_issues: unknown[]): Promise<void> {
-  // Helper if needed, but main logic is in command for now
-}
