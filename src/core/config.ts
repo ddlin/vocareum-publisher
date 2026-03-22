@@ -222,7 +222,14 @@ export async function updateConfig(configPath: string, updates: ConfigUpdates): 
     }
   }
 
-  // 3. Write back
+  // 3. Validate before write to catch any mutations that produced an invalid config
+  const validation = validateConfig(currentConfig);
+  if (!validation.valid) {
+    const errorMsg = validation.errors.map((e) => e.message).join('\n');
+    throw new ConfigError(`Config update would produce invalid configuration:\n${errorMsg}`, 'INVALID_CONFIG');
+  }
+
+  // 4. Write back
   const yamlStr = yaml.dump(currentConfig, {
     indent: 2,
     lineWidth: -1,

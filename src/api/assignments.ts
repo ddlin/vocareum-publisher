@@ -180,12 +180,21 @@ export async function copyAssignment(
 export async function waitForAssignmentObjId(
   client: VocareumClient,
   transactionId: string,
-  options: { maxAttempts?: number; delayMs?: number } = {}
+  options: { maxAttempts?: number; delayMs?: number; timeoutMs?: number } = {}
 ): Promise<string | undefined> {
   const maxAttempts = options.maxAttempts ?? COPY_POLL_MAX_ATTEMPTS;
   const delayMs = options.delayMs ?? COPY_POLL_DELAY_MS;
+  const timeoutMs = options.timeoutMs ?? maxAttempts * delayMs * 2; // 2× headroom for slow requests
+
+  const deadline = Date.now() + timeoutMs;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Timed out after ${timeoutMs}ms waiting for assignment copy (txn=${transactionId})`
+      );
+    }
+
     const txn = await client.request<TransactionResponse>({
       method: 'GET',
       url: `/api/v2/transaction/${transactionId}`,
@@ -204,7 +213,7 @@ export async function waitForAssignmentObjId(
   }
 
   throw new Error(
-    `Timed out after ${maxAttempts * delayMs}ms waiting for assignment copy (txn=${transactionId})`
+    `Timed out after ${maxAttempts} attempts waiting for assignment copy (txn=${transactionId})`
   );
 }
 

@@ -373,28 +373,12 @@ export async function publish(
 
         logger.success(`Created assignment ${action.assignment.name} (${copyResult.assignment_id})`);
 
-        // Update local object to reflect new state
+        // Persist the new assignment ID back to the working config object so it
+        // can be saved to vocareum.yaml and used for content uploads below.
         action.assignment.assignment_id = copyResult.assignment_id;
 
-        // Map parts from copy result
-        // The copy response might have seqnum? 
-        // We need to match config parts to these new parts based on... order?
-        // AGENTS.md says: "template-based creation ... Copy template (assignments.ts) -> Map parts (mapper.ts)"
-        // But mapParts uses remote parts.
-        // copyResult returns parts.
-        // Let's us mapParts with copyResult parts.
-        // copyResult.parts has { part_id, name, seqnum }
-        // We need to map to config parts.
-        // Assuming config parts are in same order as template parts.
-
-        // We need to update the `parts` in configAssignment with new IDs
-        // But `action.parts` were based on old state (empty?).
-        // Actually `reconcile` created 'create' actions for parts assuming we would create them.
-
-        // We need to update the IDs in the config object so we can save them later.
-
-        // Map the new parts
-        // Cast to match mapParts expectation if needed
+        // Map config parts to the newly copied API parts (matched by seqnum order).
+        // Updates each configPart.part_id in place so subsequent uploads have IDs.
         const mapped = mapParts(action.assignment.parts, copyResult.parts.map(p => ({ id: p.part_id, seqnum: p.seqnum })));
 
         for (const m of mapped) {
@@ -430,13 +414,8 @@ export async function publish(
         configUpdates.push(action.assignment);
         configChanged = true;
 
-        // Now execute part actions (uploads) using the new IDs
-        // We need to re-evaluate part actions because we now have IDs?
-        // OR we just use the mapped configPart which now has IDs.
-        // The `plan` has `parts` actions. But those actions references `part` object.
-        // Since we mutated `part` object (by reference), the actions might be valid now?
-        // BUT `action.parts` loop in reconcile didn't know IDs.
-        // `uploader` needs IDs.
+        // Part uploads proceed in the shared parts loop below.
+        // configPart.part_id was set above so syncDirectory has valid IDs.
 
       } catch (error) {
         logger.error(`Failed to create assignment ${action.assignment.name}`, { error });
