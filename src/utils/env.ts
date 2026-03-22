@@ -84,7 +84,7 @@ function normalizeValue(raw: string): string {
  * Supports both VOCAREUM_API_KEY and VOCAREUM_API_TOKEN
  * 
  * @returns The API key if found
- * @throws TypeError with detailed instructions if API key is not set
+ * @throws Error with detailed instructions if API key is not set
  */
 export function getApiKeyOrThrow(): string {
   const apiKey = process.env.VOCAREUM_API_KEY ?? process.env.VOCAREUM_API_TOKEN;
@@ -99,7 +99,7 @@ export function getApiKeyOrThrow(): string {
       '     - Export in shell: export VOCAREUM_API_KEY=your_token',
       '     - In CI/CD: add VOCAREUM_API_KEY as a repository secret',
     ].join('\n');
-    throw new TypeError(message);
+    throw new Error(message);
   }
   return apiKey;
 }

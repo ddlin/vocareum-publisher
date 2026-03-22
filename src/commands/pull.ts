@@ -13,7 +13,7 @@ import { getAssignment } from '../api/assignments';
 import { listParts, getPart } from '../api/parts';
 import { downloadContent } from '../api/content';
 import { logger } from '../utils/logger';
-import { loadDotEnvIfPresent, isCI } from '../utils/env';
+import { loadDotEnvIfPresent, isCI, getApiKeyOrThrow } from '../utils/env';
 import { prompt, promptChoice } from '../utils/prompts';
 import { pathExists, ensureDirectory, writeFile, calculateDirectoryHash, validatePath } from '../utils/files';
 import { getCommitSha, getGitUserName } from '../utils/git';
@@ -714,19 +714,7 @@ export async function pullCommand(options: PullOptions): Promise<void> {
     loadDotEnvIfPresent();
     const config = await loadConfig(configPath);
 
-    // API Key - support both env var names
-    const apiKey = process.env.VOCAREUM_API_KEY ?? process.env.VOCAREUM_API_TOKEN;
-    if (apiKey === undefined || apiKey === '') {
-      logger.error('VOCAREUM_API_KEY environment variable is required.');
-      logger.error('');
-      logger.error('To fix:');
-      logger.error('  1. Generate a token at Vocareum: Profile > Settings > Personal Access Tokens');
-      logger.error('  2. Set it using one of these methods:');
-      logger.error('     - Create a .env file with: VOCAREUM_API_KEY=your_token');
-      logger.error('     - Export in shell: export VOCAREUM_API_KEY=your_token');
-      process.exit(1);
-    }
-
+    const apiKey = getApiKeyOrThrow();
     const client = new VocareumClient(apiKey, config.vocareum.api_base_url);
 
     logger.info('Scanning for assignment sync issues...');
@@ -1187,11 +1175,7 @@ export async function pullCommand(options: PullOptions): Promise<void> {
     logger.plain(`  Skipped:         ${summary.skipped}`);
 
   } catch (error) {
-    if (error instanceof TypeError && error.message.includes('VOCAREUM_API_KEY')) {
-      logger.error(error.message);
-    } else {
-      logger.error(`Pull failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
+    logger.error(`Pull failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     process.exit(1);
   }
 }

@@ -77,11 +77,7 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
     }
 
   } catch (error) {
-    if (error instanceof TypeError && error.message.includes('VOCAREUM_API_KEY')) {
-      logger.error(error.message);
-    } else {
-      logger.error(`Publish failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
+    logger.error(`Publish failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     process.exit(1);
   }
 }
