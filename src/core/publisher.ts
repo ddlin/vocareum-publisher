@@ -8,7 +8,7 @@ import * as path from 'path';
 import type { Config, PublishHistory } from '../types/config';
 import { normalizeSubmissionFilters, nullToUndefined } from '../types/config';
 import type { PartSettings } from '../types/config';
-import type { ApiPartSettings } from '../types/api';
+import type { ApiPartSettings, VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
 import type { HistorySettingChange, HistoryFileChange, AssignmentSettings } from '../types/config';
 import type { PublishResult, PublishOperationOptions } from '../types/state';
 import { VocareumClient } from '../api/client';
@@ -183,8 +183,14 @@ export async function publish(
   }
 
   // 0. Get current git state for history
-  const commitSha = await getCommitSha().catch(() => 'unknown');
-  const userName = (await getGitUserName().catch(() => null)) ?? 'unknown';
+  const commitSha = await getCommitSha().catch((err: unknown) => {
+    logger.debug(`Could not get git commit SHA: ${err instanceof Error ? err.message : String(err)}`);
+    return 'unknown';
+  });
+  const userName = (await getGitUserName().catch((err: unknown) => {
+    logger.debug(`Could not get git user name: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  })) ?? 'unknown';
 
   // 1. Reconcile
   const lastHistory = config.publish_history?.[0]; // Get most recent
@@ -440,8 +446,16 @@ export async function publish(
       }
     }
     else if (action.type === 'update') {
+      const updateId = action.assignment.assignment_id;
+      if (!updateId) {
+        logger.error(`Update action for "${action.assignment.name}" has no assignment_id - skipping`);
+        result.failed.push({ type: 'assignment', id: action.assignment.name, error: 'Missing assignment_id on update' });
+        result.success = false;
+        if (abortOnError) { shouldAbort = true; break assignmentLoop; }
+        continue;
+      }
       // Track this assignment and its parts for history
-      currentUpdateEntry = { type: 'assignment', id: action.assignment.assignment_id!, parts: [] };
+      currentUpdateEntry = { type: 'assignment', id: updateId, parts: [] };
       result.updated.push(currentUpdateEntry);
 
       // If IDs were discovered (assignment or parts), persist to config
@@ -490,7 +504,7 @@ export async function publish(
           for (const key of assignmentKeys) {
             const toValue = asnSettings?.[key];
             if (!hasSettingValue(toValue)) { continue; }
-            const fromValue = (remoteAssignment as unknown as Record<string, unknown>)[key as string];
+            const fromValue = remoteAssignment[key as keyof VocareumAssignmentResponse];
             pushSettingChange(settingChanges, {
               scope: 'assignment',
               assignment_id: action.assignment.assignment_id,
@@ -542,7 +556,7 @@ export async function publish(
       }
 
       if (partAction.type === 'skip') {
-        result.skipped.push({ type: 'part', id: partAction.part.part_id!, reason: 'No changes' });
+        result.skipped.push({ type: 'part', id: partAction.part.part_id ?? 'unknown', reason: 'No changes' });
         continue;
       }
 
@@ -619,11 +633,10 @@ export async function publish(
                 to: normalizedToFilters,
               });
             }
-            const remotePartRecord = remotePart as unknown as Record<string, unknown>;
             for (const key of partKeys) {
               const toValue = toPartSettings[key];
               if (!hasSettingValue(toValue)) { continue; }
-              const fromValue = remotePartRecord[key as string];
+              const fromValue = remotePart[key as keyof VocareumPartResponse];
               pushSettingChange(settingChanges, {
                 scope: 'part',
                 assignment_id: assignmentId,
@@ -686,6 +699,14 @@ export async function publish(
 
       // Upload Content
       if (partAction.contentChanged && partAction.changedDirectories) {
+        const uploadAssignmentId = action.assignment.assignment_id;
+        if (!uploadAssignmentId) {
+          logger.error(`Cannot upload content for "${action.assignment.name}": missing assignment ID`);
+          result.failed.push({ type: 'part', id: partId, error: 'Assignment has no ID for content upload' });
+          result.success = false;
+          if (abortOnError) { shouldAbort = true; break assignmentLoop; }
+          continue;
+        }
         for (const dir of partAction.changedDirectories) {
           try {
             const localDirPath = path.join(action.assignment.path, partAction.part.path, dir);
@@ -696,7 +717,7 @@ export async function publish(
             const uploadRes = await syncDirectory(
               client,
               workingConfig.vocareum.course_id,
-              action.assignment.assignment_id!,
+              uploadAssignmentId,
               partId,
               localDirPath, // Local path
               dir, // Directory type
@@ -822,7 +843,7 @@ export async function publish(
         [configPath]
       );
     } catch (error) {
-      logger.warn('Failed to auto-commit config changes');
+      logger.warn(`Failed to auto-commit config changes: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

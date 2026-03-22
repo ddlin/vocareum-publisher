@@ -152,7 +152,14 @@ export function valuesEqual(a: unknown, b: unknown): boolean {
   }
   if (typeof a !== typeof b) { return false; }
   if (typeof a === 'object' && a !== null && b !== null) {
-    return JSON.stringify(a) === JSON.stringify(b);
+    if (Array.isArray(a) && Array.isArray(b)) {
+      return a.length === b.length && a.every((v, i) => valuesEqual(v, (b as unknown[])[i]));
+    }
+    if (Array.isArray(a) !== Array.isArray(b)) { return false; }
+    const aKeys = Object.keys(a as object).sort();
+    const bKeys = Object.keys(b as object).sort();
+    if (aKeys.length !== bKeys.length || !aKeys.every((k, i) => k === bKeys[i])) { return false; }
+    return aKeys.every((k) => valuesEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
   }
   return false;
 }
