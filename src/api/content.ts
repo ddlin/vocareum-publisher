@@ -104,6 +104,33 @@ interface FileDownloadResponse {
 }
 
 /**
+ * Thrown when a listed entry cannot be resolved as a downloadable file.
+ *
+ * Vocareum's file list returns a flat array of names with no type info.
+ * Subdirectories and symlinks appear alongside real files. When we try to
+ * fetch one of those as a file, the API responds with either
+ *   { status: "error", files: [{ download_url: "specified file does not exist" }] }
+ * or a signed S3 URL that 404s because the key is actually a directory prefix.
+ *
+ * Callers (e.g. downloadContent) use this signal to probe-list the entry as
+ * a directory and recurse into it.
+ */
+export class NotAFileError extends Error {
+  constructor(public readonly fullPath: string, message?: string) {
+    super(message ?? `${fullPath} is not a downloadable file`);
+    this.name = 'NotAFileError';
+  }
+}
+
+function isAxios404(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+  const maybe = error as { response?: { status?: number } };
+  return maybe.response?.status === 404;
+}
+
+/**
  * Fetch file content from Vocareum
  *
  * API returns a signed download_url that we fetch directly.
@@ -127,19 +154,37 @@ async function fetchFileContent(
     params: { filename: fullPath },
   });
 
-  // Extract download URL
+  // Vocareum returns status:"error" with a literal "specified file does not exist"
+  // in the download_url field when the path isn't a real file (usually a directory).
+  if (response.status === 'error') {
+    throw new NotAFileError(fullPath);
+  }
+
   const downloadUrl = response.files?.[0]?.download_url;
   if (!downloadUrl) {
     throw new APIError(`No download URL returned for ${fullPath}`);
   }
 
-  // Fetch content from signed URL (no auth needed)
-  const downloadResponse = await axios.get(downloadUrl, {
-    responseType: 'arraybuffer',
-    timeout: 30000,
-  });
+  // Defensive: if the API somehow returned a non-URL in download_url, treat as
+  // not-a-file rather than letting axios throw "Invalid URL" below.
+  if (!/^https?:\/\//i.test(downloadUrl)) {
+    throw new NotAFileError(fullPath);
+  }
 
-  return Buffer.from(downloadResponse.data);
+  try {
+    const downloadResponse = await axios.get(downloadUrl, {
+      responseType: 'arraybuffer',
+      timeout: 30000,
+    });
+    return Buffer.from(downloadResponse.data);
+  } catch (error) {
+    // S3 returns 404 NoSuchKey when the "file path" is actually a directory
+    // prefix (the API happily gives us a signed URL, but there's no object).
+    if (isAxios404(error)) {
+      throw new NotAFileError(fullPath);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -327,6 +372,13 @@ export async function uploadContent(
 }
 
 /**
+ * Maximum subdirectory depth to descend into when `downloadContent` encounters
+ * listed entries that aren't directly downloadable as files. Protects against
+ * symlink loops and runaway recursion.
+ */
+const MAX_DOWNLOAD_DEPTH = 4;
+
+/**
  * Download all content from a part workspace
  *
  * @param client - Vocareum API client
@@ -348,27 +400,72 @@ export function downloadContent(
     const downloaded: FileMap = {};
 
     for (const directory of dirs) {
-      const files = await listFiles(client, courseId, assignmentId, partId, directory, architecture);
-      for (const file of files) {
-        try {
-          const content = await fetchFileContent(
-            client,
-            courseId,
-            assignmentId,
-            partId,
-            directory,
-            file.path
-          );
-          const key = `${directory}/${file.path}`;
-          downloaded[key] = content;
-        } catch (error) {
-          logger.warn(`Failed to download ${directory}/${file.path}: ${error instanceof Error ? error.message : 'Unknown'}`);
-        }
-      }
+      const baseApiPath = toApiDirPath(directory, architecture);
+      await downloadDirectoryTree(
+        client,
+        courseId,
+        assignmentId,
+        partId,
+        directory,
+        baseApiPath,
+        '',
+        0,
+        downloaded
+      );
     }
 
     return downloaded;
   })();
+}
+
+/**
+ * Walk a directory tree, downloading files and recursing into subdirectories.
+ *
+ * Vocareum's list API returns a flat array of names with no type information,
+ * so we can't know in advance which entries are files vs. subdirectories. We
+ * optimistically try to fetch each as a file; when the API or S3 tells us it
+ * isn't one (see `NotAFileError`), we list it as a directory and recurse.
+ */
+async function downloadDirectoryTree(
+  client: VocareumClient,
+  courseId: string,
+  assignmentId: string,
+  partId: string,
+  directory: DirectoryType,
+  baseApiPath: string,
+  relativePath: string,
+  depth: number,
+  downloaded: FileMap
+): Promise<void> {
+  const apiDirPath = relativePath ? `${baseApiPath}/${relativePath}` : baseApiPath;
+  const entries = await listFilesByApiPath(client, courseId, assignmentId, partId, apiDirPath);
+
+  for (const entry of entries) {
+    const entryRelPath = relativePath ? `${relativePath}/${entry.path}` : entry.path;
+    const filemapKey = `${directory}/${entryRelPath}`;
+
+    try {
+      const content = await fetchFileContent(
+        client, courseId, assignmentId, partId, directory, entryRelPath
+      );
+      downloaded[filemapKey] = content;
+    } catch (error) {
+      if (error instanceof NotAFileError) {
+        if (depth < MAX_DOWNLOAD_DEPTH) {
+          await downloadDirectoryTree(
+            client, courseId, assignmentId, partId,
+            directory, baseApiPath, entryRelPath, depth + 1, downloaded
+          );
+        } else {
+          logger.debug(`Max depth reached, skipping ${filemapKey}`);
+        }
+        continue;
+      }
+      logger.warn(
+        `Failed to download ${filemapKey}: ${error instanceof Error ? error.message : 'Unknown'}`
+      );
+    }
+  }
 }
 
 /**
@@ -399,8 +496,19 @@ export async function listFiles(
   directory: DirectoryType,
   architecture?: 'elite' | 'container'
 ): Promise<FileInfo[]> {
+  return listFilesByApiPath(
+    client, courseId, assignmentId, partId, toApiDirPath(directory, architecture)
+  );
+}
+
+async function listFilesByApiPath(
+  client: VocareumClient,
+  courseId: string,
+  assignmentId: string,
+  partId: string,
+  apiDirPath: string
+): Promise<FileInfo[]> {
   const url = `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
-  const apiDirPath = toApiDirPath(directory, architecture);
 
   try {
     // Elite uses dir=/resource/{directory}, container uses dir=/voc/{directory}
@@ -424,7 +532,7 @@ export async function listFiles(
     }
     // For other errors, log and return empty
     logger.warn(
-      `Failed to list files for part=${partId}, dir=${directory}: ${error instanceof Error ? error.message : 'Unknown'}`
+      `Failed to list files for part=${partId}, dir=${apiDirPath}: ${error instanceof Error ? error.message : 'Unknown'}`
     );
     return [];
   }

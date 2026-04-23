@@ -742,3 +742,132 @@ describe('downloadContent', () => {
     });
   });
 });
+
+describe('downloadContent recursive directory handling', () => {
+  let mockClient: VocareumClient;
+  let requestMock: ReturnType<typeof vi.fn>;
+  const mockedAxios = vi.mocked(axios);
+
+  beforeEach(() => {
+    requestMock = vi.fn();
+    mockClient = {
+      request: requestMock,
+    } as unknown as VocareumClient;
+    vi.clearAllMocks();
+  });
+
+  it('should skip (no throw) entries the API reports status:"error" for', async () => {
+    // Top-level list returns a phantom entry (not a real file)
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'centos', size: 0 }] });
+    // fetchFileContent: API tells us it's not a file
+    requestMock.mockResolvedValueOnce({
+      status: 'error',
+      files: [{ filename: 'lib/centos', download_url: 'specified file does not exist' }],
+    });
+    // Recursion probe (list as directory) → empty, so nothing to recurse into
+    requestMock.mockResolvedValueOnce({ files: [] });
+
+    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1', ['lib']);
+
+    expect(result).toEqual({});
+    // No axios.get — we never produced an Invalid URL call
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
+  it('should recurse into a subdirectory when an entry is not a file (status:error)', async () => {
+    // asnlib → [public]
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'public', size: 0 }] });
+    // fetch asnlib/public → status:error
+    requestMock.mockResolvedValueOnce({
+      status: 'error',
+      files: [{ filename: 'asnlib/public', download_url: 'specified file does not exist' }],
+    });
+    // list asnlib/public as a directory → [docs]
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'docs', size: 0 }] });
+    // fetch asnlib/public/docs → status:error
+    requestMock.mockResolvedValueOnce({
+      status: 'error',
+      files: [{ filename: 'asnlib/public/docs', download_url: 'specified file does not exist' }],
+    });
+    // list asnlib/public/docs as a directory → [file.txt]
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'file.txt', size: 14 }] });
+    // fetch asnlib/public/docs/file.txt → real file
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'asnlib/public/docs/file.txt', download_url: 'https://s3.example.com/file.txt' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.from('nested content') });
+
+    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1', ['asnlib']);
+
+    expect(result['asnlib/public/docs/file.txt'].toString()).toBe('nested content');
+  });
+
+  it('should recurse when S3 returns 404 for a path that also resolves as a directory', async () => {
+    // asnlib → [public]
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'public', size: 0 }] });
+    // fetch asnlib/public → success with URL
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'asnlib/public', download_url: 'https://s3.example.com/public' }],
+    });
+    // axios S3 returns 404 (NoSuchKey — the path is actually a directory prefix)
+    const s3Err = Object.assign(new Error('Request failed with status code 404'), {
+      isAxiosError: true,
+      response: { status: 404 },
+    });
+    mockedAxios.get.mockRejectedValueOnce(s3Err);
+    // Fallback: list asnlib/public as directory → [vocareum.css]
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'vocareum.css', size: 10 }] });
+    // fetch asnlib/public/vocareum.css → real file
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'asnlib/public/vocareum.css', download_url: 'https://s3.example.com/css' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.from('body {}') });
+
+    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1', ['asnlib']);
+
+    expect(result['asnlib/public/vocareum.css'].toString()).toBe('body {}');
+  });
+
+  it('should stop recursing after 4 levels of subdirectories', async () => {
+    // Level 0: list asnlib → [a]
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'a', size: 0 }] });
+    requestMock.mockResolvedValueOnce({
+      status: 'error',
+      files: [{ filename: 'asnlib/a', download_url: 'specified file does not exist' }],
+    });
+    // Level 1: list asnlib/a → [b]
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'b', size: 0 }] });
+    requestMock.mockResolvedValueOnce({
+      status: 'error',
+      files: [{ filename: 'asnlib/a/b', download_url: 'specified file does not exist' }],
+    });
+    // Level 2: list asnlib/a/b → [c]
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'c', size: 0 }] });
+    requestMock.mockResolvedValueOnce({
+      status: 'error',
+      files: [{ filename: 'asnlib/a/b/c', download_url: 'specified file does not exist' }],
+    });
+    // Level 3: list asnlib/a/b/c → [d]
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'd', size: 0 }] });
+    requestMock.mockResolvedValueOnce({
+      status: 'error',
+      files: [{ filename: 'asnlib/a/b/c/d', download_url: 'specified file does not exist' }],
+    });
+    // Level 4: list asnlib/a/b/c/d → [e] (final allowed level)
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'e', size: 0 }] });
+    requestMock.mockResolvedValueOnce({
+      status: 'error',
+      files: [{ filename: 'asnlib/a/b/c/d/e', download_url: 'specified file does not exist' }],
+    });
+    // No further calls — recursion capped at depth 4
+
+    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1', ['asnlib']);
+
+    expect(result).toEqual({});
+    // 5 list calls (levels 0-4) + 5 fetch-as-file calls = 10
+    expect(requestMock).toHaveBeenCalledTimes(10);
+  });
+});
