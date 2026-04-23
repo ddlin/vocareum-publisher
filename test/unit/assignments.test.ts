@@ -79,7 +79,7 @@ describe('waitForAssignmentObjId', () => {
         maxAttempts: 3,
         delayMs: 10,
       })
-    ).rejects.toThrow('Timed out after 30ms waiting for assignment copy (txn=txn-timeout)');
+    ).rejects.toThrow('Timed out after 3 attempts waiting for assignment copy (txn=txn-timeout)');
 
     expect(requestMock).toHaveBeenCalledTimes(3);
   });
