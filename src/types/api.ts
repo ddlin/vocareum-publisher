@@ -51,7 +51,8 @@ export interface VocareumAssignmentResponse {
   show_end_exam_button?: boolean;
   copy_startercode?: boolean;
   uncompressupload?: boolean;
-  lti_on?: boolean;
+  /** Vocareum returns this as a "1"/"0" string — coerce via mapAssignmentSettings */
+  lti_on?: boolean | string;
   anonymous_grading?: boolean;
   grading_visibility?: 'all' | 'assigned';
   send_webhook?: boolean;

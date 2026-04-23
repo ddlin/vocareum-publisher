@@ -9,6 +9,22 @@ import type { AssignmentSettings, PartSettings, SubmissionFilters } from '../typ
 import type { VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
 
 /**
+ * Coerce a Vocareum string-or-boolean field to a real boolean. Vocareum is
+ * inconsistent: some flag fields (e.g. `lti_on`) come back as "1"/"0" strings
+ * while others (e.g. `nosubmit`, `auto_submit`) are real booleans.
+ */
+function coerceBooleanFlag(value: unknown): boolean | undefined {
+  if (value === undefined || value === null) { return undefined; }
+  if (typeof value === 'boolean') { return value; }
+  if (typeof value === 'string') {
+    if (value === '1' || value.toLowerCase() === 'true') { return true; }
+    if (value === '0' || value.toLowerCase() === 'false') { return false; }
+  }
+  if (typeof value === 'number') { return value !== 0; }
+  return undefined;
+}
+
+/**
  * Map Vocareum assignment API response to config settings
  */
 export function mapAssignmentSettings(apiResponse: VocareumAssignmentResponse): NonNullable<AssignmentSettings> {
@@ -28,7 +44,10 @@ export function mapAssignmentSettings(apiResponse: VocareumAssignmentResponse): 
   if (apiResponse.show_end_exam_button !== undefined) { settings.show_end_exam_button = apiResponse.show_end_exam_button; }
   if (apiResponse.copy_startercode !== undefined) { settings.copy_startercode = apiResponse.copy_startercode; }
   if (apiResponse.uncompressupload !== undefined) { settings.uncompressupload = apiResponse.uncompressupload; }
-  if (apiResponse.lti_on !== undefined) { settings.lti_on = apiResponse.lti_on; }
+  if (apiResponse.lti_on !== undefined) {
+    const coerced = coerceBooleanFlag(apiResponse.lti_on);
+    if (coerced !== undefined) { settings.lti_on = coerced; }
+  }
   if (apiResponse.anonymous_grading !== undefined) { settings.anonymous_grading = apiResponse.anonymous_grading; }
   if (apiResponse.grading_visibility !== undefined) { settings.grading_visibility = apiResponse.grading_visibility; }
   if (apiResponse.send_webhook !== undefined) { settings.send_webhook = apiResponse.send_webhook; }
