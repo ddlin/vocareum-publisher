@@ -15,7 +15,7 @@ import { downloadContent } from '../api/content';
 import { logger } from '../utils/logger';
 import { loadDotEnvIfPresent, isCI, getApiKeyOrThrow } from '../utils/env';
 import { prompt, promptChoice } from '../utils/prompts';
-import { pathExists, ensureDirectory, writeFile, calculateDirectoryHash, validatePath } from '../utils/files';
+import { pathExists, ensureDirectory, writeFile, calculateDirectoryHash, validatePath, readDirectory } from '../utils/files';
 import { getCommitSha, getGitUserName } from '../utils/git';
 import type { PublishHistory } from '../types/config';
 import { mapAssignmentSettings, mapPartSettings } from '../utils/settings';
@@ -30,6 +30,11 @@ export interface PullOptions {
   /** Batch mode: apply sensible defaults without prompting (import orphans, pull drift, skip stale) */
   batch?: boolean;
   verbose?: boolean;
+  /**
+   * Skip re-downloading part content for orphan imports when a matching local
+   * directory already has content on disk (e.g. after a prior failed pull).
+   */
+  skipContent?: boolean;
 }
 
 interface PullSummary {
@@ -134,6 +139,37 @@ export async function getUniqueDirectoryName(basePath: string, desiredName: stri
   }
 
   return name;
+}
+
+/**
+ * Find an existing import-target directory to reuse when `--skip-content` is set.
+ *
+ * Walks the sibling namespace (`slug`, `slug-2`, `slug-3`, ...) and returns the
+ * lowest-numbered directory that actually contains non-placeholder content.
+ * Used to recover from a failed prior pull without re-downloading content.
+ *
+ * @internal Exported for testing
+ */
+export async function findExistingImportTarget(
+  basePath: string,
+  slug: string,
+  maxSuffix: number = 100
+): Promise<string | null> {
+  const candidates: string[] = [slug];
+  for (let i = 2; i <= maxSuffix; i++) {
+    candidates.push(`${slug}-${i}`);
+  }
+
+  for (const name of candidates) {
+    const dirPath = path.join(basePath, name);
+    if (!(await pathExists(dirPath))) { continue; }
+    const files = await readDirectory(dirPath, ['.gitkeep', '**/.gitkeep']);
+    if (Object.keys(files).length > 0) {
+      return name;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -485,7 +521,8 @@ async function importAssignment(
   orphan: OrphanedEntity,
   localPath: string,
   verbose: boolean,
-  architecture?: 'elite' | 'container'
+  architecture?: 'elite' | 'container',
+  skipContent = false
 ): Promise<ImportResult> {
   const assignmentId = orphan.id;
 
@@ -517,19 +554,31 @@ async function importAssignment(
       logger.debug(`Imported ${Object.keys(partSettings).length} settings for part ${part.name}`);
     }
 
-    // Download content for this part
-    const files = await downloadContent(client, courseId, assignmentId, part.id, undefined, architecture);
-    const fileCount = Object.keys(files).length;
-
     // Determine part path (use part name or index)
     const partPath = parts.length === 1 ? '.' : `part${i + 1}`;
+    const partDir = partPath === '.' ? localPath : path.join(localPath, partPath);
 
-    // Always include default directories, plus any detected from downloaded files
+    // Prefer existing on-disk content when --skip-content is set and it's present
+    let files: FileMap = {};
+    let usedExistingContent = false;
+    if (skipContent) {
+      const existing = await readDirectory(partDir, ['.gitkeep', '**/.gitkeep']);
+      if (Object.keys(existing).length > 0) {
+        files = existing;
+        usedExistingContent = true;
+      }
+    }
+    if (!usedExistingContent) {
+      files = await downloadContent(client, courseId, assignmentId, part.id, undefined, architecture);
+    }
+    const fileCount = Object.keys(files).length;
+
+    // Always include default directories, plus any detected from files present
     const detectedDirs = fileCount > 0 ? detectDirectories(files) : [];
     const directories = mergeDirectories(DEFAULT_PART_DIRECTORIES, detectedDirs);
 
-    // Write files to local directory if any were downloaded
-    if (fileCount > 0) {
+    // Write files only when they came from the network — existing files are already in place
+    if (fileCount > 0 && !usedExistingContent) {
       await writeFilesToDirectory(localPath, partPath, files, verbose);
     }
 
@@ -547,8 +596,10 @@ async function importAssignment(
 
     configParts.push(configPart);
 
-    // Report what was downloaded
-    if (fileCount > 0) {
+    // Report what happened
+    if (usedExistingContent) {
+      logger.plain(`  Part ${i + 1}/${parts.length}: reused ${fileCount} existing file${fileCount === 1 ? '' : 's'} (--skip-content)`);
+    } else if (fileCount > 0) {
       logger.plain(`  Part ${i + 1}/${parts.length}: downloaded ${fileCount} file${fileCount === 1 ? '' : 's'}`);
     } else {
       logger.plain(`  Part ${i + 1}/${parts.length}: created empty structure`);
@@ -716,6 +767,7 @@ export async function pullCommand(options: PullOptions): Promise<void> {
   const batch = options.batch ?? false;
   const nonInteractive = !batch && (options.nonInteractive ?? isCI());
   const verbose = options.verbose ?? false;
+  const skipContent = options.skipContent ?? false;
 
   try {
     loadDotEnvIfPresent();
@@ -800,9 +852,15 @@ export async function pullCommand(options: PullOptions): Promise<void> {
 
         if (action === 'import') {
           const defaultSlug = slugify(orphan.name);
-          const suggestedName = await getUniqueDirectoryName('.', defaultSlug);
 
-          const finalDirName = batch
+          // With --skip-content, prefer an existing (non-empty) sibling dir from a
+          // prior failed pull over allocating a fresh `-N` suffix.
+          const reuseName = skipContent
+            ? await findExistingImportTarget('.', defaultSlug)
+            : null;
+          const suggestedName = reuseName ?? await getUniqueDirectoryName('.', defaultSlug);
+
+          const finalDirName = batch || reuseName !== null
             ? suggestedName
             : await getUniqueDirectoryName('.', (await prompt('Local directory name:', suggestedName)) || suggestedName);
 
@@ -813,7 +871,8 @@ export async function pullCommand(options: PullOptions): Promise<void> {
               orphan,
               finalDirName,
               verbose,
-              config.vocareum.architecture
+              config.vocareum.architecture,
+              skipContent
             );
 
             newAssignments.push(assignment);

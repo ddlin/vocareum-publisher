@@ -180,6 +180,7 @@ program
   .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
   .option('--non-interactive', 'Skip all prompts (no changes made)')
   .option('--batch', 'Apply sensible defaults without prompting (import orphans, pull drift, skip stale)')
+  .option('--skip-content', 'Reuse existing local content for orphan imports instead of re-downloading (recovers from failed pulls)')
   .option('--verbose', 'Show detailed output including file lists')
   .addHelpText('after', `
 Description:
@@ -217,6 +218,7 @@ Examples:
   $ vocgit pull --batch       # Import all, pull all drift, no prompts
   $ vocgit pull --verbose     # Show file details during import
   $ vocgit pull --non-interactive  # Report issues only
+  $ vocgit pull --batch --skip-content  # Retry after failed pull; reuse existing local files
 `)
   .action(async (options: PullOptions) => {
     try {

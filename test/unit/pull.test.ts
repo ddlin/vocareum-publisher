@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { slugify, getUniqueDirectoryName, valuesEqual } from '../../src/commands/pull';
+import { slugify, getUniqueDirectoryName, valuesEqual, findExistingImportTarget } from '../../src/commands/pull';
 
 describe('Pull Command Utilities', () => {
   let tempDir: string;
@@ -111,6 +111,44 @@ describe('Pull Command Utilities', () => {
 
       const name = await getUniqueDirectoryName(tempDir, 'my-assignment');
       expect(name).toBe('my-assignment-2');
+    });
+  });
+
+  describe('findExistingImportTarget', () => {
+    it('returns null when no matching dir exists', async () => {
+      expect(await findExistingImportTarget(tempDir, 'my-lab')).toBe(null);
+    });
+
+    it('returns slug when the base dir has content', async () => {
+      const dir = path.join(tempDir, 'my-lab');
+      await fs.mkdir(path.join(dir, 'asnlib'), { recursive: true });
+      await fs.writeFile(path.join(dir, 'asnlib', 'file.txt'), 'content');
+
+      expect(await findExistingImportTarget(tempDir, 'my-lab')).toBe('my-lab');
+    });
+
+    it('returns suffixed dir when base has only .gitkeep placeholders', async () => {
+      const bare = path.join(tempDir, 'my-lab');
+      await fs.mkdir(path.join(bare, 'asnlib'), { recursive: true });
+      await fs.writeFile(path.join(bare, 'asnlib', '.gitkeep'), '');
+
+      const real = path.join(tempDir, 'my-lab-2');
+      await fs.mkdir(path.join(real, 'asnlib'), { recursive: true });
+      await fs.writeFile(path.join(real, 'asnlib', 'real.txt'), 'real');
+
+      expect(await findExistingImportTarget(tempDir, 'my-lab')).toBe('my-lab-2');
+    });
+
+    it('returns the lowest-numbered non-empty dir when multiple match', async () => {
+      const three = path.join(tempDir, 'lab-3');
+      await fs.mkdir(three, { recursive: true });
+      await fs.writeFile(path.join(three, 'README.md'), 'content');
+
+      const two = path.join(tempDir, 'lab-2');
+      await fs.mkdir(two, { recursive: true });
+      await fs.writeFile(path.join(two, 'README.md'), 'content');
+
+      expect(await findExistingImportTarget(tempDir, 'lab')).toBe('lab-2');
     });
   });
 });
