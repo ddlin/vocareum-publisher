@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { waitForAssignmentObjId } from '../../src/api/assignments';
+import { listAssignments, waitForAssignmentObjId } from '../../src/api/assignments';
 import { VocareumClient } from '../../src/api/client';
 
 describe('waitForAssignmentObjId', () => {
@@ -111,5 +111,74 @@ describe('waitForAssignmentObjId', () => {
     expect(result).toBe('custom');
     expect(elapsed).toBeGreaterThanOrEqual(45); // At least one delay
     expect(elapsed).toBeLessThan(200); // But not too long
+  });
+});
+
+describe('listAssignments', () => {
+  let mockClient: VocareumClient;
+  let requestMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    requestMock = vi.fn();
+    mockClient = {
+      request: requestMock,
+    } as unknown as VocareumClient;
+  });
+
+  it('starts assignment pagination at page 0', async () => {
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      assignments: [
+        {
+          id: '5373476',
+          courseid: '212211',
+          name: 'ILT-Assignment (en_us)',
+          deleted: '0',
+        },
+      ],
+      total_records: 1,
+    });
+
+    const result = await listAssignments(mockClient, '212211');
+
+    expect(result.map((assignment) => assignment.id)).toEqual(['5373476']);
+    expect(requestMock).toHaveBeenCalledWith({
+      method: 'GET',
+      url: '/api/v2/courses/212211/assignments',
+      params: { page: 0 },
+    });
+  });
+
+  it('continues pagination until total_records are fetched', async () => {
+    requestMock
+      .mockResolvedValueOnce({
+        status: 'success',
+        assignments: [
+          { id: 'a1', courseid: 'c1', name: 'Assignment 1', deleted: '0' },
+          { id: 'a2', courseid: 'c1', name: 'Assignment 2', deleted: '0' },
+        ],
+        total_records: 3,
+      })
+      .mockResolvedValueOnce({
+        status: 'success',
+        assignments: [
+          { id: 'a3', courseid: 'c1', name: 'Assignment 3', deleted: '0' },
+        ],
+        total_records: 3,
+      });
+
+    const result = await listAssignments(mockClient, 'c1');
+
+    expect(result.map((assignment) => assignment.id)).toEqual(['a1', 'a2', 'a3']);
+    expect(requestMock).toHaveBeenNthCalledWith(1, {
+      method: 'GET',
+      url: '/api/v2/courses/c1/assignments',
+      params: { page: 0 },
+    });
+    expect(requestMock).toHaveBeenNthCalledWith(2, {
+      method: 'GET',
+      url: '/api/v2/courses/c1/assignments',
+      params: { page: 1 },
+    });
   });
 });

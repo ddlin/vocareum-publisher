@@ -6,7 +6,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { slugify, getUniqueDirectoryName, valuesEqual, findExistingImportTarget } from '../../src/commands/pull';
+import {
+  slugify,
+  getUniqueDirectoryName,
+  valuesEqual,
+  findExistingImportTarget,
+  getDownloadPlan,
+} from '../../src/commands/pull';
 
 describe('Pull Command Utilities', () => {
   let tempDir: string;
@@ -222,5 +228,21 @@ describe('Settings Drift Detection', () => {
       expect(valuesEqual(true, 'true')).toBe(false);
       expect(valuesEqual('hello', 123)).toBe(false);
     });
+  });
+});
+
+describe('Download Plan', () => {
+  it('preserves labtype-derived architecture when directories are configured', () => {
+    const plan = getDownloadPlan(undefined, 'JupyterLab', ['startercode', 'scripts']);
+
+    expect(plan.directories).toEqual(['startercode', 'scripts']);
+    expect(plan.architecture).toBe('container');
+  });
+
+  it('lets explicit architecture override labtype detection', () => {
+    const plan = getDownloadPlan('elite', 'JupyterLab', ['asnlib']);
+
+    expect(plan.directories).toEqual(['asnlib']);
+    expect(plan.architecture).toBe('elite');
   });
 });

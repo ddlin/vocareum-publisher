@@ -32,7 +32,7 @@ interface TransactionResponse {
  *
  * The Vocareum API returns a fixed page of ~10 assignments per request
  * and ignores limit/per_page/page_size params. This function paginates
- * using the `page` param, guided by `total_records` in the response.
+ * using the zero-based `page` param, guided by `total_records` in the response.
  *
  * @param client - Vocareum API client
  * @param courseId - Course ID (string!)
@@ -43,7 +43,7 @@ export async function listAssignments(
   courseId: string
 ): Promise<VocareumAssignmentResponse[]> {
   const allAssignments: VocareumAssignmentResponse[] = [];
-  let page = 1;
+  let page = 0;
 
   while (true) {
     const response = await client.request<AssignmentsListResponse>({

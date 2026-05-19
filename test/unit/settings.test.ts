@@ -3,8 +3,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { mapAssignmentSettings } from '../../src/utils/settings';
-import type { VocareumAssignmentResponse } from '../../src/types/api';
+import { mapAssignmentSettings, mapPartSettings } from '../../src/utils/settings';
+import type { VocareumAssignmentResponse, VocareumPartResponse } from '../../src/types/api';
 
 function baseResponse(extra: Partial<VocareumAssignmentResponse>): VocareumAssignmentResponse {
   return {
@@ -44,5 +44,23 @@ describe('mapAssignmentSettings lti_on coercion', () => {
   it('leaves lti_on unset when API omits it', () => {
     const result = mapAssignmentSettings(baseResponse({}));
     expect(result.lti_on).toBeUndefined();
+  });
+});
+
+describe('mapPartSettings tag handling', () => {
+  it('preserves numeric tag values returned by Vocareum', () => {
+    const result = mapPartSettings({
+      id: 'p1',
+      courseid: 'c1',
+      assignmentid: 'a1',
+      name: 'Part 1',
+      seqnum: '0',
+      deleted: '0',
+      tags: {
+        average_lab_time: 240,
+      },
+    } as VocareumPartResponse);
+
+    expect(result.tags).toEqual({ average_lab_time: 240 });
   });
 });

@@ -19,7 +19,13 @@ import { pathExists, ensureDirectory, writeFile, calculateDirectoryHash, validat
 import { getCommitSha, getGitUserName } from '../utils/git';
 import type { PublishHistory } from '../types/config';
 import { mapAssignmentSettings, mapPartSettings } from '../utils/settings';
-import { normalizeSubmissionFilters, DEFAULT_PART_DIRECTORIES } from '../types/config';
+import {
+  normalizeSubmissionFilters,
+  DEFAULT_PART_DIRECTORIES,
+  ELITE_DIRECTORIES,
+  CONTAINER_DIRECTORIES,
+  detectArchitecture
+} from '../types/config';
 import type { Assignment, Part, DirectoryType, AssignmentSettings, PartSettings, SubmissionFilters } from '../types/config';
 import type { OrphanedEntity } from '../types/state';
 import type { FileMap } from '../types/api';
@@ -107,6 +113,31 @@ interface AssignmentContentDrift {
 }
 
 type ContentDriftAction = 'pull' | 'keep' | 'skip';
+
+export function getDownloadPlan(
+  architecture: 'elite' | 'container' | undefined,
+  labtype: string | null | undefined,
+  configuredDirectories?: DirectoryType[]
+): { directories: DirectoryType[]; architecture?: 'elite' | 'container' } {
+  const resolvedArchitecture = architecture ?? (
+    labtype !== undefined && labtype !== null && labtype !== ''
+      ? detectArchitecture(labtype)
+      : undefined
+  );
+
+  if (configuredDirectories !== undefined) {
+    return { directories: configuredDirectories, architecture: resolvedArchitecture };
+  }
+
+  if (resolvedArchitecture === 'elite') {
+    return { directories: ELITE_DIRECTORIES, architecture: resolvedArchitecture };
+  }
+  if (resolvedArchitecture === 'container') {
+    return { directories: CONTAINER_DIRECTORIES, architecture: resolvedArchitecture };
+  }
+
+  return { directories: DEFAULT_PART_DIRECTORIES, architecture: resolvedArchitecture };
+}
 
 /**
  * Convert assignment name to directory-safe slug
@@ -411,14 +442,20 @@ async function detectContentDrift(
       for (const configPart of assignment.parts) {
         if (!configPart.part_id) { continue; }
 
+        const downloadPlan = getDownloadPlan(
+          config.vocareum.architecture,
+          configPart.settings?.labtype,
+          configPart.directories
+        );
+
         // Download remote content for this part
         const remoteFiles = await downloadContent(
           client,
           config.vocareum.course_id,
           assignment.assignment_id,
           configPart.part_id,
-          undefined, // use default directories
-          config.vocareum.architecture
+          downloadPlan.directories,
+          downloadPlan.architecture
         );
 
         const fileDiffs: FileDiff[] = [];
@@ -450,7 +487,7 @@ async function detectContentDrift(
         }
 
         // Check for files that exist locally but not remotely (deleted on remote)
-        const directories = configPart.directories ?? DEFAULT_PART_DIRECTORIES;
+        const directories = downloadPlan.directories;
         for (const dir of directories) {
           const localDirPath = path.join(localBasePath, dir);
           if (!await pathExists(localDirPath)) { continue; }
@@ -568,14 +605,22 @@ async function importAssignment(
         usedExistingContent = true;
       }
     }
+    const downloadPlan = getDownloadPlan(architecture, partSettings.labtype);
     if (!usedExistingContent) {
-      files = await downloadContent(client, courseId, assignmentId, part.id, undefined, architecture);
+      files = await downloadContent(
+        client,
+        courseId,
+        assignmentId,
+        part.id,
+        downloadPlan.directories,
+        downloadPlan.architecture
+      );
     }
     const fileCount = Object.keys(files).length;
 
     // Always include default directories, plus any detected from files present
     const detectedDirs = fileCount > 0 ? detectDirectories(files) : [];
-    const directories = mergeDirectories(DEFAULT_PART_DIRECTORIES, detectedDirs);
+    const directories = mergeDirectories(downloadPlan.directories, detectedDirs);
 
     // Write files only when they came from the network — existing files are already in place
     if (fileCount > 0 && !usedExistingContent) {

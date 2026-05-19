@@ -126,6 +126,9 @@ export type SubmissionFilters = z.infer<typeof SubmissionFiltersSchema>;
 /** Normalized submission filters in object format */
 export type SubmissionFiltersObject = z.infer<typeof SubmissionFiltersObjectSchema>;
 
+/** Tag values returned by Vocareum may be strings or scalar metadata values. */
+export const TagValueSchema = z.union([z.string(), z.number(), z.boolean()]);
+
 /**
  * Normalize submission_filters to object format.
  * Handles both array format (from API) and object format (from config).
@@ -208,7 +211,7 @@ export const PartSettingsSchema = z
     /** Maximum users for Databricks labs (API returns string, coerce to number) */
     databricks_maxusers: z.coerce.number().nullish(),
     /** Tags for the part (API returns object, but older configs may have empty array) */
-    tags: z.union([z.array(z.string()), z.record(z.string(), z.string())]).nullish(),
+    tags: z.union([z.array(z.string()), z.record(z.string(), TagValueSchema)]).nullish(),
   })
   .optional();
 

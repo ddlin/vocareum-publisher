@@ -130,6 +130,10 @@ function isAxios404(error: unknown): boolean {
   return maybe.response?.status === 404;
 }
 
+function isEmptyContent(content: string | Buffer): boolean {
+  return Buffer.isBuffer(content) ? content.length === 0 : content.length === 0;
+}
+
 /**
  * Fetch file content from Vocareum
  *
@@ -448,6 +452,25 @@ async function downloadDirectoryTree(
       const content = await fetchFileContent(
         client, courseId, assignmentId, partId, directory, entryRelPath
       );
+
+      // Some Vocareum workspaces expose directory placeholders as zero-byte
+      // downloadable objects while also allowing the same path to be listed.
+      // Prefer the directory contents in that case so paths like scripts/python
+      // are imported recursively instead of as empty files.
+      if (isEmptyContent(content) && depth < MAX_DOWNLOAD_DEPTH) {
+        const childApiDirPath = `${baseApiPath}/${entryRelPath}`;
+        const childEntries = await listFilesByApiPath(
+          client, courseId, assignmentId, partId, childApiDirPath
+        );
+        if (childEntries.length > 0) {
+          await downloadDirectoryTree(
+            client, courseId, assignmentId, partId,
+            directory, baseApiPath, entryRelPath, depth + 1, downloaded
+          );
+          continue;
+        }
+      }
+
       downloaded[filemapKey] = content;
     } catch (error) {
       if (error instanceof NotAFileError) {

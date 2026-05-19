@@ -114,4 +114,30 @@ assignments:
     expect(loaded.vocareum.template_assignment_ids).toEqual(['tmpl-default', 'tmpl-alt']);
     expect(loaded.assignments[0].template_assignment_id).toBe('tmpl-alt');
   });
+
+  it('should accept numeric tag values returned by Vocareum', async () => {
+    const yaml = `version: "1.0"
+vocareum:
+  org_id: "1"
+  course_id: "201303"
+assignments:
+  - assignment_id: "asn-1"
+    name: "Lab 1"
+    path: "lab1"
+    create_from_template: false
+    parts:
+      - part_id: "part-1"
+        path: "part1"
+        settings:
+          tags:
+            average_lab_time: 240
+`;
+    await fs.writeFile(configPath, yaml, 'utf8');
+
+    const loaded = await loadConfig(configPath);
+
+    expect(loaded.assignments[0].parts[0].settings?.tags).toEqual({
+      average_lab_time: 240,
+    });
+  });
 });

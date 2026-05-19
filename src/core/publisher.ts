@@ -48,8 +48,8 @@ function sanitizeSubmissionFilters(
  * Empty arrays are converted to undefined (no tags).
  */
 function normalizeTags(
-  tags: string[] | Record<string, string> | null | undefined
-): Record<string, string> | undefined {
+  tags: string[] | Record<string, string | number | boolean> | null | undefined
+): Record<string, string | number | boolean> | undefined {
   if (tags === null || tags === undefined) { return undefined; }
   if (Array.isArray(tags)) {
     // Empty array means no tags

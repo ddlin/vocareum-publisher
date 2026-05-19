@@ -831,6 +831,53 @@ describe('downloadContent recursive directory handling', () => {
     expect(result['asnlib/public/vocareum.css'].toString()).toBe('body {}');
   });
 
+  it('should recurse when a zero-byte placeholder also resolves as a directory', async () => {
+    // scripts → [python]
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'python', size: 0 }] });
+    // fetch scripts/python → signed URL
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'scripts/python', download_url: 'https://s3.example.com/python-placeholder' }],
+    });
+    // The placeholder object is real but empty.
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.alloc(0) });
+    // Probe scripts/python as a directory → has children.
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'dbacademy.py', size: 10 }] });
+    // Recursion lists scripts/python again.
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'dbacademy.py', size: 10 }] });
+    // fetch scripts/python/dbacademy.py → real file
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'scripts/python/dbacademy.py', download_url: 'https://s3.example.com/dbacademy.py' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.from('nested py') });
+
+    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1', ['scripts']);
+
+    expect(result).not.toHaveProperty('scripts/python');
+    expect(result['scripts/python/dbacademy.py'].toString()).toBe('nested py');
+  });
+
+  it('should keep a real zero-byte file when it is not listable as a directory', async () => {
+    // scripts → [run.sh]
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'run.sh', size: 0 }] });
+    // fetch scripts/run.sh → signed URL
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'scripts/run.sh', download_url: 'https://s3.example.com/run.sh' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.alloc(0) });
+    // Probe scripts/run.sh as a directory → not a directory.
+    requestMock.mockRejectedValueOnce(
+      new VocareumError("/resource/scripts/run.sh doesn't exist", 'API_ERROR', 400)
+    );
+
+    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1', ['scripts']);
+
+    expect(result).toHaveProperty('scripts/run.sh');
+    expect(Buffer.from(result['scripts/run.sh']).length).toBe(0);
+  });
+
   it('should stop recursing after 4 levels of subdirectories', async () => {
     // Level 0: list asnlib → [a]
     requestMock.mockResolvedValueOnce({ files: [{ path: 'a', size: 0 }] });
