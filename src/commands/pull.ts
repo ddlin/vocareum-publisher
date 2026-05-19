@@ -114,6 +114,42 @@ interface AssignmentContentDrift {
 
 type ContentDriftAction = 'pull' | 'keep' | 'skip';
 
+/**
+ * Choose a directory name for a part within a multi-part assignment.
+ *
+ * Prefers the customer-facing part name (slugified) when available and unique;
+ * falls back to `part{N}` (and `part{N}-M` if even that collides) so we never
+ * silently overwrite a sibling part's directory.
+ *
+ * Single-part assignments collapse to `.` (content lives at the assignment root).
+ *
+ * `taken` is updated in place with whatever path is returned so callers can
+ * track uniqueness across the assignment.
+ */
+export function resolvePartPath(
+  partName: string,
+  index: number,
+  totalParts: number,
+  taken: Set<string>
+): string {
+  if (totalParts === 1) { return '.'; }
+
+  const slug = slugify(partName);
+  if (slug.length > 0 && !taken.has(slug)) {
+    taken.add(slug);
+    return slug;
+  }
+
+  let candidate = `part${index + 1}`;
+  let suffix = 1;
+  while (taken.has(candidate)) {
+    suffix += 1;
+    candidate = `part${index + 1}-${suffix}`;
+  }
+  taken.add(candidate);
+  return candidate;
+}
+
 export function getDownloadPlan(
   architecture: 'elite' | 'container' | undefined,
   labtype: string | null | undefined,
@@ -579,6 +615,7 @@ async function importAssignment(
   }
 
   const configParts: Part[] = [];
+  const takenPartPaths = new Set<string>();
 
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
@@ -591,8 +628,8 @@ async function importAssignment(
       logger.debug(`Imported ${Object.keys(partSettings).length} settings for part ${part.name}`);
     }
 
-    // Determine part path (use part name or index)
-    const partPath = parts.length === 1 ? '.' : `part${i + 1}`;
+    // Prefer the part's customer-facing name; fall back to part{N} when missing/colliding
+    const partPath = resolvePartPath(part.name, i, parts.length, takenPartPaths);
     const partDir = partPath === '.' ? localPath : path.join(localPath, partPath);
 
     // Prefer existing on-disk content when --skip-content is set and it's present

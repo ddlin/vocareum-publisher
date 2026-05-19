@@ -12,6 +12,7 @@ import {
   valuesEqual,
   findExistingImportTarget,
   getDownloadPlan,
+  resolvePartPath,
 } from '../../src/commands/pull';
 
 describe('Pull Command Utilities', () => {
@@ -228,6 +229,38 @@ describe('Settings Drift Detection', () => {
       expect(valuesEqual(true, 'true')).toBe(false);
       expect(valuesEqual('hello', 123)).toBe(false);
     });
+  });
+});
+
+describe('resolvePartPath', () => {
+  it('returns "." for single-part assignments', () => {
+    const used = new Set<string>();
+    expect(resolvePartPath('Anything', 0, 1, used)).toBe('.');
+    expect(used.size).toBe(0);
+  });
+
+  it('slugifies the part name when multi-part', () => {
+    const used = new Set<string>();
+    expect(resolvePartPath('Vector Search', 0, 3, used)).toBe('vector-search');
+    expect(used.has('vector-search')).toBe(true);
+  });
+
+  it('falls back to part{N} when the name slugifies to empty', () => {
+    const used = new Set<string>();
+    expect(resolvePartPath('!!!', 0, 2, used)).toBe('part1');
+    expect(used.has('part1')).toBe(true);
+  });
+
+  it('falls back to part{N} when the slug collides with an earlier part', () => {
+    const used = new Set<string>(['vector-search']);
+    expect(resolvePartPath('Vector Search', 1, 2, used)).toBe('part2');
+    expect(used.has('part2')).toBe(true);
+  });
+
+  it('suffixes part{N} when even that collides', () => {
+    const used = new Set<string>(['vector-search', 'part2']);
+    expect(resolvePartPath('Vector Search', 1, 3, used)).toBe('part2-2');
+    expect(used.has('part2-2')).toBe(true);
   });
 });
 
