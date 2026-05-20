@@ -46,6 +46,7 @@ vocareum-api-key.txt
 
 # Test courses with real IDs
 examples/test-course*/
+test/vocareum-course-*.yaml
 
 # Claude Code
 .claude/
