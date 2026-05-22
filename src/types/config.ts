@@ -212,6 +212,12 @@ export const PartSettingsSchema = z
     databricks_maxusers: z.coerce.number().nullish(),
     /** Tags for the part (API returns object, but older configs may have empty array) */
     tags: z.union([z.array(z.string()), z.record(z.string(), TagValueSchema)]).nullish(),
+    /** Pass-through bucket for settings vocgit does not formally understand.
+     *  Populated by mapPartSettings from unknown API response fields; spread
+     *  back into outgoing API payloads on publish. See spec
+     *  docs/superpowers/specs/2026-05-21-unknown-settings-passthrough-design.md
+     */
+    _unknown_settings: z.record(z.string(), z.unknown()).optional(),
   })
   .optional();
 
@@ -283,6 +289,12 @@ export const AssignmentSettingsSchema = z
     send_webhook: z.boolean().nullish(),
     /** Enable live code comments */
     live_code_comments: z.boolean().nullish(),
+    /** Pass-through bucket for settings vocgit does not formally understand.
+     *  Populated by mapAssignmentSettings from unknown API response fields;
+     *  spread back into outgoing API payloads on publish. See spec
+     *  docs/superpowers/specs/2026-05-21-unknown-settings-passthrough-design.md
+     */
+    _unknown_settings: z.record(z.string(), z.unknown()).optional(),
   })
   .optional();
 

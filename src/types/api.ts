@@ -236,6 +236,16 @@ export interface ApiPartSettings {
 }
 
 /**
+ * Outgoing payload types for update calls. The base interfaces above describe
+ * the known/typed shape; the payload types additionally permit arbitrary unknown
+ * keys to be spread in at the top level so callers can pass _unknown_settings
+ * keys back through on writes without unsafe casts at the call site. See
+ * docs/superpowers/specs/2026-05-21-unknown-settings-passthrough-design.md §5.
+ */
+export type AssignmentSettingsPayload = ApiAssignmentSettings & Record<string, unknown>;
+export type PartSettingsPayload = ApiPartSettings & Record<string, unknown>;
+
+/**
  * File information from Vocareum
  */
 export interface FileInfo {

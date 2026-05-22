@@ -8,7 +8,7 @@ import * as path from 'path';
 import type { Config, PublishHistory } from '../types/config';
 import { normalizeSubmissionFilters, nullToUndefined } from '../types/config';
 import type { PartSettings } from '../types/config';
-import type { ApiPartSettings, VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
+import type { ApiPartSettings, AssignmentSettingsPayload, PartSettingsPayload, VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
 import type { HistorySettingChange, HistoryFileChange, AssignmentSettings } from '../types/config';
 import type { PublishResult, PublishOperationOptions } from '../types/state';
 import { VocareumClient } from '../api/client';
@@ -23,6 +23,57 @@ import { commitChanges, getCommitSha, getGitUserName } from '../utils/git';
 import { logger } from '../utils/logger';
 import { promptConfirm } from '../utils/prompts';
 import { mapAssignmentSettings, mapPartSettings } from '../utils/settings';
+import type { UnknownFieldReporter } from '../utils/unknown-field-reporter';
+import {
+  KNOWN_ASSIGNMENT_SETTING_KEYS,
+  KNOWN_PART_SETTING_KEYS,
+  NON_SETTING_FIELDS_ASSIGNMENT,
+  NON_SETTING_FIELDS_PART,
+} from '../utils/known-settings';
+
+/** All keys that must not be overridden by _unknown_settings for assignment payloads.
+ *  Includes '_unknown_settings' itself to prevent nested {_unknown_settings: {_unknown_settings: ...}}
+ *  from leaking the literal wrapper key into the outgoing API payload. */
+const RESERVED_ASSIGNMENT_KEYS: ReadonlySet<string> = new Set([
+  ...KNOWN_ASSIGNMENT_SETTING_KEYS,
+  ...NON_SETTING_FIELDS_ASSIGNMENT,
+  '_unknown_settings',
+]);
+
+/** All keys that must not be overridden by _unknown_settings for part payloads.
+ *  See RESERVED_ASSIGNMENT_KEYS for the rationale on '_unknown_settings'. */
+const RESERVED_PART_KEYS: ReadonlySet<string> = new Set([
+  ...KNOWN_PART_SETTING_KEYS,
+  ...NON_SETTING_FIELDS_PART,
+  '_unknown_settings',
+]);
+
+/**
+ * Filter _unknown_settings before spreading into an outgoing payload.
+ * Any key that matches a reserved key (known setting, non-setting field,
+ * or explicit payload field like `name`) is dropped with a warning so that
+ * a user-supplied override cannot silently clobber a formally-supported field.
+ */
+function filterUnknownSettingsForPayload(
+  unknowns: Record<string, unknown> | null | undefined,
+  reservedKeys: ReadonlySet<string>,
+  scope: 'assignment' | 'part',
+  resourceName: string
+): Record<string, unknown> {
+  if (!unknowns || typeof unknowns !== 'object') { return {}; }
+  const filtered: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(unknowns)) {
+    if (reservedKeys.has(k)) {
+      logger.warn(
+        `Ignoring _unknown_settings.${k} on ${scope} "${resourceName}": ` +
+        `"${k}" is a recognized ${scope} field and cannot be overridden via _unknown_settings.`
+      );
+      continue;
+    }
+    filtered[k] = v;
+  }
+  return filtered;
+}
 
 function isHttp400(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) { return false; }
@@ -67,13 +118,13 @@ function normalizeTags(
   return Object.keys(tags).length > 0 ? tags : undefined;
 }
 
-function buildPartSettingsPayload(
+export function buildPartSettingsPayload(
   partName: string,
   partSettings: PartSettings | undefined,
   mode: 'full' | 'safe'
-): ApiPartSettings {
+): PartSettingsPayload {
   const normalizedFilters = sanitizeSubmissionFilters(normalizeSubmissionFilters(partSettings?.submission_filters));
-  const base: ApiPartSettings = {
+  const base: PartSettingsPayload = {
     name: partName,
     submission_filters: normalizedFilters,
     session_length: nullToUndefined(partSettings?.session_length),
@@ -87,7 +138,7 @@ function buildPartSettingsPayload(
     return base;
   }
 
-  return {
+  const full: PartSettingsPayload = {
     ...base,
     cloud_labs: nullToUndefined(partSettings?.cloud_labs),
     instant_aws_access: nullToUndefined(partSettings?.instant_aws_access),
@@ -102,6 +153,19 @@ function buildPartSettingsPayload(
     databricks_maxusers: nullToUndefined(partSettings?.databricks_maxusers),
     tags: normalizeTags(partSettings?.tags),
   };
+
+  // Spread _unknown_settings (NOT the wrapper key) into the top level,
+  // filtering out any reserved keys to prevent user-supplied overrides.
+  const filtered = filterUnknownSettingsForPayload(
+    partSettings?._unknown_settings as Record<string, unknown> | null | undefined,
+    RESERVED_PART_KEYS,
+    'part',
+    partName
+  );
+  if (Object.keys(filtered).length > 0) {
+    Object.assign(full, filtered);
+  }
+  return full;
 }
 
 function settingsEqual(a: unknown, b: unknown): boolean {
@@ -118,10 +182,17 @@ function hasSettingValue(value: unknown): boolean {
   return value !== undefined && value !== null;
 }
 
-function pushSettingChange(
+export function pushSettingChange(
   changes: HistorySettingChange[],
   change: HistorySettingChange
 ): void {
+  // Guard: _unknown_settings is a pass-through bucket. We don't formally
+  // understand the fields inside it, so reporting "_unknown_settings changed"
+  // would be misleading noise in the structured change log. The reporter
+  // summary (UnknownFieldReporter) communicates that unknowns were observed.
+  if (change.field === '_unknown_settings') {
+    return;
+  }
   if (settingsEqual(change.from, change.to)) {
     return;
   }
@@ -139,7 +210,8 @@ function pushSettingChange(
 export async function publish(
   config: Config,
   client: VocareumClient,
-  options: PublishOperationOptions
+  options: PublishOperationOptions,
+  reporter?: UnknownFieldReporter
 ): Promise<PublishResult> {
   const configPath = options.configPath ?? 'vocareum.yaml';
   const abortOnError = options.abortOnError ?? false;
@@ -389,7 +461,7 @@ export async function publish(
         // This ensures the next push doesn't detect false drift
         try {
           const fullAssignment = await getAssignment(client, workingConfig.vocareum.course_id, copyResult.assignment_id);
-          const templateSettings = mapAssignmentSettings(fullAssignment);
+          const templateSettings = mapAssignmentSettings(fullAssignment, reporter, copyResult.assignment_id);
           if (Object.keys(templateSettings).length > 0) {
             // Merge: template settings as base, local settings override
             action.assignment.settings = { ...templateSettings, ...action.assignment.settings };
@@ -399,7 +471,7 @@ export async function publish(
           // Pull part settings too
           for (const m of mapped) {
             const fullPart = await getPart(client, workingConfig.vocareum.course_id, copyResult.assignment_id, m.apiPartId);
-            const partSettings = mapPartSettings(fullPart);
+            const partSettings = mapPartSettings(fullPart, reporter, m.apiPartId);
             if (Object.keys(partSettings).length > 0) {
               // Merge: template settings as base, local settings override
               m.configPart.settings = { ...partSettings, ...m.configPart.settings };
@@ -450,6 +522,10 @@ export async function publish(
             workingConfig.vocareum.course_id,
             action.assignment.assignment_id
           );
+          // Side effect: report unknown fields seen in the update-path read.
+          if (reporter) {
+            mapAssignmentSettings(remoteAssignment, reporter, action.assignment.assignment_id);
+          }
           const asnSettings = action.assignment.settings;
           const assignmentKeys: (keyof NonNullable<AssignmentSettings>)[] = [
             'description',
@@ -494,7 +570,8 @@ export async function publish(
             });
           }
 
-          await updateAssignment(client, workingConfig.vocareum.course_id, action.assignment.assignment_id, {
+          // Build payloads inline (no mode variants, unlike parts which use buildPartSettingsPayload).
+          const knownAssignmentPayload: AssignmentSettingsPayload = {
             name: action.assignment.name,
             description: nullToUndefined(asnSettings?.description),
             nosubmit: nullToUndefined(asnSettings?.nosubmit),
@@ -514,7 +591,43 @@ export async function publish(
             grading_visibility: nullToUndefined(asnSettings?.grading_visibility),
             send_webhook: nullToUndefined(asnSettings?.send_webhook),
             live_code_comments: nullToUndefined(asnSettings?.live_code_comments),
-          });
+          };
+
+          const unknownAsn = asnSettings?._unknown_settings;
+          const filteredAsnUnknowns = filterUnknownSettingsForPayload(
+            unknownAsn as Record<string, unknown> | null | undefined,
+            RESERVED_ASSIGNMENT_KEYS,
+            'assignment',
+            action.assignment.name
+          );
+          const hasFilteredUnknowns = Object.keys(filteredAsnUnknowns).length > 0;
+          const fullAssignmentPayload: AssignmentSettingsPayload = hasFilteredUnknowns
+            ? { ...knownAssignmentPayload, ...filteredAsnUnknowns }
+            : knownAssignmentPayload;
+
+          try {
+            await updateAssignment(
+              client,
+              workingConfig.vocareum.course_id,
+              action.assignment.assignment_id,
+              fullAssignmentPayload
+            );
+          } catch (error) {
+            // Non-400 errors are genuine failures; let the outer catch record them.
+            if (!isHttp400(error)) { throw error; }
+            // 400 without filtered unknowns means the known payload is itself rejected — no point retrying.
+            if (!hasFilteredUnknowns) { throw error; }
+            // 400 with filtered unknowns present: retry using the known-only payload.
+            logger.warn(
+              `Assignment settings update failed with HTTP 400 for "${action.assignment.name}" (likely an unrecognized field in _unknown_settings); retrying with known settings only`
+            );
+            await updateAssignment(
+              client,
+              workingConfig.vocareum.course_id,
+              action.assignment.assignment_id,
+              knownAssignmentPayload
+            );
+          }
           logger.success(`Updated assignment metadata: ${action.assignment.name}`);
         } catch (error) {
           logger.error(`Failed to update assignment metadata for ${action.assignment.name}`, { error });
@@ -567,6 +680,10 @@ export async function publish(
           logger.info(`Updating part settings: ${partName}`);
           let metadataUpdated = true;
           const remotePart = await getPart(client, workingConfig.vocareum.course_id, assignmentId, partId);
+          // Side effect: report unknown fields seen in the update-path read.
+          if (reporter) {
+            mapPartSettings(remotePart, reporter, partId);
+          }
           pushSettingChange(settingChanges, {
             scope: 'part',
             assignment_id: assignmentId,

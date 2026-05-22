@@ -7,6 +7,14 @@
 
 import type { AssignmentSettings, PartSettings, SubmissionFilters } from '../types/config';
 import type { VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
+import {
+  KNOWN_ASSIGNMENT_SETTING_KEYS,
+  KNOWN_PART_SETTING_KEYS,
+  NON_SETTING_FIELDS_ASSIGNMENT,
+  NON_SETTING_FIELDS_PART,
+  partitionApiResponse,
+} from './known-settings';
+import type { UnknownFieldReporter } from './unknown-field-reporter';
 
 /**
  * Coerce a Vocareum string-or-boolean field to a real boolean. Vocareum is
@@ -27,7 +35,15 @@ function coerceBooleanFlag(value: unknown): boolean | undefined {
 /**
  * Map Vocareum assignment API response to config settings
  */
-export function mapAssignmentSettings(apiResponse: VocareumAssignmentResponse): NonNullable<AssignmentSettings> {
+export function mapAssignmentSettings(
+  apiResponse: VocareumAssignmentResponse,
+  reporter?: UnknownFieldReporter,
+  resourceId?: string
+): NonNullable<AssignmentSettings> {
+  if (reporter && resourceId === undefined) {
+    throw new Error('mapAssignmentSettings: resourceId is required when reporter is provided');
+  }
+
   const settings: NonNullable<AssignmentSettings> = {};
 
   // Only include fields that have values
@@ -52,6 +68,24 @@ export function mapAssignmentSettings(apiResponse: VocareumAssignmentResponse): 
   if (apiResponse.grading_visibility !== undefined) { settings.grading_visibility = apiResponse.grading_visibility; }
   if (apiResponse.send_webhook !== undefined) { settings.send_webhook = apiResponse.send_webhook; }
   if (apiResponse.live_code_comments !== undefined) { settings.live_code_comments = apiResponse.live_code_comments; }
+
+  // Detect unknown fields the API returned but this mapper does not formally
+  // handle. Preserves them for round-trip pass-through and notifies the reporter
+  // for the end-of-run summary. Cast: partitionApiResponse takes a generic record;
+  // VocareumXResponse is structurally compatible but TS can't prove it.
+  const { unknownFields } = partitionApiResponse(
+    apiResponse as unknown as Record<string, unknown>,
+    KNOWN_ASSIGNMENT_SETTING_KEYS,
+    NON_SETTING_FIELDS_ASSIGNMENT
+  );
+  if (Object.keys(unknownFields).length > 0) {
+    settings._unknown_settings = unknownFields;
+    if (reporter && resourceId !== undefined) {
+      for (const [field, value] of Object.entries(unknownFields)) {
+        reporter.record('assignment', field, value, resourceId);
+      }
+    }
+  }
 
   return settings;
 }
@@ -93,7 +127,15 @@ export function normalizeSubmissionFilters(
 /**
  * Map Vocareum part API response to config settings
  */
-export function mapPartSettings(apiResponse: VocareumPartResponse): NonNullable<PartSettings> {
+export function mapPartSettings(
+  apiResponse: VocareumPartResponse,
+  reporter?: UnknownFieldReporter,
+  resourceId?: string
+): NonNullable<PartSettings> {
+  if (reporter && resourceId === undefined) {
+    throw new Error('mapPartSettings: resourceId is required when reporter is provided');
+  }
+
   const settings: NonNullable<PartSettings> = {};
 
   // Submission filters - normalize to object format
@@ -133,6 +175,24 @@ export function mapPartSettings(apiResponse: VocareumPartResponse): NonNullable<
     if (!isNaN(parsed)) { settings.databricks_maxusers = parsed; }
   }
   if (apiResponse.tags !== undefined) { settings.tags = apiResponse.tags; }
+
+  // Detect unknown fields the API returned but this mapper does not formally
+  // handle. Preserves them for round-trip pass-through and notifies the reporter
+  // for the end-of-run summary. Cast: partitionApiResponse takes a generic record;
+  // VocareumXResponse is structurally compatible but TS can't prove it.
+  const { unknownFields } = partitionApiResponse(
+    apiResponse as unknown as Record<string, unknown>,
+    KNOWN_PART_SETTING_KEYS,
+    NON_SETTING_FIELDS_PART
+  );
+  if (Object.keys(unknownFields).length > 0) {
+    settings._unknown_settings = unknownFields;
+    if (reporter && resourceId !== undefined) {
+      for (const [field, value] of Object.entries(unknownFields)) {
+        reporter.record('part', field, value, resourceId);
+      }
+    }
+  }
 
   return settings;
 }

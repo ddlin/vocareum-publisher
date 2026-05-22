@@ -9,6 +9,7 @@ import { publish } from '../core/publisher';
 import { VocareumClient } from '../api/client';
 import { logger } from '../utils/logger';
 import { loadDotEnvIfPresent, isCI, getApiKeyOrThrow } from '../utils/env';
+import { UnknownFieldReporter } from '../utils/unknown-field-reporter';
 import type { PublishOperationOptions } from '../types/state';
 
 export interface PublishCommandOptions extends PublishOperationOptions {
@@ -22,6 +23,7 @@ export interface PublishCommandOptions extends PublishOperationOptions {
  */
 export async function publishCommand(options: PublishCommandOptions): Promise<void> {
   const configPath = options.config ?? 'vocareum.yaml';
+  const reporter = new UnknownFieldReporter(logger);
 
   try {
     loadDotEnvIfPresent();
@@ -58,7 +60,7 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
       logger.info('DRY RUN MODE: No changes will be applied.');
     }
 
-    const result = await publish(config, client, publishOptions);
+    const result = await publish(config, client, publishOptions, reporter);
 
     if (result.success) {
       logger.success('Push completed successfully!');
@@ -73,11 +75,10 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
           logger.error(`- ${f.type} ${f.id}: ${errorMsg}`);
         });
       }
-      process.exit(1);
+      throw new Error('Push completed with errors');
     }
 
-  } catch (error) {
-    logger.error(`Publish failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    process.exit(1);
+  } finally {
+    reporter.printSummary();
   }
 }

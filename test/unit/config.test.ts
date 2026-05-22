@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { loadConfig, updateConfig } from '../../src/core/config';
+import { AssignmentSettingsSchema, PartSettingsSchema } from '../../src/types/config';
 
 describe('updateConfig stale assignment actions', () => {
   let tempDir: string;
@@ -139,5 +140,38 @@ assignments:
     expect(loaded.assignments[0].parts[0].settings?.tags).toEqual({
       average_lab_time: 240,
     });
+  });
+});
+
+describe('_unknown_settings preservation in Zod schemas', () => {
+  it('AssignmentSettingsSchema preserves _unknown_settings through parse', () => {
+    const input = {
+      nosubmit: true,
+      _unknown_settings: { vendor_field: 'abc', new_flag: 42 },
+    };
+    const parsed = AssignmentSettingsSchema.parse(input);
+    expect(parsed?._unknown_settings).toEqual({ vendor_field: 'abc', new_flag: 42 });
+  });
+
+  it('PartSettingsSchema preserves _unknown_settings through parse', () => {
+    const input = {
+      session_length: '60',
+      _unknown_settings: { lab_extra: { nested: true }, arr: [1, 2, 3] },
+    };
+    const parsed = PartSettingsSchema.parse(input);
+    expect(parsed?._unknown_settings).toEqual({
+      lab_extra: { nested: true },
+      arr: [1, 2, 3],
+    });
+  });
+
+  it('AssignmentSettingsSchema accepts settings without _unknown_settings', () => {
+    const parsed = AssignmentSettingsSchema.parse({ nosubmit: true });
+    expect(parsed?._unknown_settings).toBeUndefined();
+  });
+
+  it('PartSettingsSchema accepts settings without _unknown_settings', () => {
+    const parsed = PartSettingsSchema.parse({ session_length: '60' });
+    expect(parsed?._unknown_settings).toBeUndefined();
   });
 });

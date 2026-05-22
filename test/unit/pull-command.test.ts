@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Config } from '../../src/types/config';
 import { pullCommand } from '../../src/commands/pull';
+import { UnknownFieldReporter } from '../../src/utils/unknown-field-reporter';
 
 const {
   loadConfigMock,
@@ -14,6 +15,8 @@ const {
   getApiKeyOrThrowMock,
   loggerWarnMock,
   loggerSuccessMock,
+  mapAssignmentSettingsMock,
+  mapPartSettingsMock,
 } = vi.hoisted(() => ({
   loadConfigMock: vi.fn(),
   updateConfigMock: vi.fn(),
@@ -26,6 +29,8 @@ const {
   getApiKeyOrThrowMock: vi.fn().mockReturnValue('test-api-key'),
   loggerWarnMock: vi.fn(),
   loggerSuccessMock: vi.fn(),
+  mapAssignmentSettingsMock: vi.fn(),
+  mapPartSettingsMock: vi.fn(),
 }));
 
 vi.mock('../../src/core/config', () => ({
@@ -52,6 +57,11 @@ vi.mock('../../src/api/parts', () => ({
 
 vi.mock('../../src/api/content', () => ({
   downloadContent: vi.fn(),
+}));
+
+vi.mock('../../src/utils/settings', () => ({
+  mapAssignmentSettings: mapAssignmentSettingsMock,
+  mapPartSettings: mapPartSettingsMock,
 }));
 
 vi.mock('../../src/utils/env', () => ({
@@ -121,6 +131,8 @@ describe('pullCommand settings drift behavior', () => {
     isCIMock.mockReturnValue(false);
     loadConfigMock.mockResolvedValue(config);
     updateConfigMock.mockResolvedValue(undefined);
+    mapAssignmentSettingsMock.mockReturnValue({});
+    mapPartSettingsMock.mockReturnValue({});
     reconcileMock.mockResolvedValue({
       config,
       course: { type: 'skip' },
@@ -158,6 +170,10 @@ describe('pullCommand settings drift behavior', () => {
       courseid: '201303',
       submission_filters: { include: ['*.py'] },
     });
+    // mapPartSettings normalizes remote submission_filters to the object form
+    // that is equivalent to the local array form — return the normalized shape
+    // so that comparePartSettings sees no drift.
+    mapPartSettingsMock.mockReturnValue({ submission_filters: { include: ['*.py'] } });
 
     await pullCommand({ nonInteractive: true });
 
@@ -174,5 +190,212 @@ describe('pullCommand settings drift behavior', () => {
       'Could not fetch settings for assignment "Lab 1" (ID: asn-1): network error'
     );
     expect(updateConfigMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('pullCommand — unknown-only settings drift', () => {
+  const config: Config = {
+    version: '1.0',
+    vocareum: {
+      org_id: '1',
+      course_id: '201303',
+      template_assignment_id: 'tmpl-1',
+      api_base_url: 'https://api.vocareum.com',
+      excluded_assignments: [],
+    },
+    assignments: [
+      {
+        assignment_id: 'asn-1',
+        name: 'Lab 1',
+        path: 'lab1',
+        create_from_template: false,
+        settings: { nosubmit: false },
+        parts: [
+          {
+            part_id: 'part-1',
+            path: 'part1',
+            settings: {},
+          },
+        ],
+      },
+    ],
+    publish_options: {
+      on_missing_id: 'skip',
+      auto_commit: false,
+      abort_on_error: false,
+      sync_deletes: false,
+      exclude_patterns: [],
+    },
+    publish_history: [],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VOCAREUM_API_KEY = 'token';
+    isCIMock.mockReturnValue(false);
+    loadConfigMock.mockResolvedValue(config);
+    updateConfigMock.mockResolvedValue(undefined);
+    reconcileMock.mockResolvedValue({
+      course: { type: 'skip' },
+      assignments: [],
+      orphanedInVocareum: [],
+      staleInConfig: [],
+    });
+    getAssignmentMock.mockResolvedValue({
+      id: 'asn-1',
+      name: 'Lab 1',
+      deleted: '0',
+      courseid: '201303',
+    });
+    listPartsMock.mockResolvedValue([
+      { id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0' },
+    ]);
+    getPartMock.mockResolvedValue({
+      id: 'part-1',
+      seqnum: '0',
+      name: 'Part 1',
+      deleted: '0',
+      assignmentid: 'asn-1',
+      courseid: '201303',
+    });
+  });
+
+  it('calls updateConfig with remote settings (including _unknown_settings) when only unknowns differ — batch mode', async () => {
+    // Remote assignment has a new unknown field; known fields identical to local
+    mapAssignmentSettingsMock.mockReturnValue({
+      nosubmit: false,
+      _unknown_settings: { vendor_flag: true },
+    });
+    // No known-field diff in parts
+    mapPartSettingsMock.mockReturnValue({});
+
+    await pullCommand({ batch: true });
+
+    expect(updateConfigMock).toHaveBeenCalled();
+    const callArg = updateConfigMock.mock.calls[0][1];
+    const updatedAssignment = callArg.assignments?.find(
+      (a: { path: string }) => a.path === 'lab1',
+    );
+    expect(updatedAssignment).toBeDefined();
+    expect(updatedAssignment.settings).toMatchObject({
+      nosubmit: false,
+      _unknown_settings: { vendor_flag: true },
+    });
+  });
+
+  it('clears local _unknown_settings when remote no longer returns any unknowns (stale unknowns)', async () => {
+    // Local has _unknown_settings; remote no longer returns any unknown field.
+    const configWithStaleUnknown: Config = {
+      ...config,
+      assignments: [
+        {
+          ...config.assignments[0],
+          settings: {
+            nosubmit: false,
+            _unknown_settings: { stale_field: true },
+          },
+        },
+      ],
+    };
+    loadConfigMock.mockResolvedValue(configWithStaleUnknown);
+    // Remote returns only known fields — no _unknown_settings attached by the mapper.
+    mapAssignmentSettingsMock.mockReturnValue({ nosubmit: false });
+    mapPartSettingsMock.mockReturnValue({});
+
+    await pullCommand({ batch: true });
+
+    expect(updateConfigMock).toHaveBeenCalled();
+    const callArg = updateConfigMock.mock.calls[0][1];
+    const updatedAssignment = callArg.assignments?.find(
+      (a: { path: string }) => a.path === 'lab1',
+    );
+    expect(updatedAssignment).toBeDefined();
+    // _unknown_settings must be ABSENT in the merged settings (stale cleared).
+    expect(updatedAssignment.settings).not.toHaveProperty('_unknown_settings');
+    expect(updatedAssignment.settings.nosubmit).toBe(false);
+  });
+
+  it('does NOT report drift when local and remote _unknown_settings are identical', async () => {
+    // Both local and remote have the same unknown — no drift expected
+    const configWithUnknown: Config = {
+      ...config,
+      assignments: [
+        {
+          ...config.assignments[0],
+          settings: {
+            nosubmit: false,
+            _unknown_settings: { vendor_flag: true },
+          },
+        },
+      ],
+    };
+    loadConfigMock.mockResolvedValue(configWithUnknown);
+    mapAssignmentSettingsMock.mockReturnValue({
+      nosubmit: false,
+      _unknown_settings: { vendor_flag: true },
+    });
+    mapPartSettingsMock.mockReturnValue({});
+
+    await pullCommand({ nonInteractive: true });
+
+    expect(updateConfigMock).not.toHaveBeenCalled();
+    expect(loggerSuccessMock).toHaveBeenCalledWith('No sync issues found.');
+  });
+});
+
+describe('pullCommand — reporter lifecycle', () => {
+  const minimalConfig = {
+    version: '1.0',
+    vocareum: { org_id: '1', course_id: '1', api_base_url: 'https://api.vocareum.com' },
+    assignments: [{
+      assignment_id: 'a1',
+      name: 'Lab 1', path: 'lab1',
+      create_from_template: false,
+      parts: [],
+    }],
+    publish_history: [],
+    publish_options: {
+      on_missing_id: 'skip', auto_commit: false, abort_on_error: false,
+      sync_deletes: false, exclude_patterns: [],
+    },
+  };
+
+  const emptyReconcileResult = {
+    course: { type: 'skip' },
+    assignments: [],
+    orphanedInVocareum: [],
+    staleInConfig: [],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VOCAREUM_API_KEY = 'token';
+    isCIMock.mockReturnValue(false);
+    mapAssignmentSettingsMock.mockReturnValue({});
+    mapPartSettingsMock.mockReturnValue({});
+  });
+
+  it('calls reporter.printSummary even when an internal step throws', async () => {
+    const printSpy = vi.spyOn(UnknownFieldReporter.prototype, 'printSummary');
+    loadConfigMock.mockRejectedValue(new Error('config bad'));
+
+    await expect(pullCommand({ config: 'vocareum.yaml' })).rejects.toThrow();
+    expect(printSpy).toHaveBeenCalledTimes(1);
+    printSpy.mockRestore();
+  });
+
+  it('threads the reporter into detectSettingsDrift', async () => {
+    loadConfigMock.mockResolvedValue(minimalConfig);
+    reconcileMock.mockResolvedValue(emptyReconcileResult);
+    getAssignmentMock.mockResolvedValue({
+      id: 'a1', courseid: '1', name: 'Lab 1', deleted: '0',
+    });
+    listPartsMock.mockResolvedValue([]);
+
+    await pullCommand({ config: 'vocareum.yaml', nonInteractive: true });
+
+    expect(mapAssignmentSettingsMock).toHaveBeenCalled();
+    const secondArg = mapAssignmentSettingsMock.mock.calls[0][1];
+    expect(secondArg).toBeInstanceOf(UnknownFieldReporter);
   });
 });

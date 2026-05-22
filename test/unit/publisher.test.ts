@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Config } from '../../src/types/config';
+import type { Config, HistorySettingChange, PartSettings } from '../../src/types/config';
 import type { PublishOperationOptions, ReconciliationPlan } from '../../src/types/state';
 import type { VocareumClient } from '../../src/api/client';
-import { publish } from '../../src/core/publisher';
+import { publish, pushSettingChange, buildPartSettingsPayload } from '../../src/core/publisher';
 
 const {
   reconcileMock,
@@ -76,6 +76,48 @@ vi.mock('../../src/utils/git', () => ({
 vi.mock('../../src/utils/prompts', () => ({
   promptConfirm: promptConfirmMock,
 }));
+
+describe('pushSettingChange _unknown_settings guard', () => {
+  it('does not push a change record when field is _unknown_settings', () => {
+    const changes: HistorySettingChange[] = [];
+    pushSettingChange(changes, {
+      scope: 'assignment',
+      assignment_id: 'a1',
+      assignment_name: 'A1',
+      field: '_unknown_settings',
+      from: { foo: 1 },
+      to: { foo: 2 },
+    });
+    expect(changes).toEqual([]);
+  });
+
+  it('still pushes a change record for normal fields', () => {
+    const changes: HistorySettingChange[] = [];
+    pushSettingChange(changes, {
+      scope: 'assignment',
+      assignment_id: 'a1',
+      assignment_name: 'A1',
+      field: 'nosubmit',
+      from: false,
+      to: true,
+    });
+    expect(changes).toHaveLength(1);
+    expect(changes[0].field).toBe('nosubmit');
+  });
+
+  it('still no-ops when from equals to (existing behavior preserved)', () => {
+    const changes: HistorySettingChange[] = [];
+    pushSettingChange(changes, {
+      scope: 'assignment',
+      assignment_id: 'a1',
+      assignment_name: 'A1',
+      field: 'nosubmit',
+      from: true,
+      to: true,
+    });
+    expect(changes).toEqual([]);
+  });
+});
 
 describe('publish', () => {
   const client = {} as VocareumClient;
@@ -699,5 +741,732 @@ describe('publish', () => {
       ])
     );
     expect(historyArg.file_size_state['lab1/part1/docs/readme.md']).toBe(5);
+  });
+});
+
+describe('buildPartSettingsPayload — _unknown_settings handling', () => {
+  it('full mode spreads _unknown_settings keys at the top level (without the wrapper)', () => {
+    const settings: PartSettings = {
+      session_length: '60',
+      _unknown_settings: { vendor_flag: true, extra: 'x' },
+    };
+    const payload = buildPartSettingsPayload('PartName', settings, 'full') as Record<string, unknown>;
+    expect(payload.session_length).toBe('60');
+    expect(payload.vendor_flag).toBe(true);
+    expect(payload.extra).toBe('x');
+    expect(payload._unknown_settings).toBeUndefined();
+  });
+
+  it('safe mode does NOT include _unknown_settings keys', () => {
+    const settings: PartSettings = {
+      session_length: '60',
+      _unknown_settings: { vendor_flag: true },
+    };
+    const payload = buildPartSettingsPayload('PartName', settings, 'safe') as Record<string, unknown>;
+    expect(payload.vendor_flag).toBeUndefined();
+    expect(payload._unknown_settings).toBeUndefined();
+    expect(payload.session_length).toBe('60');
+  });
+
+  it('full mode with no _unknown_settings behaves identically to today', () => {
+    const settings: PartSettings = { session_length: '60', labtype: 'Document' };
+    const payload = buildPartSettingsPayload('PartName', settings, 'full') as Record<string, unknown>;
+    expect(payload.session_length).toBe('60');
+    expect(payload.labtype).toBe('Document');
+    expect(Object.keys(payload).every((k) => !k.startsWith('vendor_'))).toBe(true);
+  });
+
+  it('full mode filters reserved keys from _unknown_settings — "name" in _unknown_settings does NOT override the real part name', () => {
+    const settings: PartSettings = {
+      session_length: '60',
+      _unknown_settings: { name: 'Wrong Name', vendor_flag: 'keep' },
+    };
+    const payload = buildPartSettingsPayload('RealPartName', settings, 'full') as Record<string, unknown>;
+    expect(payload.name).toBe('RealPartName');
+    expect(payload.vendor_flag).toBe('keep');
+    // 'name' must not appear from _unknown_settings since it is reserved
+  });
+
+  it('full mode filters all part reserved keys from _unknown_settings', () => {
+    const settings: PartSettings = {
+      _unknown_settings: {
+        name: 'x',
+        id: 'x',
+        courseid: 'x',
+        assignmentid: 'x',
+        session_length: '999',  // known setting key — also reserved
+        vendor_ok: 'yes',
+      },
+    };
+    const payload = buildPartSettingsPayload('Part', settings, 'full') as Record<string, unknown>;
+    // All reserved keys must use their normal values, not the _unknown_settings overrides
+    expect(payload.name).toBe('Part');
+    expect(payload.id).toBeUndefined();          // non-setting field never in payload
+    expect(payload.courseid).toBeUndefined();     // non-setting field never in payload
+    expect(payload.assignmentid).toBeUndefined(); // non-setting field never in payload
+    expect(payload.session_length).toBeUndefined(); // undefined because partSettings?.session_length is undefined
+    expect(payload.vendor_ok).toBe('yes');
+  });
+});
+
+describe('part update full→safe ladder with _unknown_settings (integration-style via publish)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('retries with safe payload when full is rejected 400, and updateConfig is not asked to remove _unknown_settings', async () => {
+    const localConfig: Config = {
+      version: '1.0',
+      vocareum: {
+        org_id: '1',
+        course_id: '201303',
+        template_assignment_id: 'tmpl-1',
+        api_base_url: 'https://api.vocareum.com',
+      },
+      assignments: [
+        {
+          assignment_id: 'a1',
+          name: 'Lab 1',
+          path: 'lab1',
+          create_from_template: false,
+          parts: [{
+            part_id: 'p1',
+            path: 'part1',
+            settings: {
+              session_length: '60',
+              _unknown_settings: { vendor_flag: true },
+            },
+          }],
+        },
+      ],
+      publish_history: [],
+      publish_options: {
+        on_missing_id: 'skip',
+        auto_commit: false,
+        abort_on_error: false,
+        sync_deletes: false,
+        exclude_patterns: [],
+      },
+    };
+
+    const plan: ReconciliationPlan = {
+      config: localConfig,
+      course: { type: 'skip' },
+      assignments: [{
+        type: 'update',
+        assignment: localConfig.assignments[0],
+        parts: [{ type: 'update', part: localConfig.assignments[0].parts[0], metadataChanged: true, contentChanged: false }],
+        assignmentMetadataChanged: false,
+      }],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 1,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+    };
+
+    reconcileMock.mockResolvedValue(plan);
+    displayPlanMock.mockReturnValue(undefined);
+    getAssignmentMock.mockResolvedValue({
+      id: 'a1', courseid: localConfig.vocareum.course_id, name: 'Lab 1', deleted: '0',
+    });
+    getPartMock.mockResolvedValue({
+      id: 'p1', courseid: localConfig.vocareum.course_id, assignmentid: 'a1',
+      name: 'part1', seqnum: '0', deleted: '0', session_length: '60',
+    });
+    readDirectoryMock.mockResolvedValue({});
+    syncDirectoryMock.mockResolvedValue({ succeeded: [], failed: [], directoryHash: 'h' });
+    getCommitShaMock.mockResolvedValue('abc123');
+    getGitUserNameMock.mockResolvedValue('tester');
+    updateConfigMock.mockResolvedValue(undefined);
+
+    const http400 = Object.assign(new Error('rejected'), { response: { status: 400 } });
+    updatePartMock
+      .mockRejectedValueOnce(http400)   // full attempt
+      .mockResolvedValueOnce(undefined); // safe retry
+
+    const baseOptions: PublishOperationOptions = {
+      dryRun: false,
+      nonInteractive: true,
+      autoCommit: false,
+      syncDeletes: false,
+      verbose: false,
+    };
+
+    await publish(localConfig, {} as VocareumClient, baseOptions);
+
+    expect(updatePartMock).toHaveBeenCalledTimes(2);
+    const firstSettings = updatePartMock.mock.calls[0][4] as Record<string, unknown>;
+    const secondSettings = updatePartMock.mock.calls[1][4] as Record<string, unknown>;
+    // First call = full payload: includes both known + spread unknown fields
+    expect(firstSettings.session_length).toBe('60');
+    expect(firstSettings.vendor_flag).toBe(true);
+    // Second call = safe payload: includes known fields but NOT unknown spread,
+    // AND NOT full-only fields like labtype / endlab / cloud_labs
+    expect(secondSettings.session_length).toBe('60');
+    expect(secondSettings.vendor_flag).toBeUndefined();
+    expect(secondSettings.labtype).toBeUndefined();
+    expect(secondSettings.endlab).toBeUndefined();
+    expect(secondSettings.cloud_labs).toBeUndefined();
+
+    // updateConfig should not have been called with a payload that strips
+    // _unknown_settings. If updateConfigMock was called for any reason, check
+    // that none of its calls request removing or clearing _unknown_settings.
+    for (const call of updateConfigMock.mock.calls) {
+      const updates = call[1];
+      if (updates?.assignments) {
+        for (const a of updates.assignments) {
+          if (a.parts) {
+            for (const p of a.parts) {
+              if (p.settings) {
+                expect(p.settings._unknown_settings).toBeDefined();
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+});
+
+describe('assignment update — 2-step ladder with _unknown_settings', () => {
+  function makeConfigWithUnknownAsnSetting(includeUnknown = true): Config {
+    return {
+      version: '1.0',
+      vocareum: {
+        org_id: '1',
+        course_id: '201303',
+        template_assignment_id: 'tmpl-1',
+        api_base_url: 'https://api.vocareum.com',
+      },
+      assignments: [
+        {
+          assignment_id: 'a1',
+          name: 'Lab 1',
+          path: 'lab1',
+          create_from_template: false,
+          parts: [{ part_id: 'p1', path: 'part1' }],
+          settings: {
+            nosubmit: true,
+            ...(includeUnknown ? { _unknown_settings: { vendor_flag: true } } : {}),
+          },
+        },
+      ],
+      publish_history: [],
+      publish_options: {
+        on_missing_id: 'skip',
+        auto_commit: false,
+        abort_on_error: false,
+        sync_deletes: false,
+        exclude_patterns: [],
+      },
+    };
+  }
+
+  function makePlanForUpdate(local: Config): ReconciliationPlan {
+    return {
+      config: local,
+      course: { type: 'skip' },
+      assignments: [{
+        type: 'update',
+        assignment: local.assignments[0],
+        parts: [],
+        assignmentMetadataChanged: true,
+      }],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 0,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+    } as ReconciliationPlan;
+  }
+
+  function stubRemoteFetches(local: Config): void {
+    getAssignmentMock.mockResolvedValue({
+      id: 'a1', courseid: local.vocareum.course_id,
+      name: 'Lab 1', deleted: '0', nosubmit: false,
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getCommitShaMock.mockResolvedValue('abc123');
+    getGitUserNameMock.mockResolvedValue('tester');
+    updateConfigMock.mockResolvedValue(undefined);
+    syncDirectoryMock.mockResolvedValue({ succeeded: [], failed: [], directoryHash: 'hash' });
+    readDirectoryMock.mockResolvedValue({});
+    getPartMock.mockResolvedValue({ id: 'p1', name: 'Part 1', seqnum: '0', deleted: '0', courseid: '201303', assignmentid: 'a1' });
+    promptConfirmMock.mockResolvedValue(true);
+    displayPlanMock.mockReturnValue(undefined);
+  });
+
+  const client = {} as VocareumClient;
+  const baseOptions: PublishOperationOptions = {
+    dryRun: false,
+    nonInteractive: true,
+    autoCommit: false,
+    syncDeletes: false,
+    verbose: false,
+  };
+
+  it('first attempt sends a payload that includes both known fields and the unknown_settings keys', async () => {
+    const localConfig = makeConfigWithUnknownAsnSetting();
+    reconcileMock.mockResolvedValue(makePlanForUpdate(localConfig));
+    stubRemoteFetches(localConfig);
+    updateAssignmentMock.mockResolvedValue(undefined);
+
+    await publish(localConfig, client, baseOptions);
+
+    expect(updateAssignmentMock).toHaveBeenCalled();
+    const firstCallSettings = updateAssignmentMock.mock.calls[0][3] as Record<string, unknown>;
+    expect(firstCallSettings.nosubmit).toBe(true);
+    expect(firstCallSettings.vendor_flag).toBe(true);
+  });
+
+  it('retries with known-only payload when first attempt fails 400', async () => {
+    const localConfig = makeConfigWithUnknownAsnSetting();
+    reconcileMock.mockResolvedValue(makePlanForUpdate(localConfig));
+    stubRemoteFetches(localConfig);
+
+    const http400 = Object.assign(new Error('rejected'), { response: { status: 400 } });
+    updateAssignmentMock
+      .mockRejectedValueOnce(http400)
+      .mockResolvedValueOnce(undefined);
+
+    await publish(localConfig, client, baseOptions);
+
+    expect(updateAssignmentMock).toHaveBeenCalledTimes(2);
+    const second = updateAssignmentMock.mock.calls[1][3] as Record<string, unknown>;
+    expect(second.vendor_flag).toBeUndefined();
+    expect(second.nosubmit).toBe(true);
+  });
+
+  it('non-400 errors are not retried and result in failure (existing behavior preserved)', async () => {
+    const localConfig = makeConfigWithUnknownAsnSetting();
+    reconcileMock.mockResolvedValue(makePlanForUpdate(localConfig));
+    stubRemoteFetches(localConfig);
+
+    const http500 = Object.assign(new Error('server'), { response: { status: 500 } });
+    updateAssignmentMock.mockRejectedValueOnce(http500);
+
+    const result = await publish(localConfig, client, baseOptions);
+    expect(result.success).toBe(false);
+    expect(updateAssignmentMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('without _unknown_settings, makes only one attempt (existing behavior)', async () => {
+    const localConfig = makeConfigWithUnknownAsnSetting(false);
+    reconcileMock.mockResolvedValue(makePlanForUpdate(localConfig));
+    stubRemoteFetches(localConfig);
+    updateAssignmentMock.mockResolvedValue(undefined);
+
+    await publish(localConfig, client, baseOptions);
+
+    expect(updateAssignmentMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('_unknown_settings.name does NOT override the real assignment name in the payload', async () => {
+    const localConfig: Config = {
+      version: '1.0',
+      vocareum: {
+        org_id: '1',
+        course_id: '201303',
+        template_assignment_id: 'tmpl-1',
+        api_base_url: 'https://api.vocareum.com',
+      },
+      assignments: [{
+        assignment_id: 'a1',
+        name: 'Real Assignment Name',
+        path: 'lab1',
+        create_from_template: false,
+        parts: [],
+        settings: {
+          nosubmit: true,
+          _unknown_settings: { name: 'Wrong Name', vendor_ok: 'yes' },
+        },
+      }],
+      publish_history: [],
+      publish_options: {
+        on_missing_id: 'skip',
+        auto_commit: false,
+        abort_on_error: false,
+        sync_deletes: false,
+        exclude_patterns: [],
+      },
+    };
+
+    const plan: ReconciliationPlan = {
+      config: localConfig,
+      course: { type: 'skip' },
+      assignments: [{
+        type: 'update',
+        assignment: localConfig.assignments[0],
+        parts: [],
+        assignmentMetadataChanged: true,
+      }],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 0,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+    } as ReconciliationPlan;
+
+    reconcileMock.mockResolvedValue(plan);
+    getAssignmentMock.mockResolvedValue({
+      id: 'a1',
+      courseid: '201303',
+      name: 'Real Assignment Name',
+      deleted: '0',
+      nosubmit: false,
+    });
+    updateAssignmentMock.mockResolvedValue(undefined);
+
+    await publish(localConfig, client, baseOptions);
+
+    expect(updateAssignmentMock).toHaveBeenCalled();
+    const payload = updateAssignmentMock.mock.calls[0][3] as Record<string, unknown>;
+    // Real name preserved — NOT overridden by _unknown_settings.name
+    expect(payload.name).toBe('Real Assignment Name');
+    // Non-reserved unknown key passes through
+    expect(payload.vendor_ok).toBe('yes');
+    // nosubmit from known settings
+    expect(payload.nosubmit).toBe(true);
+  });
+
+  it('filters all assignment reserved keys (id, courseid, name, known settings) from _unknown_settings', async () => {
+    const localConfig: Config = {
+      version: '1.0',
+      vocareum: {
+        org_id: '1',
+        course_id: '201303',
+        template_assignment_id: 'tmpl-1',
+        api_base_url: 'https://api.vocareum.com',
+      },
+      assignments: [
+        {
+          assignment_id: 'a1',
+          name: 'Real Assignment Name',
+          path: 'lab1',
+          create_from_template: false,
+          parts: [{ part_id: 'p1', path: 'part1' }],
+          settings: {
+            nosubmit: true,
+            _unknown_settings: {
+              // Reserved (NON_SETTING_FIELDS_ASSIGNMENT) — must be filtered
+              id: 'WRONG_ID',
+              courseid: 'WRONG_COURSE',
+              name: 'Wrong Name',
+              // Reserved (KNOWN_ASSIGNMENT_SETTING_KEYS) — must be filtered
+              nosubmit: false,
+              // Non-reserved — must pass through
+              vendor_ok: 'passes',
+            },
+          },
+        },
+      ],
+      publish_history: [],
+      publish_options: {
+        on_missing_id: 'skip',
+        auto_commit: false,
+        abort_on_error: false,
+        sync_deletes: false,
+        exclude_patterns: [],
+      },
+    };
+
+    const plan: ReconciliationPlan = {
+      config: localConfig,
+      course: { type: 'skip' },
+      assignments: [{
+        type: 'update',
+        assignment: localConfig.assignments[0],
+        parts: [],
+        assignmentMetadataChanged: true,
+      }],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 0,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+    } as ReconciliationPlan;
+
+    reconcileMock.mockResolvedValue(plan);
+    getAssignmentMock.mockResolvedValue({
+      id: 'a1', courseid: '201303', name: 'Real Assignment Name', deleted: '0', nosubmit: false,
+    });
+    updateAssignmentMock.mockResolvedValue(undefined);
+
+    await publish(localConfig, client, baseOptions);
+
+    const payload = updateAssignmentMock.mock.calls[0][3] as Record<string, unknown>;
+    expect(payload.name).toBe('Real Assignment Name');
+    expect(payload.id).toBeUndefined();
+    expect(payload.courseid).toBeUndefined();
+    expect(payload.nosubmit).toBe(true);     // from known field, NOT overridden
+    expect(payload.vendor_ok).toBe('passes'); // non-reserved passes through
+  });
+
+  it('filters nested _unknown_settings._unknown_settings from outgoing payload', async () => {
+    // A YAML where the wrapper key is itself listed inside the bucket must
+    // not leak _unknown_settings as a top-level API payload field.
+    const localConfig: Config = {
+      version: '1.0',
+      vocareum: {
+        org_id: '1',
+        course_id: '201303',
+        template_assignment_id: 'tmpl-1',
+        api_base_url: 'https://api.vocareum.com',
+      },
+      assignments: [
+        {
+          assignment_id: 'a1',
+          name: 'Real Assignment Name',
+          path: 'lab1',
+          create_from_template: false,
+          parts: [{ part_id: 'p1', path: 'part1' }],
+          settings: {
+            nosubmit: true,
+            _unknown_settings: {
+              _unknown_settings: { nested_garbage: true },
+              vendor_ok: 'passes',
+            },
+          },
+        },
+      ],
+      publish_history: [],
+      publish_options: {
+        on_missing_id: 'skip',
+        auto_commit: false,
+        abort_on_error: false,
+        sync_deletes: false,
+        exclude_patterns: [],
+      },
+    };
+
+    reconcileMock.mockResolvedValue({
+      config: localConfig,
+      course: { type: 'skip' },
+      assignments: [{
+        type: 'update',
+        assignment: localConfig.assignments[0],
+        parts: [],
+        assignmentMetadataChanged: true,
+      }],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 0,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+    } as ReconciliationPlan);
+    getAssignmentMock.mockResolvedValue({
+      id: 'a1', courseid: '201303', name: 'Real Assignment Name', deleted: '0', nosubmit: false,
+    });
+    updateAssignmentMock.mockResolvedValue(undefined);
+
+    await publish(localConfig, client, baseOptions);
+
+    const payload = updateAssignmentMock.mock.calls[0][3] as Record<string, unknown>;
+    expect(payload._unknown_settings).toBeUndefined();
+    expect(payload.vendor_ok).toBe('passes');
+  });
+});
+
+describe('publish — Fix #3: reporter threading through update-path reads', () => {
+  const client = {} as VocareumClient;
+  const baseOptions: PublishOperationOptions = {
+    dryRun: false,
+    nonInteractive: true,
+    autoCommit: false,
+    syncDeletes: false,
+    verbose: false,
+  };
+
+  function makeUpdatePlan(localConfig: Config): ReconciliationPlan {
+    return {
+      config: localConfig,
+      course: { type: 'skip' },
+      assignments: [{
+        type: 'update',
+        assignment: localConfig.assignments[0],
+        parts: [],
+        assignmentMetadataChanged: true,
+      }],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 0,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+    } as ReconciliationPlan;
+  }
+
+  function makePartUpdatePlan(localConfig: Config): ReconciliationPlan {
+    return {
+      config: localConfig,
+      course: { type: 'skip' },
+      assignments: [{
+        type: 'update',
+        assignment: localConfig.assignments[0],
+        parts: [{
+          type: 'update',
+          part: localConfig.assignments[0].parts[0],
+          metadataChanged: true,
+          contentChanged: false,
+        }],
+        assignmentMetadataChanged: false,
+      }],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 1,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+    } as ReconciliationPlan;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getCommitShaMock.mockResolvedValue('abc123');
+    getGitUserNameMock.mockResolvedValue('tester');
+    updateConfigMock.mockResolvedValue(undefined);
+    syncDirectoryMock.mockResolvedValue({ succeeded: [], failed: [], directoryHash: 'hash' });
+    readDirectoryMock.mockResolvedValue({});
+    promptConfirmMock.mockResolvedValue(true);
+    displayPlanMock.mockReturnValue(undefined);
+    updateAssignmentMock.mockResolvedValue(undefined);
+    updatePartMock.mockResolvedValue(undefined);
+  });
+
+  it('records unknown assignment fields in reporter when getAssignment returns them during update', async () => {
+    const { UnknownFieldReporter } = await import('../../src/utils/unknown-field-reporter');
+
+    const localConfig: Config = {
+      version: '1.0',
+      vocareum: { org_id: '1', course_id: '201303', api_base_url: 'https://api.vocareum.com' },
+      assignments: [{
+        assignment_id: 'a1',
+        name: 'Lab 1',
+        path: 'lab1',
+        create_from_template: false,
+        parts: [],
+        settings: { nosubmit: false },
+      }],
+      publish_history: [],
+      publish_options: {
+        on_missing_id: 'skip', auto_commit: false, abort_on_error: false,
+        sync_deletes: false, exclude_patterns: [],
+      },
+    };
+
+    reconcileMock.mockResolvedValue(makeUpdatePlan(localConfig));
+    // Remote returns an unknown field 'vendor_setting'
+    getAssignmentMock.mockResolvedValue({
+      id: 'a1',
+      courseid: '201303',
+      name: 'Lab 1',
+      deleted: '0',
+      nosubmit: false,
+      vendor_setting: 'active',
+    });
+
+    const reporter = new UnknownFieldReporter({ warn: vi.fn(), plain: vi.fn() });
+    await publish(localConfig, client, baseOptions, reporter);
+
+    const summary = reporter.summary();
+    expect(summary).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ scope: 'assignment', field: 'vendor_setting' }),
+      ])
+    );
+  });
+
+  it('records unknown part fields in reporter when getPart returns them during update', async () => {
+    const { UnknownFieldReporter } = await import('../../src/utils/unknown-field-reporter');
+
+    const localConfig: Config = {
+      version: '1.0',
+      vocareum: { org_id: '1', course_id: '201303', api_base_url: 'https://api.vocareum.com' },
+      assignments: [{
+        assignment_id: 'a1',
+        name: 'Lab 1',
+        path: 'lab1',
+        create_from_template: false,
+        parts: [{
+          part_id: 'p1',
+          path: 'part1',
+          name: 'Part 1',
+          settings: { session_length: '60' },
+        }],
+        settings: {},
+      }],
+      publish_history: [],
+      publish_options: {
+        on_missing_id: 'skip', auto_commit: false, abort_on_error: false,
+        sync_deletes: false, exclude_patterns: [],
+      },
+    };
+
+    reconcileMock.mockResolvedValue(makePartUpdatePlan(localConfig));
+    // Remote part returns an unknown field 'mystery_field'
+    getPartMock.mockResolvedValue({
+      id: 'p1',
+      courseid: '201303',
+      assignmentid: 'a1',
+      name: 'Part 1',
+      seqnum: '0',
+      deleted: '0',
+      session_length: '60',
+      mystery_field: 42,
+    });
+
+    const reporter = new UnknownFieldReporter({ warn: vi.fn(), plain: vi.fn() });
+    await publish(localConfig, client, baseOptions, reporter);
+
+    const summary = reporter.summary();
+    expect(summary).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ scope: 'part', field: 'mystery_field' }),
+      ])
+    );
   });
 });

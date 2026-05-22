@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Config } from '../../src/types/config';
 import { publishCommand } from '../../src/commands/publish';
+import { UnknownFieldReporter } from '../../src/utils/unknown-field-reporter';
 
 const {
   loadConfigMock,
@@ -113,5 +114,46 @@ describe('publishCommand option wiring', () => {
     expect(passedOptions.onMissingId).toBe('skip');
     expect(passedOptions.abortOnError).toBe(true);
     expect(passedOptions.syncDeletes).toBe(true);
+  });
+});
+
+describe('publishCommand — reporter lifecycle', () => {
+  const minimalConfig = {
+    version: '1.0',
+    vocareum: { org_id: '1', course_id: '1', api_base_url: 'https://api.vocareum.com' },
+    assignments: [],
+    publish_history: [],
+    publish_options: {
+      on_missing_id: 'skip', auto_commit: false, abort_on_error: false,
+      sync_deletes: false, exclude_patterns: [],
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VOCAREUM_API_KEY = 'token';
+    isCIMock.mockReturnValue(false);
+  });
+
+  it('constructs an UnknownFieldReporter and passes it as the 4th argument to publish()', async () => {
+    publishMock.mockResolvedValue({ success: true, failed: [], succeeded: [] });
+    loadConfigMock.mockResolvedValue(minimalConfig);
+
+    await publishCommand({ config: 'vocareum.yaml' });
+
+    expect(publishMock).toHaveBeenCalled();
+    const fourthArg = publishMock.mock.calls[0][3];
+    expect(fourthArg).toBeInstanceOf(UnknownFieldReporter);
+  });
+
+  it('calls reporter.printSummary even when publish() throws', async () => {
+    const printSpy = vi.spyOn(UnknownFieldReporter.prototype, 'printSummary');
+    publishMock.mockRejectedValue(new Error('boom'));
+    loadConfigMock.mockResolvedValue(minimalConfig);
+
+    await expect(publishCommand({ config: 'vocareum.yaml' })).rejects.toThrow();
+
+    expect(printSpy).toHaveBeenCalledTimes(1);
+    printSpy.mockRestore();
   });
 });

@@ -10,7 +10,7 @@
 import { VocareumClient } from './client';
 import type {
   VocareumPartResponse,
-  ApiPartSettings,
+  PartSettingsPayload,
   PartsListResponse
 } from '../types/api';
 
@@ -98,7 +98,7 @@ export async function updatePart(
   courseId: string,
   assignmentId: string,
   partId: string,
-  settings: ApiPartSettings
+  settings: PartSettingsPayload
 ): Promise<void> {
   const response = await client.request<{
     status: 'success';

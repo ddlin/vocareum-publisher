@@ -2,9 +2,14 @@
  * Settings mapping tests — API response shape coercion.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mapAssignmentSettings, mapPartSettings } from '../../src/utils/settings';
 import type { VocareumAssignmentResponse, VocareumPartResponse } from '../../src/types/api';
+import { UnknownFieldReporter } from '../../src/utils/unknown-field-reporter';
+import {
+  KNOWN_ASSIGNMENT_SETTING_KEYS,
+  KNOWN_PART_SETTING_KEYS,
+} from '../../src/utils/known-settings';
 
 function baseResponse(extra: Partial<VocareumAssignmentResponse>): VocareumAssignmentResponse {
   return {
@@ -62,5 +67,197 @@ describe('mapPartSettings tag handling', () => {
     } as VocareumPartResponse);
 
     expect(result.tags).toEqual({ average_lab_time: 240 });
+  });
+});
+
+const noopLogger = { warn: () => {}, plain: () => {} };
+
+describe('mapAssignmentSettings — unknown settings preservation', () => {
+  it('attaches unknown fields under _unknown_settings', () => {
+    const result = mapAssignmentSettings(
+      baseResponse({ nosubmit: true, vendor_field: 'abc' } as never)
+    );
+    expect(result._unknown_settings).toEqual({ vendor_field: 'abc' });
+    expect(result.nosubmit).toBe(true);
+  });
+
+  it('does not add _unknown_settings when all response keys are known or non-settings', () => {
+    const result = mapAssignmentSettings(baseResponse({ nosubmit: true }));
+    expect(result._unknown_settings).toBeUndefined();
+  });
+
+  it('does not route non-settings fields (id, courseid, name, due_date, deleted, published) into _unknown_settings', () => {
+    const result = mapAssignmentSettings(
+      baseResponse({
+        nosubmit: true,
+        due_date: '2026-01-01',
+        points: '100',
+        published: '1',
+      } as never)
+    );
+    expect(result._unknown_settings).toBeUndefined();
+  });
+
+  it('reports each unknown field once to the reporter', () => {
+    const reporter = new UnknownFieldReporter(noopLogger);
+    const spy = vi.spyOn(reporter, 'record');
+    mapAssignmentSettings(
+      baseResponse({ vendor_field: 'abc', other_new: 1 } as never),
+      reporter,
+      'a-1'
+    );
+    expect(spy).toHaveBeenCalledWith('assignment', 'vendor_field', 'abc', 'a-1');
+    expect(spy).toHaveBeenCalledWith('assignment', 'other_new', 1, 'a-1');
+  });
+});
+
+function basePart(extra: Partial<VocareumPartResponse>): VocareumPartResponse {
+  return {
+    id: 'p1',
+    courseid: 'c1',
+    assignmentid: 'a1',
+    name: 'Part',
+    seqnum: '0',
+    deleted: '0',
+    ...extra,
+  } as VocareumPartResponse;
+}
+
+describe('mapPartSettings — unknown settings preservation', () => {
+  it('attaches unknown fields under _unknown_settings', () => {
+    const result = mapPartSettings(
+      basePart({ session_length: '60', mystery: true } as never)
+    );
+    expect(result._unknown_settings).toEqual({ mystery: true });
+    expect(result.session_length).toBe('60');
+  });
+
+  it('does not route non-settings fields (id, courseid, assignmentid, name, description, seqnum, deleted, part_url) into _unknown_settings', () => {
+    const result = mapPartSettings(
+      basePart({ session_length: '60', description: 'D', part_url: 'x' } as never)
+    );
+    expect(result._unknown_settings).toBeUndefined();
+  });
+
+  it('reports each unknown field once to the reporter', () => {
+    const reporter = new UnknownFieldReporter(noopLogger);
+    const spy = vi.spyOn(reporter, 'record');
+    mapPartSettings(
+      basePart({ mystery: true, extra: 'x' } as never),
+      reporter,
+      'p-1'
+    );
+    expect(spy).toHaveBeenCalledWith('part', 'mystery', true, 'p-1');
+    expect(spy).toHaveBeenCalledWith('part', 'extra', 'x', 'p-1');
+  });
+});
+
+describe('source-of-truth: every key in KNOWN_*_SETTING_KEYS is actually read by its mapper', () => {
+  it('mapAssignmentSettings reads every KNOWN_ASSIGNMENT_SETTING_KEYS entry', () => {
+    const inputs: Record<string, unknown> = {};
+    for (const k of KNOWN_ASSIGNMENT_SETTING_KEYS) {
+      if (k === 'exam_mode') { inputs[k] = 'timed'; }
+      else if (k === 'grading_visibility') { inputs[k] = 'all'; }
+      else if (k === 'exam_duration' || k === 'num_attempts') { inputs[k] = 1; }
+      else if (k === 'publish_grades' || k === 'description') { inputs[k] = 'x'; }
+      else if (k === 'lti_on') { inputs[k] = '1'; }
+      else { inputs[k] = true; }
+    }
+    const result = mapAssignmentSettings(baseResponse(inputs as never)) as Record<string, unknown>;
+    for (const k of KNOWN_ASSIGNMENT_SETTING_KEYS) {
+      expect(result, `mapAssignmentSettings did not copy "${k}" — KNOWN_ASSIGNMENT_SETTING_KEYS has drifted ahead of the mapper`).toHaveProperty(k);
+    }
+  });
+
+  it('no known assignment field leaks into _unknown_settings (drift detection inverse)', () => {
+    // Build the same all-known-fields input the forward test uses. If a future
+    // contributor adds a field to mapAssignmentSettings without adding it to
+    // KNOWN_ASSIGNMENT_SETTING_KEYS, partition() will classify it as unknown
+    // and _unknown_settings will be defined — failing this test.
+    const inputs: Record<string, unknown> = {};
+    for (const k of KNOWN_ASSIGNMENT_SETTING_KEYS) {
+      if (k === 'exam_mode') { inputs[k] = 'timed'; }
+      else if (k === 'grading_visibility') { inputs[k] = 'all'; }
+      else if (k === 'exam_duration' || k === 'num_attempts') { inputs[k] = 1; }
+      else if (k === 'publish_grades' || k === 'description') { inputs[k] = 'x'; }
+      else if (k === 'lti_on') { inputs[k] = '1'; }
+      else { inputs[k] = true; }
+    }
+    const result = mapAssignmentSettings(baseResponse(inputs as never));
+    expect(result._unknown_settings).toBeUndefined();
+  });
+
+  it('mapPartSettings reads every KNOWN_PART_SETTING_KEYS entry', () => {
+    const inputs: Record<string, unknown> = {};
+    for (const k of KNOWN_PART_SETTING_KEYS) {
+      if (k === 'submission_filters') { inputs[k] = { include: ['*.py'] }; }
+      else if (k === 'lab_interface') { inputs[k] = { panels: ['Html'] }; }
+      else if (k === 'tags') { inputs[k] = { average_lab_time: 300 }; }
+      else if (k === 'late_penalty_percent_rule') { inputs[k] = 'max score'; }
+      else if (k === 'endlab') { inputs[k] = 'stop'; }
+      else if (k === 'labtype' || k === 'container_image') { inputs[k] = 'x'; }
+      else if (k === 'session_length' || k === 'monthly_dollar' || k === 'monthly_time' || k === 'total_time' || k === 'total_dollar' || k === 'deadlinedate') { inputs[k] = '60'; }
+      else if (k === 'late_penalty_percent' || k === 'number_of_submissions' || k === 'databricks_maxusers') { inputs[k] = 1; }
+      else { inputs[k] = true; }
+    }
+    const result = mapPartSettings(basePart(inputs as never)) as Record<string, unknown>;
+    for (const k of KNOWN_PART_SETTING_KEYS) {
+      expect(result, `mapPartSettings did not copy "${k}" — KNOWN_PART_SETTING_KEYS has drifted ahead of the mapper`).toHaveProperty(k);
+    }
+  });
+
+  it('no known part field leaks into _unknown_settings (drift detection inverse)', () => {
+    // Symmetric inverse for parts — see assignment-side test for rationale.
+    const inputs: Record<string, unknown> = {};
+    for (const k of KNOWN_PART_SETTING_KEYS) {
+      if (k === 'submission_filters') { inputs[k] = { include: ['*.py'] }; }
+      else if (k === 'lab_interface') { inputs[k] = { panels: ['Html'] }; }
+      else if (k === 'tags') { inputs[k] = { average_lab_time: 300 }; }
+      else if (k === 'late_penalty_percent_rule') { inputs[k] = 'max score'; }
+      else if (k === 'endlab') { inputs[k] = 'stop'; }
+      else if (k === 'labtype' || k === 'container_image') { inputs[k] = 'x'; }
+      else if (k === 'session_length' || k === 'monthly_dollar' || k === 'monthly_time' || k === 'total_time' || k === 'total_dollar' || k === 'deadlinedate') { inputs[k] = '60'; }
+      else if (k === 'late_penalty_percent' || k === 'number_of_submissions' || k === 'databricks_maxusers') { inputs[k] = 1; }
+      else { inputs[k] = true; }
+    }
+    const result = mapPartSettings(basePart(inputs as never));
+    expect(result._unknown_settings).toBeUndefined();
+  });
+});
+
+describe('mapper guard: reporter without resourceId', () => {
+  it('mapAssignmentSettings throws if reporter is provided without resourceId', () => {
+    const reporter = new UnknownFieldReporter(noopLogger);
+    expect(() => mapAssignmentSettings(baseResponse({ nosubmit: true }), reporter)).toThrow(
+      /resourceId is required/
+    );
+  });
+
+  it('mapPartSettings throws if reporter is provided without resourceId', () => {
+    const reporter = new UnknownFieldReporter(noopLogger);
+    expect(() => mapPartSettings(basePart({ session_length: '60' }), reporter)).toThrow(
+      /resourceId is required/
+    );
+  });
+});
+
+describe('mapPartSettings — submission_filters normalization', () => {
+  it('normalizes array form of submission_filters to {include: [...]}', () => {
+    const result = mapPartSettings(
+      basePart({ submission_filters: ['*.py', '*.txt'] } as never)
+    );
+    expect(result.submission_filters).toEqual({ include: ['*.py', '*.txt'] });
+  });
+
+  it('preserves object form of submission_filters as-is', () => {
+    const result = mapPartSettings(
+      basePart({ submission_filters: { include: ['*.py'], exclude: ['*.pyc'] } } as never)
+    );
+    expect(result.submission_filters).toEqual({ include: ['*.py'], exclude: ['*.pyc'] });
+  });
+
+  it('returns undefined for empty array', () => {
+    const result = mapPartSettings(basePart({ submission_filters: [] } as never));
+    expect(result.submission_filters).toBeUndefined();
   });
 });

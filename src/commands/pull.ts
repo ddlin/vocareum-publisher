@@ -19,6 +19,7 @@ import { pathExists, ensureDirectory, writeFile, calculateDirectoryHash, validat
 import { getCommitSha, getGitUserName } from '../utils/git';
 import type { PublishHistory } from '../types/config';
 import { mapAssignmentSettings, mapPartSettings } from '../utils/settings';
+import { UnknownFieldReporter } from '../utils/unknown-field-reporter';
 import {
   normalizeSubmissionFilters,
   DEFAULT_PART_DIRECTORIES,
@@ -77,6 +78,8 @@ interface PartSettingsDrift {
   partPath: string;
   diffs: SettingDiff[];
   remoteSettings: NonNullable<PartSettings>;
+  /** True when remote._unknown_settings differs from local._unknown_settings. */
+  unknownsChanged: boolean;
 }
 
 /** Represents settings drift for an assignment */
@@ -87,6 +90,8 @@ interface AssignmentSettingsDrift {
   assignmentDiffs: SettingDiff[];
   remoteAssignmentSettings: NonNullable<AssignmentSettings>;
   partsDrift: PartSettingsDrift[];
+  /** True when remote._unknown_settings differs from local._unknown_settings. */
+  unknownsChanged: boolean;
 }
 
 /** Represents a file that differs between local and remote */
@@ -369,7 +374,8 @@ function comparePartSettings(
 async function detectSettingsDrift(
   config: { assignments: Assignment[]; vocareum: { course_id: string; excluded_assignments?: string[]; architecture?: 'elite' | 'container' } },
   client: VocareumClient,
-  skipAssignmentIds: Set<string>
+  skipAssignmentIds: Set<string>,
+  reporter?: UnknownFieldReporter
 ): Promise<AssignmentSettingsDrift[]> {
   const driftList: AssignmentSettingsDrift[] = [];
 
@@ -389,7 +395,7 @@ async function detectSettingsDrift(
     try {
       // Fetch full assignment details
       const remoteAssignment = await getAssignment(client, config.vocareum.course_id, assignment.assignment_id);
-      const remoteAssignmentSettings = mapAssignmentSettings(remoteAssignment);
+      const remoteAssignmentSettings = mapAssignmentSettings(remoteAssignment, reporter, remoteAssignment.id);
 
       // Compare assignment settings
       const assignmentDiffs = compareAssignmentSettings(assignment.settings, remoteAssignmentSettings);
@@ -407,24 +413,44 @@ async function detectSettingsDrift(
 
         // Fetch full part details
         const fullRemotePart = await getPart(client, config.vocareum.course_id, assignment.assignment_id, configPart.part_id);
-        const remotePartSettings = mapPartSettings(fullRemotePart);
+        const remotePartSettings = mapPartSettings(fullRemotePart, reporter, fullRemotePart.id);
 
         // Compare part settings
         const partDiffs = comparePartSettings(configPart.settings, remotePartSettings);
 
-        if (partDiffs.length > 0) {
+        // Compare _unknown_settings independently
+        const localPartUnknowns = configPart.settings?._unknown_settings ?? {};
+        const remotePartUnknowns = remotePartSettings._unknown_settings ?? {};
+        const partUnknownsChanged = !valuesEqual(
+          Object.keys(localPartUnknowns).length > 0 ? localPartUnknowns : undefined,
+          Object.keys(remotePartUnknowns).length > 0 ? remotePartUnknowns : undefined
+        );
+
+        if (partDiffs.length > 0 || partUnknownsChanged) {
           partsDrift.push({
             partId: configPart.part_id,
             partName: configPart.name ?? remotePart.name,
             partPath: configPart.path,
             diffs: partDiffs,
             remoteSettings: remotePartSettings,
+            unknownsChanged: partUnknownsChanged,
           });
         }
       }
 
-      // Only add to drift list if there are differences
-      if (assignmentDiffs.length > 0 || partsDrift.length > 0) {
+      // Compare assignment _unknown_settings independently
+      const localAsnUnknowns = assignment.settings?._unknown_settings ?? {};
+      const remoteAsnUnknowns = remoteAssignmentSettings._unknown_settings ?? {};
+      const asnUnknownsChanged = !valuesEqual(
+        Object.keys(localAsnUnknowns).length > 0 ? localAsnUnknowns : undefined,
+        Object.keys(remoteAsnUnknowns).length > 0 ? remoteAsnUnknowns : undefined
+      );
+
+      // Add to drift list if there are any differences (known or unknown)
+      const hasDrift = assignmentDiffs.length > 0 || asnUnknownsChanged ||
+        partsDrift.length > 0;
+
+      if (hasDrift) {
         driftList.push({
           assignmentId: assignment.assignment_id,
           assignmentName: assignment.name,
@@ -432,6 +458,7 @@ async function detectSettingsDrift(
           assignmentDiffs,
           remoteAssignmentSettings,
           partsDrift,
+          unknownsChanged: asnUnknownsChanged,
         });
       }
     } catch (error) {
@@ -595,13 +622,14 @@ async function importAssignment(
   localPath: string,
   verbose: boolean,
   architecture?: 'elite' | 'container',
-  skipContent = false
+  skipContent = false,
+  reporter?: UnknownFieldReporter
 ): Promise<ImportResult> {
   const assignmentId = orphan.id;
 
   // Get full assignment details including settings
   const fullAssignment = await getAssignment(client, courseId, assignmentId);
-  const assignmentSettings = mapAssignmentSettings(fullAssignment);
+  const assignmentSettings = mapAssignmentSettings(fullAssignment, reporter, fullAssignment.id);
 
   if (verbose && Object.keys(assignmentSettings).length > 0) {
     logger.debug(`Imported ${Object.keys(assignmentSettings).length} assignment settings`);
@@ -622,7 +650,7 @@ async function importAssignment(
 
     // Get full part details including settings
     const fullPart = await getPart(client, courseId, assignmentId, part.id);
-    const partSettings = mapPartSettings(fullPart);
+    const partSettings = mapPartSettings(fullPart, reporter, fullPart.id);
 
     if (verbose && Object.keys(partSettings).length > 0) {
       logger.debug(`Imported ${Object.keys(partSettings).length} settings for part ${part.name}`);
@@ -850,6 +878,7 @@ export async function pullCommand(options: PullOptions): Promise<void> {
   const nonInteractive = !batch && (options.nonInteractive ?? isCI());
   const verbose = options.verbose ?? false;
   const skipContent = options.skipContent ?? false;
+  const reporter = new UnknownFieldReporter(logger);
 
   try {
     loadDotEnvIfPresent();
@@ -865,7 +894,7 @@ export async function pullCommand(options: PullOptions): Promise<void> {
 
     // Detect settings drift (skip stale assignments that are already identified as deleted)
     const staleAssignmentIds = new Set(plan.staleInConfig.map(s => s.assignment_id));
-    const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds);
+    const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds, reporter);
 
     // Detect content drift (files changed on Vocareum)
     const contentDrift = await detectContentDrift(config, client, staleAssignmentIds, verbose);
@@ -954,7 +983,8 @@ export async function pullCommand(options: PullOptions): Promise<void> {
               finalDirName,
               verbose,
               config.vocareum.architecture,
-              skipContent
+              skipContent,
+              reporter
             );
 
             newAssignments.push(assignment);
@@ -1054,12 +1084,20 @@ export async function pullCommand(options: PullOptions): Promise<void> {
             logger.plain(`    - ${diff.key}: ${formatValue(diff.localValue)} → ${formatValue(diff.remoteValue)}`);
           }
         }
+        if (drift.unknownsChanged) {
+          logger.plain('  Unknown settings changed (see end-of-run summary for fields)');
+        }
 
         // Show part-level diffs
         for (const partDrift of drift.partsDrift) {
-          logger.plain(`  Part "${partDrift.partName}" settings changed:`);
-          for (const diff of partDrift.diffs) {
-            logger.plain(`    - ${diff.key}: ${formatValue(diff.localValue)} → ${formatValue(diff.remoteValue)}`);
+          if (partDrift.diffs.length > 0) {
+            logger.plain(`  Part "${partDrift.partName}" settings changed:`);
+            for (const diff of partDrift.diffs) {
+              logger.plain(`    - ${diff.key}: ${formatValue(diff.localValue)} → ${formatValue(diff.remoteValue)}`);
+            }
+          }
+          if (partDrift.unknownsChanged) {
+            logger.plain(`  Part "${partDrift.partName}" unknown settings changed (see end-of-run summary for fields)`);
           }
         }
 
@@ -1091,11 +1129,17 @@ export async function pullCommand(options: PullOptions): Promise<void> {
           // Store settings to update
           const partSettingsMap = new Map<string, NonNullable<PartSettings>>();
           for (const partDrift of drift.partsDrift) {
-            partSettingsMap.set(partDrift.partPath, partDrift.remoteSettings);
+            // Save remote settings when known fields OR unknowns changed
+            if (partDrift.diffs.length > 0 || partDrift.unknownsChanged) {
+              partSettingsMap.set(partDrift.partPath, partDrift.remoteSettings);
+            }
           }
 
           settingsUpdates.set(drift.assignmentPath, {
-            assignmentSettings: drift.assignmentDiffs.length > 0 ? drift.remoteAssignmentSettings : undefined,
+            // Save assignment settings when known fields OR unknowns changed
+            assignmentSettings: (drift.assignmentDiffs.length > 0 || drift.unknownsChanged)
+              ? drift.remoteAssignmentSettings
+              : undefined,
             partSettings: partSettingsMap.size > 0 ? partSettingsMap : undefined,
           });
 
@@ -1272,25 +1316,36 @@ export async function pullCommand(options: PullOptions): Promise<void> {
           path: assignmentPath,
         };
 
-        // Update assignment settings if changed
+        // Update assignment settings if changed.
+        // Note: when remote no longer returns any unknown fields, the mapper
+        // omits _unknown_settings entirely; we must explicitly clear the local
+        // bucket rather than letting it persist through the merge.
         if (updates.assignmentSettings) {
-          assignmentUpdate.settings = {
+          const mergedSettings = {
             ...existingAssignment.settings,
             ...updates.assignmentSettings,
           };
+          if (updates.assignmentSettings._unknown_settings === undefined) {
+            delete mergedSettings._unknown_settings;
+          }
+          assignmentUpdate.settings = mergedSettings;
         }
 
-        // Update part settings if changed
+        // Update part settings if changed (same stale-unknowns clearing as above).
         if (updates.partSettings && updates.partSettings.size > 0) {
           assignmentUpdate.parts = existingAssignment.parts.map(part => {
             const newPartSettings = updates.partSettings?.get(part.path);
             if (newPartSettings) {
+              const mergedPartSettings = {
+                ...part.settings,
+                ...newPartSettings,
+              };
+              if (newPartSettings._unknown_settings === undefined) {
+                delete mergedPartSettings._unknown_settings;
+              }
               return {
                 ...part,
-                settings: {
-                  ...part.settings,
-                  ...newPartSettings,
-                },
+                settings: mergedPartSettings,
               };
             }
             return part;
@@ -1322,8 +1377,7 @@ export async function pullCommand(options: PullOptions): Promise<void> {
     logger.plain(`  Reset:           ${summary.reset}`);
     logger.plain(`  Skipped:         ${summary.skipped}`);
 
-  } catch (error) {
-    logger.error(`Pull failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    process.exit(1);
+  } finally {
+    reporter.printSummary();
   }
 }

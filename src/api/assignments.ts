@@ -9,7 +9,7 @@ import { VocareumClient } from './client';
 import type {
   VocareumAssignmentResponse,
   AssignmentCopyResponse,
-  ApiAssignmentSettings,
+  AssignmentSettingsPayload,
   AssignmentsListResponse
 } from '../types/api';
 import { listParts } from './parts';
@@ -238,7 +238,7 @@ export async function updateAssignment(
   client: VocareumClient,
   courseId: string,
   assignmentId: string,
-  settings: ApiAssignmentSettings
+  settings: AssignmentSettingsPayload
 ): Promise<void> {
   const response = await client.request<{
     status: 'success';
