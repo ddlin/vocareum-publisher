@@ -5,7 +5,7 @@ Push assignment content from GitHub to Vocareum.
 A CLI tool and GitHub Action that enables instructors to maintain assignment content in Git with full version control while seamlessly syncing to Vocareum.
 
 Current stable release in this repository:
-- CLI package: `vocareum-publisher@1.0.19`
+- CLI package: `vocareum-publisher@1.0.20`
 - VS Code extension: `vocgit@1.0.2`
 
 **[Video Walkthrough](https://www.loom.com/share/2af5f925c0244db0bf9825f8e7e133bd)** - Watch a quick demo of vocgit in action.
@@ -18,6 +18,7 @@ Current stable release in this repository:
 - **Change Detection**: Only uploads changed content (efficient)
 - **Template-Based Creation**: Create new assignments from templates
 - **Validation**: Verify configuration before pushing
+- **Forward-Compatible Settings**: Unrecognized Vocareum settings fields are preserved under `_unknown_settings` in `vocareum.yaml` and passed back through on push, so new platform features never silently drop out of your config
 
 ## Installation
 
