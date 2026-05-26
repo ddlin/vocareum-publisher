@@ -46,6 +46,17 @@ export const NON_SETTING_FIELDS_ASSIGNMENT: ReadonlySet<string> = new Set([
   'points',
   'deleted',
   'published',
+  // Server-managed identity / structural / read-only metadata. These are
+  // returned by the API but are not instructor-configurable lab settings, so
+  // they are dropped (not preserved under _unknown_settings, not pushed back).
+  // Classified from a real pull report (v1.0.20).
+  'create_method',      // how the resource was created
+  'gradespublished',    // read-only status; API rejects it on write
+  'groupdisplayorder',  // server-managed ordering
+  'groupid',            // grouping identifier
+  'masterid',           // reference to the template/master it was copied from
+  'num_parts',          // derived count of parts
+  'part_ids',           // the assignment's part-ID list (structure, not config)
 ]);
 
 export const KNOWN_PART_SETTING_KEYS: ReadonlySet<string> = new Set([
@@ -78,6 +89,10 @@ export const NON_SETTING_FIELDS_PART: ReadonlySet<string> = new Set([
   'seqnum',
   'deleted',
   'part_url',
+  // Server-managed identity metadata (see NON_SETTING_FIELDS_ASSIGNMENT note).
+  // Classified from a real pull report (v1.0.20).
+  'create_method',  // how the part was created
+  'masterid',       // reference to the template/master it was copied from
 ]);
 
 export interface PartitionResult {

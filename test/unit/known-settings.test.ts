@@ -48,6 +48,42 @@ describe('partitionApiResponse', () => {
     );
     expect(result.unknownFields).toEqual({ totally_new: 'x' });
   });
+
+  // Regression: these server-managed fields were reported as "unknown" by a
+  // real v1.0.20 pull. They are identity/structural/read-only metadata and must
+  // be dropped (neither known settings nor unknown drift).
+  it('drops assignment server-metadata fields reported in v1.0.20', () => {
+    const result = partitionApiResponse(
+      {
+        create_method: '',
+        gradespublished: false,
+        groupdisplayorder: '1',
+        groupid: '0',
+        masterid: '',
+        num_parts: '1',
+        part_ids: [5263249],
+        nosubmit: true, // a real known setting, for contrast
+      },
+      KNOWN_ASSIGNMENT_SETTING_KEYS,
+      NON_SETTING_FIELDS_ASSIGNMENT
+    );
+    expect(result.knownFields).toEqual({ nosubmit: true });
+    expect(result.unknownFields).toEqual({});
+  });
+
+  it('drops part server-metadata fields reported in v1.0.20', () => {
+    const result = partitionApiResponse(
+      {
+        create_method: '',
+        masterid: '',
+        session_length: '60', // a real known setting, for contrast
+      },
+      KNOWN_PART_SETTING_KEYS,
+      NON_SETTING_FIELDS_PART
+    );
+    expect(result.knownFields).toEqual({ session_length: '60' });
+    expect(result.unknownFields).toEqual({});
+  });
 });
 
 describe('per-scope set invariants', () => {
