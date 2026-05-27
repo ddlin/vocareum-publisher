@@ -5,7 +5,7 @@ Push assignment content from GitHub to Vocareum.
 A CLI tool and GitHub Action that enables instructors to maintain assignment content in Git with full version control while seamlessly syncing to Vocareum.
 
 Current stable release in this repository:
-- CLI package: `vocareum-publisher@1.0.22`
+- CLI package: `vocareum-publisher@1.0.23`
 - VS Code extension: `vocgit@1.0.2`
 
 **[Video Walkthrough](https://www.loom.com/share/2af5f925c0244db0bf9825f8e7e133bd)** - Watch a quick demo of vocgit in action.
@@ -169,6 +169,37 @@ publish_history:
         id: "22222/startercode/main.py"
         error: "Timed out after 30000ms waiting for part update (txn=123)"
 ```
+
+## Understanding Settings Sync
+
+vocgit keeps assignment and part settings in sync between `vocareum.yaml` and Vocareum. The fields you set under `settings:` are pushed on `vocgit push`, and `vocgit pull` detects when Vocareum's values have drifted from yours.
+
+Because Vocareum's API treats fields inconsistently — some are writable, some are read-only, some it accepts but never reports back — vocgit sorts every settings field into one of a few groups. After a `pull`, you may notice new keys appear in your YAML. **These are expected and safe to leave alone:**
+
+- **Top-level settings** (e.g. `nosubmit`, `session_length`, `submission_filters`) — fields vocgit both reads and writes. Edit these to change behavior on Vocareum.
+- **`_observed_settings`** — fields Vocareum reports on read but does **not** accept on write (or that only apply at create time). vocgit records them so your config reflects the real server state, but it never pushes them. Informational only.
+- **`_unknown_settings`** — fields vocgit doesn't recognize yet (typically new Vocareum features). vocgit preserves them verbatim and passes them back through unchanged on the next push, so nothing is silently lost. When these appear, vocgit prints an end-of-run notice asking you to [file an issue](https://github.com/ddlin/vocareum-publisher/issues/new) so the field can be promoted to a supported setting.
+
+**"Accepted but not confirmed" fields.** Some writable fields (e.g. `exam_mode`, `exam_duration`, `deadlinedate`, `late_penalty_percent`) are accepted by the API on write but are not echoed back on read. vocgit writes them and trusts the success response — it just can't read them back to confirm the value applied, so it won't report drift on them.
+
+### Opting out of settings sync
+
+Set `sync_settings: false` to sync **files only** and leave Vocareum's settings untouched. This is useful when settings are managed in the Vocareum UI and you only want vocgit to push content.
+
+Precedence (most specific wins): **part** → **assignment** → **`publish_options.sync_settings`** → defaults to `true`.
+
+```yaml
+publish_options:
+  sync_settings: false          # Global: don't sync any settings
+assignments:
+  - name: "Lab 1"
+    sync_settings: true         # ...except this assignment
+    parts:
+      - path: "part1"
+        sync_settings: false    # ...but not this part
+```
+
+When settings sync is disabled for an assignment or part, vocgit skips both pushing its settings and reporting settings drift for it on pull. The settings stay in `vocareum.yaml` — they're just ignored until you re-enable sync.
 
 ## CLI Commands
 

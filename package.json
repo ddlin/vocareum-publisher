@@ -1,6 +1,6 @@
 {
   "name": "vocareum-publisher",
-  "version": "1.0.22",
+  "version": "1.0.23",
   "description": "Publish assignment content from GitHub to Vocareum",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -24,6 +24,7 @@
     "dist",
     "action",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {
