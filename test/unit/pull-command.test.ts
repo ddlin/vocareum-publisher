@@ -341,6 +341,58 @@ describe('pullCommand — unknown-only settings drift', () => {
     expect(updateConfigMock).not.toHaveBeenCalled();
     expect(loggerSuccessMock).toHaveBeenCalledWith('No sync issues found.');
   });
+
+  it('moves legacy top-level observed settings into _observed_settings during pull', async () => {
+    const configWithLegacyObserved: Config = {
+      ...config,
+      assignments: [
+        {
+          ...config.assignments[0],
+          settings: {
+            nosubmit: false,
+            description: 'Remote description',
+          },
+          parts: [
+            {
+              ...config.assignments[0].parts[0],
+              settings: {
+                late_penalty_percent: 10,
+              },
+            },
+          ],
+        },
+      ],
+    };
+    loadConfigMock.mockResolvedValue(configWithLegacyObserved);
+    mapAssignmentSettingsMock.mockReturnValue({
+      nosubmit: false,
+      _observed_settings: { description: 'Remote description' },
+    });
+    mapPartSettingsMock.mockReturnValue({
+      _observed_settings: { late_penalty_percent: 10 },
+    });
+
+    await pullCommand({ batch: true });
+
+    expect(updateConfigMock).toHaveBeenCalled();
+    const callArg = updateConfigMock.mock.calls[0][1];
+    const updatedAssignment = callArg.assignments?.find(
+      (a: { path: string }) => a.path === 'lab1',
+    );
+    expect(updatedAssignment?.settings).toMatchObject({
+      nosubmit: false,
+      _observed_settings: { description: 'Remote description' },
+    });
+    expect(updatedAssignment?.settings).not.toHaveProperty('description');
+
+    const updatedPart = updatedAssignment?.parts?.find(
+      (p: { path: string }) => p.path === 'part1',
+    );
+    expect(updatedPart?.settings).toEqual({
+      _observed_settings: { late_penalty_percent: 10 },
+    });
+    expect(updatedPart?.settings).not.toHaveProperty('late_penalty_percent');
+  });
 });
 
 describe('pullCommand — reporter lifecycle', () => {

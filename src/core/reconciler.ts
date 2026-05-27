@@ -382,10 +382,9 @@ function settingsDiffer(local: unknown, remote: unknown): boolean {
 /**
  * Detect if assignment settings have changed between config and remote
  *
- * Working fields (Feb 2026 API probes):
- * - name, description, nosubmit, auto_submit, grading_on_submit, publish, etc.
- *
- * NOT working: points, due_date
+ * Writable fields are based on the draft OpenAPI contract plus live probes.
+ * Non-schema/create-only fields may be preserved under _observed_settings but
+ * should not trigger push updates.
  */
 function detectAssignmentSettingsChanged(
   configAssignment: Assignment,
@@ -400,25 +399,19 @@ function detectAssignmentSettingsChanged(
   // Helper to check if a setting has a real value (not null/undefined)
   const hasValue = (v: unknown): boolean => v !== undefined && v !== null;
 
-  // Check description
-  if (hasValue(s.description) && settingsDiffer(s.description, remoteAssignment.description)) { return true; }
-
   // Boolean settings
   if (hasValue(s.nosubmit) && settingsDiffer(s.nosubmit, remoteAssignment.nosubmit)) { return true; }
   if (hasValue(s.publish) && settingsDiffer(s.publish, remoteAssignment.publish)) { return true; }
+  if (hasValue(s.publish_grades) && settingsDiffer(s.publish_grades, remoteAssignment.publish_grades ?? remoteAssignment.gradespublished)) { return true; }
   if (hasValue(s.auto_submit) && settingsDiffer(s.auto_submit, remoteAssignment.auto_submit)) { return true; }
   if (hasValue(s.grading_on_submit) && settingsDiffer(s.grading_on_submit, remoteAssignment.grading_on_submit)) { return true; }
   if (hasValue(s.noworkarea) && settingsDiffer(s.noworkarea, remoteAssignment.noworkarea)) { return true; }
   if (hasValue(s.show_end_exam_button) && settingsDiffer(s.show_end_exam_button, remoteAssignment.show_end_exam_button)) { return true; }
-  if (hasValue(s.copy_startercode) && settingsDiffer(s.copy_startercode, remoteAssignment.copy_startercode)) { return true; }
-  if (hasValue(s.uncompressupload) && settingsDiffer(s.uncompressupload, remoteAssignment.uncompressupload)) { return true; }
   if (hasValue(s.lti_on) && settingsDiffer(s.lti_on, remoteAssignment.lti_on)) { return true; }
   if (hasValue(s.anonymous_grading) && settingsDiffer(s.anonymous_grading, remoteAssignment.anonymous_grading)) { return true; }
-  if (hasValue(s.send_webhook) && settingsDiffer(s.send_webhook, remoteAssignment.send_webhook)) { return true; }
   if (hasValue(s.live_code_comments) && settingsDiffer(s.live_code_comments, remoteAssignment.live_code_comments)) { return true; }
 
   // String/enum settings
-  if (hasValue(s.publish_grades) && settingsDiffer(s.publish_grades, remoteAssignment.publish_grades)) { return true; }
   if (hasValue(s.exam_mode) && settingsDiffer(s.exam_mode, remoteAssignment.exam_mode)) { return true; }
   if (hasValue(s.grading_visibility) && settingsDiffer(s.grading_visibility, remoteAssignment.grading_visibility)) { return true; }
 
@@ -432,13 +425,15 @@ function detectAssignmentSettingsChanged(
 /**
  * Detect if part settings have changed between config and remote
  *
- * Working fields (Feb 2026 API probes):
+ * Writable fields are based on the draft OpenAPI contract plus live probes:
  * - name, submission_filters, session_length, monthly_dollar, monthly_time, total_time, total_dollar
- * - late_penalty_percent, late_penalty_percent_rule, deadlinedate, endlab
- * - labtype, container_image, number_of_submissions, lab_interface, databricks_maxusers, tags
+ * - endlab, labtype, container_image, lab_interface, databricks_maxusers, tags
  *
  * Conditional fields (require org permissions):
  * - cloud_labs, instant_aws_access
+ *
+ * Non-schema/read-only fields may be preserved under _observed_settings but
+ * should not trigger push updates.
  */
 function detectPartSettingsChanged(
   configPart: Part,
@@ -461,16 +456,10 @@ function detectPartSettingsChanged(
   if (s.total_time !== undefined && s.total_time !== null && settingsDiffer(s.total_time, remotePart.total_time)) { return true; }
   if (s.total_dollar !== undefined && s.total_dollar !== null && settingsDiffer(s.total_dollar, remotePart.total_dollar)) { return true; }
 
-  // Late penalty settings
-  if (s.late_penalty_percent !== undefined && s.late_penalty_percent !== null && settingsDiffer(s.late_penalty_percent, remotePart.late_penalty_percent)) { return true; }
-  if (s.late_penalty_percent_rule !== undefined && s.late_penalty_percent_rule !== null && settingsDiffer(s.late_penalty_percent_rule, remotePart.late_penalty_percent_rule)) { return true; }
-  if (s.deadlinedate !== undefined && s.deadlinedate !== null && settingsDiffer(s.deadlinedate, remotePart.deadlinedate)) { return true; }
-
   // Lab settings
   if (s.endlab !== undefined && s.endlab !== null && settingsDiffer(s.endlab, remotePart.endlab)) { return true; }
   if (s.labtype !== undefined && s.labtype !== null && settingsDiffer(s.labtype, remotePart.labtype)) { return true; }
   if (s.container_image !== undefined && s.container_image !== null && settingsDiffer(s.container_image, remotePart.container_image)) { return true; }
-  if (s.number_of_submissions !== undefined && s.number_of_submissions !== null && settingsDiffer(s.number_of_submissions, remotePart.number_of_submissions)) { return true; }
   if (s.databricks_maxusers !== undefined && s.databricks_maxusers !== null && settingsDiffer(s.databricks_maxusers, remotePart.databricks_maxusers)) { return true; }
 
   // Compare submission filters (normalize both to object format)

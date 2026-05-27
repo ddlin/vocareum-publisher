@@ -119,6 +119,7 @@ const SubmissionFiltersObjectSchema = z.object({
 export const SubmissionFiltersSchema = z.union([
   SubmissionFiltersObjectSchema,
   z.array(z.string()),  // Simple array format from API
+  z.string(),
 ]);
 
 export type SubmissionFilters = z.infer<typeof SubmissionFiltersSchema>;
@@ -141,6 +142,9 @@ export function normalizeSubmissionFilters(
   // If it's an array, treat as include list
   if (Array.isArray(filters)) {
     return filters.length > 0 ? { include: filters } : undefined;
+  }
+  if (typeof filters === 'string') {
+    return filters.length > 0 ? { include: [filters] } : undefined;
   }
 
   // Already object format
@@ -168,10 +172,48 @@ export const LabInterfaceSchema = z.object({
 
 export type LabInterface = z.infer<typeof LabInterfaceSchema>;
 
+export const LabInterfaceConfigSchema = z.union([
+  LabInterfaceSchema,
+  z.array(z.string()),
+]);
+
+export type LabInterfaceConfig = z.infer<typeof LabInterfaceConfigSchema>;
+
+export function labInterfaceToWriteObject(
+  labInterface: LabInterfaceConfig | null | undefined
+): LabInterface | undefined {
+  if (labInterface === undefined || labInterface === null) { return undefined; }
+  if (Array.isArray(labInterface)) {
+    return labInterface.length > 0 ? { panels: labInterface } : undefined;
+  }
+  return labInterface;
+}
+
+const ExamModeSchema = z.union([
+  z.enum(['TIMED', 'SCHEDULED', 'TIMED_SCHEDULED']),
+  z.enum(['timed', 'scheduled', 'timed_scheduled']).transform((value) => value.toUpperCase() as 'TIMED' | 'SCHEDULED' | 'TIMED_SCHEDULED'),
+]);
+
+const GradingVisibilitySchema = z.union([
+  z.enum(['ALL', 'ASSIGNED']),
+  z.enum(['all', 'assigned']).transform((value) => value.toUpperCase() as 'ALL' | 'ASSIGNED'),
+]);
+
+/**
+ * Remote fields observed from Vocareum but not written by vocgit push.
+ * Pull/import may update this bucket to document server state without turning
+ * those fields into local write intent.
+ */
+export const ObservedSettingsSchema = z.record(z.string(), z.unknown());
+
+export type ObservedSettings = z.infer<typeof ObservedSettingsSchema>;
+
 /**
  * Part settings for Vocareum configuration
  *
- * All fields confirmed working via API (Feb 2026).
+ * Writable and observed fields accepted in vocareum.yaml.
+ * Pull/import stores read-only or create-only values under _observed_settings;
+ * older top-level values remain parseable but are not necessarily pushed.
  * Note: Many fields use .nullish() because API may return null values.
  */
 export const PartSettingsSchema = z
@@ -192,22 +234,22 @@ export const PartSettingsSchema = z
     total_time: z.string().nullish(),
     /** Total dollar budget for cloud resources */
     total_dollar: z.string().nullish(),
-    /** Late submission penalty percentage (0-100) */
+    /** Observed on read; not sent during part update */
     late_penalty_percent: z.number().nullish(),
-    /** How late penalty is applied: "max score" or "student score" */
+    /** Observed on read; not sent during part update */
     late_penalty_percent_rule: z.enum(['max score', 'student score']).nullish(),
-    /** Part submission deadline (ISO 8601 date string) */
+    /** Observed on read; not sent during part update */
     deadlinedate: z.string().nullish(),
-    /** Behavior on end lab: "stop" or "terminate" */
-    endlab: z.enum(['stop', 'terminate']).nullish(),
+    /** Whether the lab should end automatically when limits/deadlines require it */
+    endlab: z.boolean().nullish(),
     /** Lab type name (e.g., "Visual Studio Code", "JupyterLab") */
     labtype: z.string().nullish(),
     /** Container image name (must be valid for the labtype) */
     container_image: z.string().nullish(),
-    /** Maximum number of submissions allowed */
+    /** Observed on read; not sent during part update */
     number_of_submissions: z.number().nullish(),
     /** Lab interface configuration */
-    lab_interface: LabInterfaceSchema.nullish(),
+    lab_interface: LabInterfaceConfigSchema.nullish(),
     /** Maximum users for Databricks labs (API returns string, coerce to number) */
     databricks_maxusers: z.coerce.number().nullish(),
     /** Tags for the part (API returns object, but older configs may have empty array) */
@@ -218,6 +260,8 @@ export const PartSettingsSchema = z
      *  docs/superpowers/specs/2026-05-21-unknown-settings-passthrough-design.md
      */
     _unknown_settings: z.record(z.string(), z.unknown()).optional(),
+    /** Fields observed from Vocareum but intentionally not written by push. */
+    _observed_settings: ObservedSettingsSchema.optional(),
   })
   .optional();
 
@@ -240,13 +284,17 @@ export type Part = z.infer<typeof PartSchema>;
 /**
  * Assignment settings for Vocareum configuration
  *
- * Confirmed working fields (Feb 2026 API probes):
- * - description, nosubmit, auto_submit, grading_on_submit
+ * Writable fields based on the draft OpenAPI contract plus live probes:
+ * - nosubmit, auto_submit, grading_on_submit
  * - publish, publish_grades, noworkarea, exam_mode, exam_duration, num_attempts
- * - show_end_exam_button, copy_startercode, uncompressupload, lti_on
- * - anonymous_grading, grading_visibility, send_webhook, live_code_comments
+ * - show_end_exam_button, lti_on, anonymous_grading, grading_visibility
+ * - live_code_comments
  *
- * Fields that DO NOT work via API (return "No valid parameters"):
+ * Observed/create-only fields are accepted for compatibility but should live
+ * under _observed_settings after pull/import:
+ * - description, copy_startercode, uncompressupload, send_webhook
+ *
+ * Fields that DO NOT work via API:
  * - points, due_date
  * These must be set manually in Vocareum UI.
  *
@@ -254,38 +302,39 @@ export type Part = z.infer<typeof PartSchema>;
  */
 export const AssignmentSettingsSchema = z
   .object({
+    /** Observed on read; not sent during assignment update */
     description: z.string().nullish(),
     /** Disable student submissions for this assignment */
     nosubmit: z.boolean().nullish(),
     /** Publish the assignment to students */
     publish: z.boolean().nullish(),
-    /** Publish grades setting (string value) */
-    publish_grades: z.string().nullish(),
+    /** Publish grades setting */
+    publish_grades: z.boolean().nullish(),
     /** Enable automatic submission */
     auto_submit: z.boolean().nullish(),
     /** Grade immediately on submit */
     grading_on_submit: z.boolean().nullish(),
     /** Disable work area for students */
     noworkarea: z.boolean().nullish(),
-    /** Exam mode: timed, scheduled, or timed_scheduled */
-    exam_mode: z.enum(['timed', 'scheduled', 'timed_scheduled']).nullish(),
+    /** Exam mode: TIMED, SCHEDULED, or TIMED_SCHEDULED */
+    exam_mode: ExamModeSchema.nullish(),
     /** Exam duration in minutes */
     exam_duration: z.number().nullish(),
     /** Number of attempts allowed */
     num_attempts: z.number().nullish(),
     /** Show end exam button to students */
     show_end_exam_button: z.boolean().nullish(),
-    /** Copy starter code to student workspace on start */
+    /** Create/copy-only; not sent during assignment update */
     copy_startercode: z.boolean().nullish(),
-    /** Uncompress uploaded files */
+    /** Create/copy-only; not sent during assignment update */
     uncompressupload: z.boolean().nullish(),
     /** Enable LTI integration */
     lti_on: z.boolean().nullish(),
     /** Enable anonymous grading */
     anonymous_grading: z.boolean().nullish(),
-    /** Grading visibility: all or assigned */
-    grading_visibility: z.enum(['all', 'assigned']).nullish(),
-    /** Send webhook on events */
+    /** Grading visibility: ALL or ASSIGNED */
+    grading_visibility: GradingVisibilitySchema.nullish(),
+    /** Create/copy-only; not sent during assignment update */
     send_webhook: z.boolean().nullish(),
     /** Enable live code comments */
     live_code_comments: z.boolean().nullish(),
@@ -295,6 +344,8 @@ export const AssignmentSettingsSchema = z
      *  docs/superpowers/specs/2026-05-21-unknown-settings-passthrough-design.md
      */
     _unknown_settings: z.record(z.string(), z.unknown()).optional(),
+    /** Fields observed from Vocareum but intentionally not written by push. */
+    _observed_settings: ObservedSettingsSchema.optional(),
   })
   .optional();
 

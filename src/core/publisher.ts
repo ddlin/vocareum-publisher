@@ -6,7 +6,11 @@
 
 import * as path from 'path';
 import type { Config, PublishHistory } from '../types/config';
-import { normalizeSubmissionFilters, nullToUndefined } from '../types/config';
+import {
+  labInterfaceToWriteObject,
+  normalizeSubmissionFilters,
+  nullToUndefined,
+} from '../types/config';
 import type { PartSettings } from '../types/config';
 import type { ApiPartSettings, AssignmentSettingsPayload, PartSettingsPayload, VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
 import type { HistorySettingChange, HistoryFileChange, AssignmentSettings } from '../types/config';
@@ -29,6 +33,8 @@ import {
   KNOWN_PART_SETTING_KEYS,
   NON_SETTING_FIELDS_ASSIGNMENT,
   NON_SETTING_FIELDS_PART,
+  OBSERVED_ASSIGNMENT_SETTING_KEYS,
+  OBSERVED_PART_SETTING_KEYS,
 } from '../utils/known-settings';
 
 /** All keys that must not be overridden by _unknown_settings for assignment payloads.
@@ -36,16 +42,20 @@ import {
  *  from leaking the literal wrapper key into the outgoing API payload. */
 const RESERVED_ASSIGNMENT_KEYS: ReadonlySet<string> = new Set([
   ...KNOWN_ASSIGNMENT_SETTING_KEYS,
+  ...OBSERVED_ASSIGNMENT_SETTING_KEYS,
   ...NON_SETTING_FIELDS_ASSIGNMENT,
   '_unknown_settings',
+  '_observed_settings',
 ]);
 
 /** All keys that must not be overridden by _unknown_settings for part payloads.
  *  See RESERVED_ASSIGNMENT_KEYS for the rationale on '_unknown_settings'. */
 const RESERVED_PART_KEYS: ReadonlySet<string> = new Set([
   ...KNOWN_PART_SETTING_KEYS,
+  ...OBSERVED_PART_SETTING_KEYS,
   ...NON_SETTING_FIELDS_PART,
   '_unknown_settings',
+  '_observed_settings',
 ]);
 
 /**
@@ -118,13 +128,19 @@ function normalizeTags(
   return Object.keys(tags).length > 0 ? tags : undefined;
 }
 
+function withoutUndefined<T extends Record<string, unknown>>(payload: T): T {
+  return Object.fromEntries(
+    Object.entries(payload).filter(([, value]) => value !== undefined)
+  ) as T;
+}
+
 export function buildPartSettingsPayload(
   partName: string,
   partSettings: PartSettings | undefined,
   mode: 'full' | 'safe'
 ): PartSettingsPayload {
   const normalizedFilters = sanitizeSubmissionFilters(normalizeSubmissionFilters(partSettings?.submission_filters));
-  const base: PartSettingsPayload = {
+  const base: PartSettingsPayload = withoutUndefined({
     name: partName,
     submission_filters: normalizedFilters,
     session_length: nullToUndefined(partSettings?.session_length),
@@ -132,27 +148,23 @@ export function buildPartSettingsPayload(
     monthly_time: nullToUndefined(partSettings?.monthly_time),
     total_time: nullToUndefined(partSettings?.total_time),
     total_dollar: nullToUndefined(partSettings?.total_dollar),
-  };
+  });
 
   if (mode === 'safe') {
     return base;
   }
 
-  const full: PartSettingsPayload = {
+  const full: PartSettingsPayload = withoutUndefined({
     ...base,
     cloud_labs: nullToUndefined(partSettings?.cloud_labs),
     instant_aws_access: nullToUndefined(partSettings?.instant_aws_access),
-    late_penalty_percent: nullToUndefined(partSettings?.late_penalty_percent),
-    late_penalty_percent_rule: nullToUndefined(partSettings?.late_penalty_percent_rule),
-    deadlinedate: nullToUndefined(partSettings?.deadlinedate),
     endlab: nullToUndefined(partSettings?.endlab),
     labtype: nullToUndefined(partSettings?.labtype),
     container_image: nullToUndefined(partSettings?.container_image),
-    number_of_submissions: nullToUndefined(partSettings?.number_of_submissions),
-    lab_interface: nullToUndefined(partSettings?.lab_interface),
+    lab_interface: labInterfaceToWriteObject(partSettings?.lab_interface),
     databricks_maxusers: nullToUndefined(partSettings?.databricks_maxusers),
     tags: normalizeTags(partSettings?.tags),
-  };
+  });
 
   // Spread _unknown_settings (NOT the wrapper key) into the top level,
   // filtering out any reserved keys to prevent user-supplied overrides.
@@ -186,11 +198,9 @@ export function pushSettingChange(
   changes: HistorySettingChange[],
   change: HistorySettingChange
 ): void {
-  // Guard: _unknown_settings is a pass-through bucket. We don't formally
-  // understand the fields inside it, so reporting "_unknown_settings changed"
-  // would be misleading noise in the structured change log. The reporter
-  // summary (UnknownFieldReporter) communicates that unknowns were observed.
-  if (change.field === '_unknown_settings') {
+  // Guard: wrapper buckets are not first-class setting changes. Unknowns are
+  // summarized by UnknownFieldReporter; observed settings are pull-only notes.
+  if (change.field === '_unknown_settings' || change.field === '_observed_settings') {
     return;
   }
   if (settingsEqual(change.from, change.to)) {
@@ -528,7 +538,6 @@ export async function publish(
           }
           const asnSettings = action.assignment.settings;
           const assignmentKeys: (keyof NonNullable<AssignmentSettings>)[] = [
-            'description',
             'nosubmit',
             'publish',
             'publish_grades',
@@ -539,12 +548,9 @@ export async function publish(
             'exam_duration',
             'num_attempts',
             'show_end_exam_button',
-            'copy_startercode',
-            'uncompressupload',
             'lti_on',
             'anonymous_grading',
             'grading_visibility',
-            'send_webhook',
             'live_code_comments',
           ];
 
@@ -571,9 +577,8 @@ export async function publish(
           }
 
           // Build payloads inline (no mode variants, unlike parts which use buildPartSettingsPayload).
-          const knownAssignmentPayload: AssignmentSettingsPayload = {
+          const knownAssignmentPayload: AssignmentSettingsPayload = withoutUndefined({
             name: action.assignment.name,
-            description: nullToUndefined(asnSettings?.description),
             nosubmit: nullToUndefined(asnSettings?.nosubmit),
             publish: nullToUndefined(asnSettings?.publish),
             publish_grades: nullToUndefined(asnSettings?.publish_grades),
@@ -584,14 +589,11 @@ export async function publish(
             exam_duration: nullToUndefined(asnSettings?.exam_duration),
             num_attempts: nullToUndefined(asnSettings?.num_attempts),
             show_end_exam_button: nullToUndefined(asnSettings?.show_end_exam_button),
-            copy_startercode: nullToUndefined(asnSettings?.copy_startercode),
-            uncompressupload: nullToUndefined(asnSettings?.uncompressupload),
             lti_on: nullToUndefined(asnSettings?.lti_on),
             anonymous_grading: nullToUndefined(asnSettings?.anonymous_grading),
             grading_visibility: nullToUndefined(asnSettings?.grading_visibility),
-            send_webhook: nullToUndefined(asnSettings?.send_webhook),
             live_code_comments: nullToUndefined(asnSettings?.live_code_comments),
-          };
+          });
 
           const unknownAsn = asnSettings?._unknown_settings;
           const filteredAsnUnknowns = filterUnknownSettingsForPayload(
@@ -704,13 +706,9 @@ export async function publish(
               'monthly_time',
               'total_time',
               'total_dollar',
-              'late_penalty_percent',
-              'late_penalty_percent_rule',
-              'deadlinedate',
               'endlab',
               'labtype',
               'container_image',
-              'number_of_submissions',
               'lab_interface',
               'databricks_maxusers',
               'tags',

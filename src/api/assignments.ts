@@ -22,7 +22,7 @@ const COPY_POLL_DELAY_MS = 2000;
 
 interface TransactionResponse {
   status: 'success';
-  state: 'pending' | 'success' | 'failed';
+  state: 'pending' | 'success' | 'error' | 'failed';
   objid?: string;
   message?: string;
 }
@@ -30,9 +30,8 @@ interface TransactionResponse {
 /**
  * List all assignments in a course (with automatic pagination)
  *
- * The Vocareum API returns a fixed page of ~10 assignments per request
- * and ignores limit/per_page/page_size params. This function paginates
- * using the zero-based `page` param, guided by `total_records` in the response.
+ * The Vocareum API uses zero-based `page` plus optional `size` pagination.
+ * Request a larger size to avoid unnecessary round-trips on typical courses.
  *
  * @param client - Vocareum API client
  * @param courseId - Course ID (string!)
@@ -49,13 +48,13 @@ export async function listAssignments(
     const response = await client.request<AssignmentsListResponse>({
       method: 'GET',
       url: `/api/v2/courses/${courseId}/assignments`,
-      params: { page },
+      params: { page, size: 100 },
     });
 
     const assignments = response.assignments ?? [];
     allAssignments.push(...assignments);
 
-    const totalRecords = response.total_records ?? 0;
+    const totalRecords = Number(response.total_records ?? 0);
     if (allAssignments.length >= totalRecords || assignments.length === 0) {
       break;
     }
@@ -203,7 +202,7 @@ export async function waitForAssignmentObjId(
     if (txn.state === 'success') {
       return txn.objid;
     }
-    if (txn.state === 'failed') {
+    if (txn.state === 'error' || txn.state === 'failed') {
       throw new Error(
         txn.message ?? `Copy assignment transaction failed (txn=${transactionId})`
       );
@@ -223,11 +222,14 @@ export async function waitForAssignmentObjId(
  * IMPORTANT: Direct endpoint /api/v2/assignments/{id} returns 400.
  * Must use course-scoped endpoint.
  *
- * Confirmed working fields (Feb 2026):
- * - name, description, nosubmit, auto_submit, grading_on_submit
+ * Writable fields are based on the draft OpenAPI contract plus live probes.
  *
  * Fields that DO NOT work (return "No valid parameters"):
- * - published, points, due_date, gradespublished
+ * - points, due_date, gradespublished
+ *
+ * Fields returned by read APIs but not sent during update:
+ * - description
+ * - copy_startercode, uncompressupload, send_webhook (create/copy-only)
  *
  * @param client - Vocareum API client
  * @param courseId - Course ID (string!)

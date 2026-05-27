@@ -6,6 +6,8 @@ import {
   NON_SETTING_FIELDS_COURSE,
   NON_SETTING_FIELDS_ASSIGNMENT,
   NON_SETTING_FIELDS_PART,
+  OBSERVED_ASSIGNMENT_SETTING_KEYS,
+  OBSERVED_PART_SETTING_KEYS,
   partitionApiResponse,
 } from '../../src/utils/known-settings';
 
@@ -32,7 +34,7 @@ describe('partitionApiResponse', () => {
 
   it('drops non-settings keys entirely', () => {
     const result = partitionApiResponse(
-      { id: '1', courseid: '2', assignmentid: '3', seqnum: '0', deleted: '0', part_url: 'x', name: 'P', description: 'D', session_length: '60' },
+      { id: '1', courseid: '2', assignmentid: '3', seqnum: '0', deleted: '0', part_url: 'x', name: 'P', session_length: '60' },
       KNOWN_PART_SETTING_KEYS,
       NON_SETTING_FIELDS_PART
     );
@@ -102,6 +104,29 @@ describe('per-scope set invariants', () => {
     expect(known.has('_unknown_settings')).toBe(false);
     expect(nonSettings.has('_unknown_settings')).toBe(false);
   });
+
+  it.each(scopes)('%s: _observed_settings is not in either set', (_name, known, nonSettings) => {
+    expect(known.has('_observed_settings')).toBe(false);
+    expect(nonSettings.has('_observed_settings')).toBe(false);
+  });
+
+  it('observed setting keys are not classified as non-settings', () => {
+    for (const key of OBSERVED_ASSIGNMENT_SETTING_KEYS) {
+      expect(NON_SETTING_FIELDS_ASSIGNMENT.has(key)).toBe(false);
+    }
+    for (const key of OBSERVED_PART_SETTING_KEYS) {
+      expect(NON_SETTING_FIELDS_PART.has(key)).toBe(false);
+    }
+  });
+
+  it('observed setting keys are not also classified as known writable settings', () => {
+    for (const key of OBSERVED_ASSIGNMENT_SETTING_KEYS) {
+      expect(KNOWN_ASSIGNMENT_SETTING_KEYS.has(key)).toBe(false);
+    }
+    for (const key of OBSERVED_PART_SETTING_KEYS) {
+      expect(KNOWN_PART_SETTING_KEYS.has(key)).toBe(false);
+    }
+  });
 });
 
 describe('initial set contents', () => {
@@ -111,27 +136,27 @@ describe('initial set contents', () => {
 
   it('assignment KNOWN set matches mapAssignmentSettings keys', () => {
     expect([...KNOWN_ASSIGNMENT_SETTING_KEYS].sort()).toEqual([
-      'anonymous_grading', 'auto_submit', 'copy_startercode', 'description',
+      'anonymous_grading', 'auto_submit',
       'exam_duration', 'exam_mode', 'grading_on_submit', 'grading_visibility',
       'live_code_comments', 'noworkarea', 'nosubmit', 'num_attempts',
-      'publish', 'publish_grades', 'send_webhook', 'show_end_exam_button',
-      'uncompressupload', 'lti_on',
+      'publish', 'publish_grades', 'show_end_exam_button',
+      'lti_on',
     ].sort());
   });
 
   it('part KNOWN set matches mapPartSettings keys', () => {
     expect([...KNOWN_PART_SETTING_KEYS].sort()).toEqual([
-      'cloud_labs', 'container_image', 'databricks_maxusers', 'deadlinedate',
+      'cloud_labs', 'container_image', 'databricks_maxusers',
       'endlab', 'instant_aws_access', 'lab_interface', 'labtype',
-      'late_penalty_percent', 'late_penalty_percent_rule', 'monthly_dollar',
-      'monthly_time', 'number_of_submissions', 'session_length',
+      'monthly_dollar',
+      'monthly_time', 'session_length',
       'submission_filters', 'tags', 'total_dollar', 'total_time',
     ].sort());
   });
 });
 
 describe('publisher hand-written settings arrays exclude _unknown_settings', () => {
-  it('publisher.ts does not include _unknown_settings in its keyof-typed arrays', async () => {
+  it('publisher.ts does not include wrapper buckets in its keyof-typed arrays', async () => {
     const fs = await import('node:fs/promises');
     const src = await fs.readFile(
       new URL('../../src/core/publisher.ts', import.meta.url),
@@ -143,5 +168,7 @@ describe('publisher hand-written settings arrays exclude _unknown_settings', () 
     expect(partKeysMatch).not.toBeNull();
     expect(assignmentKeysMatch![1]).not.toContain('_unknown_settings');
     expect(partKeysMatch![1]).not.toContain('_unknown_settings');
+    expect(assignmentKeysMatch![1]).not.toContain('_observed_settings');
+    expect(partKeysMatch![1]).not.toContain('_observed_settings');
   });
 });

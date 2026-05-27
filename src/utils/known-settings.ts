@@ -18,7 +18,6 @@ export const NON_SETTING_FIELDS_COURSE: ReadonlySet<string> = new Set([
 ]);
 
 export const KNOWN_ASSIGNMENT_SETTING_KEYS: ReadonlySet<string> = new Set([
-  'description',
   'nosubmit',
   'publish',
   'publish_grades',
@@ -29,13 +28,17 @@ export const KNOWN_ASSIGNMENT_SETTING_KEYS: ReadonlySet<string> = new Set([
   'exam_duration',
   'num_attempts',
   'show_end_exam_button',
-  'copy_startercode',
-  'uncompressupload',
   'lti_on',
   'anonymous_grading',
   'grading_visibility',
-  'send_webhook',
   'live_code_comments',
+]);
+
+export const OBSERVED_ASSIGNMENT_SETTING_KEYS: ReadonlySet<string> = new Set([
+  'description',
+  'copy_startercode',
+  'uncompressupload',
+  'send_webhook',
 ]);
 
 export const NON_SETTING_FIELDS_ASSIGNMENT: ReadonlySet<string> = new Set([
@@ -46,12 +49,12 @@ export const NON_SETTING_FIELDS_ASSIGNMENT: ReadonlySet<string> = new Set([
   'points',
   'deleted',
   'published',
+  'gradespublished',    // read-side counterpart for writable publish_grades
   // Server-managed identity / structural / read-only metadata. These are
   // returned by the API but are not instructor-configurable lab settings, so
   // they are dropped (not preserved under _unknown_settings, not pushed back).
   // Classified from a real pull report (v1.0.20).
   'create_method',      // how the resource was created
-  'gradespublished',    // read-only status; API rejects it on write
   'groupdisplayorder',  // server-managed ordering
   'groupid',            // grouping identifier
   'masterid',           // reference to the template/master it was copied from
@@ -68,16 +71,20 @@ export const KNOWN_PART_SETTING_KEYS: ReadonlySet<string> = new Set([
   'monthly_time',
   'total_time',
   'total_dollar',
-  'late_penalty_percent',
-  'late_penalty_percent_rule',
-  'deadlinedate',
   'endlab',
   'labtype',
   'container_image',
-  'number_of_submissions',
   'lab_interface',
   'databricks_maxusers',
   'tags',
+]);
+
+export const OBSERVED_PART_SETTING_KEYS: ReadonlySet<string> = new Set([
+  'description',
+  'late_penalty_percent',
+  'late_penalty_percent_rule',
+  'deadlinedate',
+  'number_of_submissions',
 ]);
 
 export const NON_SETTING_FIELDS_PART: ReadonlySet<string> = new Set([
@@ -85,7 +92,6 @@ export const NON_SETTING_FIELDS_PART: ReadonlySet<string> = new Set([
   'courseid',
   'assignmentid',
   'name',
-  'description',
   'seqnum',
   'deleted',
   'part_url',

@@ -175,3 +175,28 @@ describe('_unknown_settings preservation in Zod schemas', () => {
     expect(parsed?._unknown_settings).toBeUndefined();
   });
 });
+
+describe('_observed_settings preservation in Zod schemas', () => {
+  it('AssignmentSettingsSchema preserves _observed_settings through parse', () => {
+    const input = {
+      nosubmit: true,
+      _observed_settings: { description: 'Remote only', exam_duration: 45 },
+    };
+    const parsed = AssignmentSettingsSchema.parse(input);
+    expect(parsed?._observed_settings).toEqual({
+      description: 'Remote only',
+      exam_duration: 45,
+    });
+  });
+
+  it('PartSettingsSchema preserves _observed_settings through parse', () => {
+    const input = {
+      session_length: '60',
+      _observed_settings: { deadlinedate: '2026-12-31T23:59:00Z' },
+    };
+    const parsed = PartSettingsSchema.parse(input);
+    expect(parsed?._observed_settings).toEqual({
+      deadlinedate: '2026-12-31T23:59:00Z',
+    });
+  });
+});

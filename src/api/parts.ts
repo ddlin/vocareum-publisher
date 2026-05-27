@@ -79,13 +79,19 @@ export async function getPart(
  * IMPORTANT: Direct endpoint /api/v2/parts/{id} returns 400.
  * Must use course-scoped endpoint.
  *
- * Confirmed working fields (Feb 2026):
+ * Writable fields are based on the draft OpenAPI contract plus live probes:
  * - name (REQUIRED for most updates)
  * - submission_filters (object with include/exclude/list arrays)
  * - session_length, monthly_dollar, monthly_time, total_time, total_dollar
+ * - endlab (boolean), labtype, container_image, lab_interface (object)
+ * - databricks_maxusers, tags
  *
  * Fields requiring org permissions:
  * - cloud_labs, instant_aws_access ("Cloud not allowed for the org")
+ *
+ * Fields observed in read responses but not sent during update:
+ * - description, late_penalty_percent, late_penalty_percent_rule
+ * - deadlinedate, number_of_submissions
  *
  * @param client - Vocareum API client
  * @param courseId - Course ID (string!)
@@ -119,7 +125,7 @@ export async function updatePart(
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const txn = await client.request<{
         status: 'success';
-        state: 'pending' | 'success' | 'failed';
+        state: 'pending' | 'success' | 'error' | 'failed';
         message?: string;
       }>({
         method: 'GET',
@@ -129,7 +135,7 @@ export async function updatePart(
       if (txn.state === 'success') {
         return;
       }
-      if (txn.state === 'failed') {
+      if (txn.state === 'error' || txn.state === 'failed') {
         throw new Error(
           txn.message ?? `Part update transaction failed (txn=${response.transactionid})`
         );

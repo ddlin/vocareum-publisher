@@ -248,21 +248,15 @@ describe('publish', () => {
     // API now uses course-scoped endpoint: updateAssignment(client, courseId, assignmentId, settings)
     expect(updateAssignmentMock).toHaveBeenCalledWith(client, '201303', 'asn-1', {
       name: 'Lab 1',
-      description: 'New description',
-      nosubmit: undefined,
-      auto_submit: undefined,
-      grading_on_submit: undefined,
     });
   });
 
   it('should send all working assignment settings', async () => {
-    // Note: due_date, points, published do NOT work via API (return "No valid parameters")
-    // Working fields: name, description, nosubmit, auto_submit, grading_on_submit
+    // Description is observed-only; writable fields are sent.
     const assignment = {
       ...config.assignments[0],
       assignment_id: 'asn-1',
       settings: {
-        description: 'Updated description',
         nosubmit: false,
         auto_submit: true,
         grading_on_submit: true,
@@ -301,7 +295,6 @@ describe('publish', () => {
     // API now uses course-scoped endpoint: updateAssignment(client, courseId, assignmentId, settings)
     expect(updateAssignmentMock).toHaveBeenCalledWith(client, '201303', 'asn-1', {
       name: 'Lab 1',
-      description: 'Updated description',
       nosubmit: false,
       auto_submit: true,
       grading_on_submit: true,
@@ -371,12 +364,11 @@ describe('publish', () => {
       name: 'Updated Part',  // Required for all part updates
       cloud_labs: true,
       session_length: '3600',
-      submission_filters: { include: ['*.py'], exclude: ['*.pyc'] },
-      instant_aws_access: undefined,
-      monthly_dollar: undefined,
-      monthly_time: undefined,
-      total_time: undefined,
-      total_dollar: undefined,
+      submission_filters: {
+        include: ['*.py'],
+        exclude: ['*.pyc'],
+        list: undefined,
+      },
     });
   });
 
@@ -477,12 +469,20 @@ describe('publish', () => {
       name: 'Part 1',
       cloud_labs: false,
       session_length: '3600',
-      submission_filters: { include: ['*.py'], exclude: [], list: undefined },
+      submission_filters: {
+        include: ['*.py'],
+        exclude: [],
+        list: undefined,
+      },
     });
     expect(updatePartMock.mock.calls[1][4]).toMatchObject({
       name: 'Part 1',
       session_length: '3600',
-      submission_filters: { include: ['*.py'], exclude: [], list: undefined },
+      submission_filters: {
+        include: ['*.py'],
+        exclude: [],
+        list: undefined,
+      },
     });
     expect(updatePartMock.mock.calls[1][4].cloud_labs).toBeUndefined();
   });
@@ -715,12 +715,6 @@ describe('publish', () => {
           field: 'name',
           from: 'Lab 1',
           to: 'Lab 1 Updated',
-        }),
-        expect.objectContaining({
-          scope: 'assignment',
-          field: 'description',
-          from: 'old description',
-          to: 'new description',
         }),
         expect.objectContaining({
           scope: 'part',

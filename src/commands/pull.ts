@@ -30,6 +30,10 @@ import {
 import type { Assignment, Part, DirectoryType, AssignmentSettings, PartSettings, SubmissionFilters } from '../types/config';
 import type { OrphanedEntity } from '../types/state';
 import type { FileMap } from '../types/api';
+import {
+  OBSERVED_ASSIGNMENT_SETTING_KEYS,
+  OBSERVED_PART_SETTING_KEYS,
+} from '../utils/known-settings';
 
 export interface PullOptions {
   config?: string;
@@ -80,6 +84,8 @@ interface PartSettingsDrift {
   remoteSettings: NonNullable<PartSettings>;
   /** True when remote._unknown_settings differs from local._unknown_settings. */
   unknownsChanged: boolean;
+  /** True when remote._observed_settings differs from local._observed_settings. */
+  observedChanged: boolean;
 }
 
 /** Represents settings drift for an assignment */
@@ -92,6 +98,8 @@ interface AssignmentSettingsDrift {
   partsDrift: PartSettingsDrift[];
   /** True when remote._unknown_settings differs from local._unknown_settings. */
   unknownsChanged: boolean;
+  /** True when remote._observed_settings differs from local._observed_settings. */
+  observedChanged: boolean;
 }
 
 /** Represents a file that differs between local and remote */
@@ -282,6 +290,24 @@ function formatValue(value: unknown): string {
   return String(value);
 }
 
+function hasObservedTopLevelSettings(
+  settings: NonNullable<AssignmentSettings> | NonNullable<PartSettings> | undefined,
+  observedKeys: ReadonlySet<string>
+): boolean {
+  if (!settings) { return false; }
+  const record = settings as Record<string, unknown>;
+  return [...observedKeys].some((key) => record[key] !== undefined);
+}
+
+function clearObservedTopLevelSettings(
+  settings: Record<string, unknown>,
+  observedKeys: ReadonlySet<string>
+): void {
+  for (const key of observedKeys) {
+    delete settings[key];
+  }
+}
+
 /**
  * Compare assignment settings and return differences
  */
@@ -296,12 +322,12 @@ function compareAssignmentSettings(
 
   // All possible assignment setting keys
   const keys = [
-    'description', 'nosubmit', 'publish', 'publish_grades',
+    'nosubmit', 'publish', 'publish_grades',
     'auto_submit', 'grading_on_submit', 'noworkarea',
     'exam_mode', 'exam_duration', 'num_attempts',
-    'show_end_exam_button', 'copy_startercode', 'uncompressupload',
+    'show_end_exam_button',
     'lti_on', 'anonymous_grading', 'grading_visibility',
-    'send_webhook', 'live_code_comments',
+    'live_code_comments',
   ];
 
   for (const key of keys) {
@@ -333,8 +359,7 @@ function comparePartSettings(
   const keys = [
     'submission_filters', 'cloud_labs', 'instant_aws_access',
     'session_length', 'monthly_dollar', 'monthly_time', 'total_time', 'total_dollar',
-    'late_penalty_percent', 'late_penalty_percent_rule', 'deadlinedate',
-    'endlab', 'labtype', 'container_image', 'number_of_submissions', 'lab_interface',
+    'endlab', 'labtype', 'container_image', 'lab_interface',
     'databricks_maxusers', 'tags',
   ];
 
@@ -425,8 +450,18 @@ async function detectSettingsDrift(
           Object.keys(localPartUnknowns).length > 0 ? localPartUnknowns : undefined,
           Object.keys(remotePartUnknowns).length > 0 ? remotePartUnknowns : undefined
         );
+        const localPartObserved = configPart.settings?._observed_settings ?? {};
+        const remotePartObserved = remotePartSettings._observed_settings ?? {};
+        const partObservedChanged = !valuesEqual(
+          Object.keys(localPartObserved).length > 0 ? localPartObserved : undefined,
+          Object.keys(remotePartObserved).length > 0 ? remotePartObserved : undefined
+        );
+        const partHasLegacyObservedTopLevel = hasObservedTopLevelSettings(
+          configPart.settings,
+          OBSERVED_PART_SETTING_KEYS
+        );
 
-        if (partDiffs.length > 0 || partUnknownsChanged) {
+        if (partDiffs.length > 0 || partUnknownsChanged || partObservedChanged || partHasLegacyObservedTopLevel) {
           partsDrift.push({
             partId: configPart.part_id,
             partName: configPart.name ?? remotePart.name,
@@ -434,6 +469,7 @@ async function detectSettingsDrift(
             diffs: partDiffs,
             remoteSettings: remotePartSettings,
             unknownsChanged: partUnknownsChanged,
+            observedChanged: partObservedChanged,
           });
         }
       }
@@ -445,9 +481,19 @@ async function detectSettingsDrift(
         Object.keys(localAsnUnknowns).length > 0 ? localAsnUnknowns : undefined,
         Object.keys(remoteAsnUnknowns).length > 0 ? remoteAsnUnknowns : undefined
       );
+      const localAsnObserved = assignment.settings?._observed_settings ?? {};
+      const remoteAsnObserved = remoteAssignmentSettings._observed_settings ?? {};
+      const asnObservedChanged = !valuesEqual(
+        Object.keys(localAsnObserved).length > 0 ? localAsnObserved : undefined,
+        Object.keys(remoteAsnObserved).length > 0 ? remoteAsnObserved : undefined
+      );
+      const asnHasLegacyObservedTopLevel = hasObservedTopLevelSettings(
+        assignment.settings,
+        OBSERVED_ASSIGNMENT_SETTING_KEYS
+      );
 
       // Add to drift list if there are any differences (known or unknown)
-      const hasDrift = assignmentDiffs.length > 0 || asnUnknownsChanged ||
+      const hasDrift = assignmentDiffs.length > 0 || asnUnknownsChanged || asnObservedChanged || asnHasLegacyObservedTopLevel ||
         partsDrift.length > 0;
 
       if (hasDrift) {
@@ -459,6 +505,7 @@ async function detectSettingsDrift(
           remoteAssignmentSettings,
           partsDrift,
           unknownsChanged: asnUnknownsChanged,
+          observedChanged: asnObservedChanged,
         });
       }
     } catch (error) {
@@ -1087,6 +1134,9 @@ export async function pullCommand(options: PullOptions): Promise<void> {
         if (drift.unknownsChanged) {
           logger.plain('  Unknown settings changed (see end-of-run summary for fields)');
         }
+        if (drift.observedChanged) {
+          logger.plain('  Observed read-only settings changed');
+        }
 
         // Show part-level diffs
         for (const partDrift of drift.partsDrift) {
@@ -1098,6 +1148,9 @@ export async function pullCommand(options: PullOptions): Promise<void> {
           }
           if (partDrift.unknownsChanged) {
             logger.plain(`  Part "${partDrift.partName}" unknown settings changed (see end-of-run summary for fields)`);
+          }
+          if (partDrift.observedChanged) {
+            logger.plain(`  Part "${partDrift.partName}" observed read-only settings changed`);
           }
         }
 
@@ -1129,15 +1182,15 @@ export async function pullCommand(options: PullOptions): Promise<void> {
           // Store settings to update
           const partSettingsMap = new Map<string, NonNullable<PartSettings>>();
           for (const partDrift of drift.partsDrift) {
-            // Save remote settings when known fields OR unknowns changed
-            if (partDrift.diffs.length > 0 || partDrift.unknownsChanged) {
+            // Save remote settings when known fields, unknowns, or observed read-only fields changed.
+            if (partDrift.diffs.length > 0 || partDrift.unknownsChanged || partDrift.observedChanged) {
               partSettingsMap.set(partDrift.partPath, partDrift.remoteSettings);
             }
           }
 
           settingsUpdates.set(drift.assignmentPath, {
-            // Save assignment settings when known fields OR unknowns changed
-            assignmentSettings: (drift.assignmentDiffs.length > 0 || drift.unknownsChanged)
+            // Save assignment settings when known fields, unknowns, or observed read-only fields changed.
+            assignmentSettings: (drift.assignmentDiffs.length > 0 || drift.unknownsChanged || drift.observedChanged)
               ? drift.remoteAssignmentSettings
               : undefined,
             partSettings: partSettingsMap.size > 0 ? partSettingsMap : undefined,
@@ -1325,8 +1378,12 @@ export async function pullCommand(options: PullOptions): Promise<void> {
             ...existingAssignment.settings,
             ...updates.assignmentSettings,
           };
+          clearObservedTopLevelSettings(mergedSettings, OBSERVED_ASSIGNMENT_SETTING_KEYS);
           if (updates.assignmentSettings._unknown_settings === undefined) {
             delete mergedSettings._unknown_settings;
+          }
+          if (updates.assignmentSettings._observed_settings === undefined) {
+            delete mergedSettings._observed_settings;
           }
           assignmentUpdate.settings = mergedSettings;
         }
@@ -1340,8 +1397,12 @@ export async function pullCommand(options: PullOptions): Promise<void> {
                 ...part.settings,
                 ...newPartSettings,
               };
+              clearObservedTopLevelSettings(mergedPartSettings, OBSERVED_PART_SETTING_KEYS);
               if (newPartSettings._unknown_settings === undefined) {
                 delete mergedPartSettings._unknown_settings;
+              }
+              if (newPartSettings._observed_settings === undefined) {
+                delete mergedPartSettings._observed_settings;
               }
               return {
                 ...part,

@@ -212,9 +212,7 @@ describe('reconcile options behavior', () => {
     expect(plan.staleInConfig).toEqual([]);
   });
 
-  it('should detect assignment metadata change when description differs', async () => {
-    // Working fields: name, description
-    // Note: points, published, due_date do NOT work via API
+  it('does not mark assignment metadata changed when only observed description differs', async () => {
     const config: Config = {
       ...baseConfig,
       assignments: [
@@ -232,7 +230,7 @@ describe('reconcile options behavior', () => {
 
     const plan = await reconcile(config, client, undefined);
 
-    expect(plan.assignments[0].assignmentMetadataChanged).toBe(true);
+    expect(plan.assignments[0].assignmentMetadataChanged).toBe(false);
   });
 
   it('should detect assignment metadata change when name differs', async () => {

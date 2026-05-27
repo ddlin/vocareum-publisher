@@ -38,14 +38,15 @@ export interface VocareumAssignmentResponse {
   points?: string;
   published?: string; // "0" or "1"
   deleted: string; // "0" or "1"
+  gradespublished?: boolean | string;
   // Additional settings that may be returned
   nosubmit?: boolean;
   publish?: boolean;
-  publish_grades?: string;
+  publish_grades?: boolean | string;
   auto_submit?: boolean;
   grading_on_submit?: boolean;
   noworkarea?: boolean;
-  exam_mode?: 'timed' | 'scheduled' | 'timed_scheduled';
+  exam_mode?: 'TIMED' | 'SCHEDULED' | 'TIMED_SCHEDULED' | 'timed' | 'scheduled' | 'timed_scheduled';
   exam_duration?: number;
   num_attempts?: number;
   show_end_exam_button?: boolean;
@@ -54,7 +55,7 @@ export interface VocareumAssignmentResponse {
   /** Vocareum returns this as a "1"/"0" string — coerce via mapAssignmentSettings */
   lti_on?: boolean | string;
   anonymous_grading?: boolean;
-  grading_visibility?: 'all' | 'assigned';
+  grading_visibility?: 'ALL' | 'ASSIGNED' | 'all' | 'assigned';
   send_webhook?: boolean;
   live_code_comments?: boolean;
 }
@@ -83,18 +84,18 @@ export interface VocareumPartResponse {
   monthly_time?: string;
   total_time?: string;
   total_dollar?: string;
-  // Submission settings - API may return array or object format
+  // Submission settings - API may return array/string/object format
   submission_filters?: {
     include?: string[];
     exclude?: string[];
     list?: string[];
-  } | string[];
+  } | string[] | string;
   // Late submission settings
   late_penalty_percent?: number;
   late_penalty_percent_rule?: 'max score' | 'student score';
   deadlinedate?: string;
   // Lab settings
-  endlab?: 'stop' | 'terminate';
+  endlab?: boolean | string;
   labtype?: string;
   container_image?: string;
   number_of_submissions?: number;
@@ -104,7 +105,7 @@ export interface VocareumPartResponse {
     information?: string[];
     launch_behavior?: string[];
     grades?: string[];
-  };
+  } | string[] | string;
   // Other settings
   databricks_maxusers?: number;
   tags?: Record<string, string | number | boolean>;  // API returns object like {"average_lab_time": 300}
@@ -116,7 +117,7 @@ export interface VocareumPartResponse {
 export interface PartsListResponse {
   status: 'success';
   parts?: VocareumPartResponse[];
-  total_records?: number;
+  total_records?: number | string;
 }
 
 /**
@@ -125,7 +126,7 @@ export interface PartsListResponse {
 export interface AssignmentsListResponse {
   status: 'success';
   assignments: VocareumAssignmentResponse[];
-  total_records: number;
+  total_records: number | string;
 }
 
 /**
@@ -152,34 +153,26 @@ export interface CourseSettings {
 /**
  * Assignment settings for API updates
  *
- * Confirmed working fields (Feb 2026 live probes):
- * - name, description, nosubmit, auto_submit, grading_on_submit
- * - publish, publish_grades, noworkarea, exam_mode, exam_duration, num_attempts
- * - show_end_exam_button, copy_startercode, uncompressupload, lti_on
- * - anonymous_grading, grading_visibility, send_webhook, live_code_comments
+ * Writable fields from the draft OpenAPI contract.
  *
  * Fields that DO NOT work (return "No valid parameters to update the assignment"):
  * - points, due_date, gradespublished
  */
 export interface ApiAssignmentSettings {
   name?: string;
-  description?: string;
   nosubmit?: boolean;
   publish?: boolean;
-  publish_grades?: string;
+  publish_grades?: boolean;
   auto_submit?: boolean;
   grading_on_submit?: boolean;
   noworkarea?: boolean;
-  exam_mode?: 'timed' | 'scheduled' | 'timed_scheduled';
+  exam_mode?: 'TIMED' | 'SCHEDULED' | 'TIMED_SCHEDULED';
   exam_duration?: number;
   num_attempts?: number;
   show_end_exam_button?: boolean;
-  copy_startercode?: boolean;
-  uncompressupload?: boolean;
   lti_on?: boolean;
   anonymous_grading?: boolean;
-  grading_visibility?: 'all' | 'assigned';
-  send_webhook?: boolean;
+  grading_visibility?: 'ALL' | 'ASSIGNED';
   live_code_comments?: boolean;
 }
 
@@ -198,7 +191,7 @@ export interface ApiLabInterface {
 /**
  * Part settings for API updates
  *
- * All fields confirmed working (Feb 2026 live probes).
+ * Writable fields from the draft OpenAPI contract plus live probes.
  * name is REQUIRED for most update requests.
  *
  * Fields requiring org permissions:
@@ -209,7 +202,7 @@ export interface ApiPartSettings {
   submission_filters?: {
     include?: string[];
     exclude?: string[];
-    list?: string[];  // Explicit file list
+    list?: string[];
   };
   // Cloud/AWS settings (require org permission)
   cloud_labs?: boolean;
@@ -220,16 +213,11 @@ export interface ApiPartSettings {
   monthly_time?: string;  // Monthly time budget in minutes
   total_time?: string;  // Total time budget in minutes
   total_dollar?: string;  // Total dollar budget
-  // Late submission settings
-  late_penalty_percent?: number;  // Penalty percentage (0-100)
-  late_penalty_percent_rule?: 'max score' | 'student score';
-  deadlinedate?: string;  // Part deadline (ISO 8601)
   // Lab settings
-  endlab?: 'stop' | 'terminate';  // Behavior on end lab
+  endlab?: boolean;
   labtype?: string;  // Lab type name (e.g., "Visual Studio Code", "JupyterLab")
   container_image?: string;  // Container image (must match labtype)
-  number_of_submissions?: number;  // Max submissions allowed
-  lab_interface?: ApiLabInterface;  // Lab interface configuration
+  lab_interface?: ApiLabInterface;
   // Optional/advanced settings
   databricks_maxusers?: number;  // Max users for Databricks
   tags?: Record<string, string | number | boolean>;  // Tags object like {"average_lab_time": 300}

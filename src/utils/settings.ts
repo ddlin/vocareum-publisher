@@ -12,6 +12,8 @@ import {
   KNOWN_PART_SETTING_KEYS,
   NON_SETTING_FIELDS_ASSIGNMENT,
   NON_SETTING_FIELDS_PART,
+  OBSERVED_ASSIGNMENT_SETTING_KEYS,
+  OBSERVED_PART_SETTING_KEYS,
   partitionApiResponse,
 } from './known-settings';
 import type { UnknownFieldReporter } from './unknown-field-reporter';
@@ -32,6 +34,32 @@ function coerceBooleanFlag(value: unknown): boolean | undefined {
   return undefined;
 }
 
+function normalizeUpperEnum<T extends string>(
+  value: unknown,
+  allowed: readonly T[]
+): T | undefined {
+  if (typeof value !== 'string') { return undefined; }
+  const normalized = value.toUpperCase() as T;
+  return allowed.includes(normalized) ? normalized : undefined;
+}
+
+function addObservedSetting(
+  observed: Record<string, unknown>,
+  key: string,
+  value: unknown
+): void {
+  if (value !== undefined) {
+    observed[key] = value;
+  }
+}
+
+function unionKeys(
+  a: ReadonlySet<string>,
+  b: ReadonlySet<string>
+): ReadonlySet<string> {
+  return new Set([...a, ...b]);
+}
+
 /**
  * Map Vocareum assignment API response to config settings
  */
@@ -45,29 +73,43 @@ export function mapAssignmentSettings(
   }
 
   const settings: NonNullable<AssignmentSettings> = {};
+  const observedSettings: Record<string, unknown> = {};
 
   // Only include fields that have values
-  if (apiResponse.description !== undefined) { settings.description = apiResponse.description; }
+  addObservedSetting(observedSettings, 'description', apiResponse.description);
   if (apiResponse.nosubmit !== undefined) { settings.nosubmit = apiResponse.nosubmit; }
   if (apiResponse.publish !== undefined) { settings.publish = apiResponse.publish; }
-  if (apiResponse.publish_grades !== undefined) { settings.publish_grades = apiResponse.publish_grades; }
+  const publishGrades = apiResponse.publish_grades ?? apiResponse.gradespublished;
+  if (publishGrades !== undefined) {
+    const coerced = coerceBooleanFlag(publishGrades);
+    if (coerced !== undefined) { settings.publish_grades = coerced; }
+  }
   if (apiResponse.auto_submit !== undefined) { settings.auto_submit = apiResponse.auto_submit; }
   if (apiResponse.grading_on_submit !== undefined) { settings.grading_on_submit = apiResponse.grading_on_submit; }
   if (apiResponse.noworkarea !== undefined) { settings.noworkarea = apiResponse.noworkarea; }
-  if (apiResponse.exam_mode !== undefined) { settings.exam_mode = apiResponse.exam_mode; }
+  if (apiResponse.exam_mode !== undefined) {
+    const normalized = normalizeUpperEnum(apiResponse.exam_mode, ['TIMED', 'SCHEDULED', 'TIMED_SCHEDULED'] as const);
+    if (normalized !== undefined) { settings.exam_mode = normalized; }
+  }
   if (apiResponse.exam_duration !== undefined) { settings.exam_duration = apiResponse.exam_duration; }
   if (apiResponse.num_attempts !== undefined) { settings.num_attempts = apiResponse.num_attempts; }
   if (apiResponse.show_end_exam_button !== undefined) { settings.show_end_exam_button = apiResponse.show_end_exam_button; }
-  if (apiResponse.copy_startercode !== undefined) { settings.copy_startercode = apiResponse.copy_startercode; }
-  if (apiResponse.uncompressupload !== undefined) { settings.uncompressupload = apiResponse.uncompressupload; }
+  addObservedSetting(observedSettings, 'copy_startercode', apiResponse.copy_startercode);
+  addObservedSetting(observedSettings, 'uncompressupload', apiResponse.uncompressupload);
   if (apiResponse.lti_on !== undefined) {
     const coerced = coerceBooleanFlag(apiResponse.lti_on);
     if (coerced !== undefined) { settings.lti_on = coerced; }
   }
   if (apiResponse.anonymous_grading !== undefined) { settings.anonymous_grading = apiResponse.anonymous_grading; }
-  if (apiResponse.grading_visibility !== undefined) { settings.grading_visibility = apiResponse.grading_visibility; }
-  if (apiResponse.send_webhook !== undefined) { settings.send_webhook = apiResponse.send_webhook; }
+  if (apiResponse.grading_visibility !== undefined) {
+    const normalized = normalizeUpperEnum(apiResponse.grading_visibility, ['ALL', 'ASSIGNED'] as const);
+    if (normalized !== undefined) { settings.grading_visibility = normalized; }
+  }
+  addObservedSetting(observedSettings, 'send_webhook', apiResponse.send_webhook);
   if (apiResponse.live_code_comments !== undefined) { settings.live_code_comments = apiResponse.live_code_comments; }
+  if (Object.keys(observedSettings).length > 0) {
+    settings._observed_settings = observedSettings;
+  }
 
   // Detect unknown fields the API returned but this mapper does not formally
   // handle. Preserves them for round-trip pass-through and notifies the reporter
@@ -75,7 +117,7 @@ export function mapAssignmentSettings(
   // VocareumXResponse is structurally compatible but TS can't prove it.
   const { unknownFields } = partitionApiResponse(
     apiResponse as unknown as Record<string, unknown>,
-    KNOWN_ASSIGNMENT_SETTING_KEYS,
+    unionKeys(KNOWN_ASSIGNMENT_SETTING_KEYS, OBSERVED_ASSIGNMENT_SETTING_KEYS),
     NON_SETTING_FIELDS_ASSIGNMENT
   );
   if (Object.keys(unknownFields).length > 0) {
@@ -137,6 +179,7 @@ export function mapPartSettings(
   }
 
   const settings: NonNullable<PartSettings> = {};
+  const observedSettings: Record<string, unknown> = {};
 
   // Submission filters - normalize to object format
   const normalizedFilters = normalizeSubmissionFilters(apiResponse.submission_filters);
@@ -156,16 +199,26 @@ export function mapPartSettings(
   if (apiResponse.total_dollar !== undefined) { settings.total_dollar = apiResponse.total_dollar; }
 
   // Late submission settings
-  if (apiResponse.late_penalty_percent !== undefined) { settings.late_penalty_percent = apiResponse.late_penalty_percent; }
-  if (apiResponse.late_penalty_percent_rule !== undefined) { settings.late_penalty_percent_rule = apiResponse.late_penalty_percent_rule; }
-  if (apiResponse.deadlinedate !== undefined) { settings.deadlinedate = apiResponse.deadlinedate; }
+  addObservedSetting(observedSettings, 'description', apiResponse.description);
+  addObservedSetting(observedSettings, 'late_penalty_percent', apiResponse.late_penalty_percent);
+  addObservedSetting(observedSettings, 'late_penalty_percent_rule', apiResponse.late_penalty_percent_rule);
+  addObservedSetting(observedSettings, 'deadlinedate', apiResponse.deadlinedate);
 
   // Lab settings
-  if (apiResponse.endlab !== undefined) { settings.endlab = apiResponse.endlab; }
+  if (apiResponse.endlab !== undefined) {
+    const coerced = coerceBooleanFlag(apiResponse.endlab);
+    if (coerced !== undefined) { settings.endlab = coerced; }
+  }
   if (apiResponse.labtype !== undefined) { settings.labtype = apiResponse.labtype; }
   if (apiResponse.container_image !== undefined) { settings.container_image = apiResponse.container_image; }
-  if (apiResponse.number_of_submissions !== undefined) { settings.number_of_submissions = apiResponse.number_of_submissions; }
-  if (apiResponse.lab_interface !== undefined) { settings.lab_interface = apiResponse.lab_interface; }
+  addObservedSetting(observedSettings, 'number_of_submissions', apiResponse.number_of_submissions);
+  if (apiResponse.lab_interface !== undefined) {
+    if (typeof apiResponse.lab_interface === 'string') {
+      settings.lab_interface = [apiResponse.lab_interface];
+    } else {
+      settings.lab_interface = apiResponse.lab_interface;
+    }
+  }
 
   // Other settings - coerce databricks_maxusers to number (API returns string)
   if (apiResponse.databricks_maxusers !== undefined) {
@@ -175,6 +228,9 @@ export function mapPartSettings(
     if (!isNaN(parsed)) { settings.databricks_maxusers = parsed; }
   }
   if (apiResponse.tags !== undefined) { settings.tags = apiResponse.tags; }
+  if (Object.keys(observedSettings).length > 0) {
+    settings._observed_settings = observedSettings;
+  }
 
   // Detect unknown fields the API returned but this mapper does not formally
   // handle. Preserves them for round-trip pass-through and notifies the reporter
@@ -182,7 +238,7 @@ export function mapPartSettings(
   // VocareumXResponse is structurally compatible but TS can't prove it.
   const { unknownFields } = partitionApiResponse(
     apiResponse as unknown as Record<string, unknown>,
-    KNOWN_PART_SETTING_KEYS,
+    unionKeys(KNOWN_PART_SETTING_KEYS, OBSERVED_PART_SETTING_KEYS),
     NON_SETTING_FIELDS_PART
   );
   if (Object.keys(unknownFields).length > 0) {
