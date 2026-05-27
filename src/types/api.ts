@@ -46,7 +46,7 @@ export interface VocareumAssignmentResponse {
   auto_submit?: boolean;
   grading_on_submit?: boolean;
   noworkarea?: boolean;
-  exam_mode?: 'TIMED' | 'SCHEDULED' | 'TIMED_SCHEDULED' | 'timed' | 'scheduled' | 'timed_scheduled';
+  exam_mode?: 'NO_EXAM' | 'SCHEDULED' | 'TIMED' | 'TIMED_UNRESTRICTED' | 'TIMED_SCHEDULED' | 'no_exam' | 'scheduled' | 'timed' | 'timed_unrestricted' | 'timed_scheduled';
   exam_duration?: number;
   num_attempts?: number;
   show_end_exam_button?: boolean;
@@ -166,7 +166,7 @@ export interface ApiAssignmentSettings {
   auto_submit?: boolean;
   grading_on_submit?: boolean;
   noworkarea?: boolean;
-  exam_mode?: 'TIMED' | 'SCHEDULED' | 'TIMED_SCHEDULED';
+  exam_mode?: 'NO_EXAM' | 'SCHEDULED' | 'TIMED' | 'TIMED_UNRESTRICTED' | 'TIMED_SCHEDULED';
   exam_duration?: number;
   num_attempts?: number;
   show_end_exam_button?: boolean;
@@ -213,10 +213,15 @@ export interface ApiPartSettings {
   monthly_time?: string;  // Monthly time budget in minutes
   total_time?: string;  // Total time budget in minutes
   total_dollar?: string;  // Total dollar budget
+  // Accepted by PUT but often not echoed on GET
+  late_penalty_percent?: number;
+  late_penalty_percent_rule?: 'max score' | 'student score';
+  deadlinedate?: string;
   // Lab settings
   endlab?: boolean;
   labtype?: string;  // Lab type name (e.g., "Visual Studio Code", "JupyterLab")
   container_image?: string;  // Container image (must match labtype)
+  number_of_submissions?: number;
   lab_interface?: ApiLabInterface;
   // Optional/advanced settings
   databricks_maxusers?: number;  // Max users for Databricks

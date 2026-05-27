@@ -88,7 +88,7 @@ export function mapAssignmentSettings(
   if (apiResponse.grading_on_submit !== undefined) { settings.grading_on_submit = apiResponse.grading_on_submit; }
   if (apiResponse.noworkarea !== undefined) { settings.noworkarea = apiResponse.noworkarea; }
   if (apiResponse.exam_mode !== undefined) {
-    const normalized = normalizeUpperEnum(apiResponse.exam_mode, ['TIMED', 'SCHEDULED', 'TIMED_SCHEDULED'] as const);
+    const normalized = normalizeUpperEnum(apiResponse.exam_mode, ['NO_EXAM', 'SCHEDULED', 'TIMED', 'TIMED_UNRESTRICTED', 'TIMED_SCHEDULED'] as const);
     if (normalized !== undefined) { settings.exam_mode = normalized; }
   }
   if (apiResponse.exam_duration !== undefined) { settings.exam_duration = apiResponse.exam_duration; }
@@ -198,11 +198,10 @@ export function mapPartSettings(
   if (apiResponse.total_time !== undefined) { settings.total_time = apiResponse.total_time; }
   if (apiResponse.total_dollar !== undefined) { settings.total_dollar = apiResponse.total_dollar; }
 
-  // Late submission settings
   addObservedSetting(observedSettings, 'description', apiResponse.description);
-  addObservedSetting(observedSettings, 'late_penalty_percent', apiResponse.late_penalty_percent);
-  addObservedSetting(observedSettings, 'late_penalty_percent_rule', apiResponse.late_penalty_percent_rule);
-  addObservedSetting(observedSettings, 'deadlinedate', apiResponse.deadlinedate);
+  if (apiResponse.late_penalty_percent !== undefined) { settings.late_penalty_percent = apiResponse.late_penalty_percent; }
+  if (apiResponse.late_penalty_percent_rule !== undefined) { settings.late_penalty_percent_rule = apiResponse.late_penalty_percent_rule; }
+  if (apiResponse.deadlinedate !== undefined) { settings.deadlinedate = apiResponse.deadlinedate; }
 
   // Lab settings
   if (apiResponse.endlab !== undefined) {
@@ -211,7 +210,7 @@ export function mapPartSettings(
   }
   if (apiResponse.labtype !== undefined) { settings.labtype = apiResponse.labtype; }
   if (apiResponse.container_image !== undefined) { settings.container_image = apiResponse.container_image; }
-  addObservedSetting(observedSettings, 'number_of_submissions', apiResponse.number_of_submissions);
+  if (apiResponse.number_of_submissions !== undefined) { settings.number_of_submissions = apiResponse.number_of_submissions; }
   if (apiResponse.lab_interface !== undefined) {
     if (typeof apiResponse.lab_interface === 'string') {
       settings.lab_interface = [apiResponse.lab_interface];

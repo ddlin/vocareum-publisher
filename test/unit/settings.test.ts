@@ -174,7 +174,7 @@ describe('mapPartSettings — unknown settings preservation', () => {
 });
 
 describe('mapPartSettings — observed settings preservation', () => {
-  it('attaches known-but-not-writable fields under _observed_settings', () => {
+  it('attaches non-writable description under _observed_settings and keeps accepted-unverified fields writable', () => {
     const result = mapPartSettings(
       basePart({
         description: 'Remote part description',
@@ -183,10 +183,9 @@ describe('mapPartSettings — observed settings preservation', () => {
       } as never)
     );
     expect(result.session_length).toBe('60');
-    expect(result.late_penalty_percent).toBeUndefined();
+    expect(result.late_penalty_percent).toBe(10);
     expect(result._observed_settings).toEqual({
       description: 'Remote part description',
-      late_penalty_percent: 10,
     });
     expect(result._unknown_settings).toBeUndefined();
   });
@@ -246,10 +245,11 @@ describe('source-of-truth: every key in KNOWN_*_SETTING_KEYS is actually read by
       if (k === 'submission_filters') { inputs[k] = { include: ['*.py'] }; }
       else if (k === 'lab_interface') { inputs[k] = { panels: ['Html'] }; }
       else if (k === 'tags') { inputs[k] = { average_lab_time: 300 }; }
+      else if (k === 'late_penalty_percent_rule') { inputs[k] = 'max score'; }
       else if (k === 'endlab') { inputs[k] = true; }
       else if (k === 'labtype' || k === 'container_image') { inputs[k] = 'x'; }
-      else if (k === 'session_length' || k === 'monthly_dollar' || k === 'monthly_time' || k === 'total_time' || k === 'total_dollar') { inputs[k] = '60'; }
-      else if (k === 'databricks_maxusers') { inputs[k] = 1; }
+      else if (k === 'session_length' || k === 'monthly_dollar' || k === 'monthly_time' || k === 'total_time' || k === 'total_dollar' || k === 'deadlinedate') { inputs[k] = '60'; }
+      else if (k === 'late_penalty_percent' || k === 'number_of_submissions' || k === 'databricks_maxusers') { inputs[k] = 1; }
       else { inputs[k] = true; }
     }
     const result = mapPartSettings(basePart(inputs as never)) as Record<string, unknown>;
@@ -261,10 +261,7 @@ describe('source-of-truth: every key in KNOWN_*_SETTING_KEYS is actually read by
   it('mapPartSettings reads every OBSERVED_PART_SETTING_KEYS entry into _observed_settings', () => {
     const inputs: Record<string, unknown> = {};
     for (const k of OBSERVED_PART_SETTING_KEYS) {
-      if (k === 'late_penalty_percent_rule') { inputs[k] = 'max score'; }
-      else if (k === 'deadlinedate') { inputs[k] = '60'; }
-      else if (k === 'late_penalty_percent' || k === 'number_of_submissions') { inputs[k] = 1; }
-      else { inputs[k] = 'x'; }
+      inputs[k] = 'x';
     }
     const result = mapPartSettings(basePart(inputs as never));
     for (const k of OBSERVED_PART_SETTING_KEYS) {

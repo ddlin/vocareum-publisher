@@ -83,15 +83,15 @@ export async function getPart(
  * - name (REQUIRED for most updates)
  * - submission_filters (object with include/exclude/list arrays)
  * - session_length, monthly_dollar, monthly_time, total_time, total_dollar
- * - endlab (boolean), labtype, container_image, lab_interface (object)
+ * - late_penalty_percent, late_penalty_percent_rule, deadlinedate
+ * - endlab (boolean), labtype, container_image, number_of_submissions, lab_interface (object)
  * - databricks_maxusers, tags
  *
  * Fields requiring org permissions:
  * - cloud_labs, instant_aws_access ("Cloud not allowed for the org")
  *
  * Fields observed in read responses but not sent during update:
- * - description, late_penalty_percent, late_penalty_percent_rule
- * - deadlinedate, number_of_submissions
+ * - description
  *
  * @param client - Vocareum API client
  * @param courseId - Course ID (string!)

@@ -219,6 +219,18 @@ describe('waitForPartUpdateTransaction', () => {
     ).rejects.toThrow('Upload failed: invalid content');
   });
 
+  it('should throw APIError when transaction returns error state', async () => {
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      state: 'error',
+      message: 'Upload failed: transaction error',
+    });
+
+    await expect(
+      waitForPartUpdateTransaction(mockClient, 'txn-error')
+    ).rejects.toThrow('Upload failed: transaction error');
+  });
+
   it('should use default message when transaction fails without message', async () => {
     requestMock.mockResolvedValueOnce({
       status: 'success',
@@ -366,6 +378,19 @@ describe('uploadContent', () => {
     ).rejects.toThrow('Invalid target directory');
   });
 
+  it('should throw on direct error response', async () => {
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      state: 'error',
+      message: 'Invalid zip content',
+    });
+
+    const files = { 'file.txt': 'content' };
+    await expect(
+      uploadContent(mockClient, 'c1', 'a1', 'p1', 'startercode', files)
+    ).rejects.toThrow('Invalid zip content');
+  });
+
   it('should throw default message on failure without message', async () => {
     requestMock.mockResolvedValueOnce({
       status: 'success',
@@ -428,7 +453,25 @@ describe('listFiles', () => {
     expect(requestMock).toHaveBeenCalledWith({
       method: 'GET',
       url: '/api/v2/courses/c1/assignments/a1/parts/p1/files',
-      params: { dir: '/resource/startercode', list: true },
+      params: { dir: '/voc/startercode', list: true },
+    });
+  });
+
+  it('should use /resource for lib and asnlib file listing', async () => {
+    requestMock.mockResolvedValue({ files: [] });
+
+    await listFiles(mockClient, 'c1', 'a1', 'p1', 'lib');
+    await listFiles(mockClient, 'c1', 'a1', 'p1', 'asnlib');
+
+    expect(requestMock).toHaveBeenNthCalledWith(1, {
+      method: 'GET',
+      url: '/api/v2/courses/c1/assignments/a1/parts/p1/files',
+      params: { dir: '/resource/lib', list: true },
+    });
+    expect(requestMock).toHaveBeenNthCalledWith(2, {
+      method: 'GET',
+      url: '/api/v2/courses/c1/assignments/a1/parts/p1/files',
+      params: { dir: '/resource/asnlib', list: true },
     });
   });
 
@@ -495,6 +538,16 @@ describe('listFiles', () => {
     expect(result).toEqual([]);
     expect(requestMock).toHaveBeenCalledTimes(1);
   });
+
+  it('should throw 400 errors that do not reference the requested directory', async () => {
+    requestMock.mockRejectedValueOnce(
+      new VocareumError("assignment doesn't exist", 'API_ERROR', 400)
+    );
+
+    await expect(listFiles(mockClient, 'c1', 'a1', 'p1', 'startercode')).rejects.toThrow(
+      "assignment doesn't exist"
+    );
+  });
 });
 
 describe('deleteFile', () => {
@@ -517,7 +570,7 @@ describe('deleteFile', () => {
       method: 'DELETE',
       url: '/api/v2/courses/c1/assignments/a1/parts/p1/files',
       params: {
-        dir: '/resource/startercode',
+        dir: '/voc/startercode',
         filename: 'old-file.py',
       },
     });
@@ -869,7 +922,7 @@ describe('downloadContent recursive directory handling', () => {
     mockedAxios.get.mockResolvedValueOnce({ data: Buffer.alloc(0) });
     // Probe scripts/run.sh as a directory → not a directory.
     requestMock.mockRejectedValueOnce(
-      new VocareumError("/resource/scripts/run.sh doesn't exist", 'API_ERROR', 400)
+      new VocareumError("/voc/scripts/run.sh doesn't exist", 'API_ERROR', 400)
     );
 
     const result = await downloadContent(mockClient, 'c1', 'a1', 'p1', ['scripts']);

@@ -14,14 +14,14 @@ import { logger } from '../utils/logger';
 
 interface PartUpdateResponse {
   status: 'success';
-  state?: 'pending' | 'success' | 'failed';
+  state?: 'pending' | 'success' | 'error' | 'failed';
   message?: string;
   transactionid?: string;
 }
 
 interface TransactionResponse {
   status: 'success';
-  state: 'pending' | 'success' | 'failed';
+  state: 'pending' | 'success' | 'error' | 'failed';
   message?: string;
 }
 
@@ -305,7 +305,7 @@ export async function waitForPartUpdateTransaction(
     if (txn.state === 'success') {
       return;
     }
-    if (txn.state === 'failed') {
+    if (txn.state === 'error' || txn.state === 'failed') {
       throw new APIError(
         txn.message ?? `Part update transaction failed (txn=${transactionId})`
       );
@@ -362,7 +362,7 @@ export async function uploadContent(
 
   if (response.transactionid !== undefined && response.transactionid !== '') {
     await waitForPartUpdateTransaction(client, response.transactionid);
-  } else if (response.state === 'failed') {
+  } else if (response.state === 'error' || response.state === 'failed') {
     throw new APIError(
       response.message ?? `Part update failed (part=${partId}, dir=${directory})`
     );
@@ -502,13 +502,18 @@ async function downloadDirectoryTree(
 /**
  * Map directory type to Vocareum API path format for file listing.
  *
- * Elite architecture uses /resource/ prefix, container uses /voc/.
- * When architecture is unknown, tries /resource/ first (will 400 if wrong,
- * caught by listFiles error handler).
+ * Vocareum file listing uses /resource/ for shared library directories
+ * (lib/asnlib) and /voc/ for workspace directories.
  */
-function toApiDirPath(directory: DirectoryType, architecture?: 'elite' | 'container'): string {
-  const prefix = architecture === 'container' ? '/voc' : '/resource';
+function toApiDirPath(directory: DirectoryType, _architecture?: 'elite' | 'container'): string {
+  const prefix = directory === 'lib' || directory === 'asnlib' ? '/resource' : '/voc';
   return `${prefix}/${directory}`;
+}
+
+function missingDirectoryMessageMatches(errorMessage: string, apiDirPath: string): boolean {
+  if (!errorMessage.includes("doesn't exist")) { return false; }
+  const requested = apiDirPath.replace(/^\/(?:voc|resource)\//, '');
+  return errorMessage.includes(apiDirPath) || errorMessage.includes(requested);
 }
 
 export async function listFiles(
@@ -534,7 +539,6 @@ async function listFilesByApiPath(
   const url = `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
 
   try {
-    // Elite uses dir=/resource/{directory}, container uses dir=/voc/{directory}
     const response = await client.request<unknown>({
       method: 'GET',
       url,
@@ -546,14 +550,18 @@ async function listFilesByApiPath(
       modifiedAt: entry.modifiedAt,
     }));
   } catch (error) {
-    // If the directory doesn't exist, return empty array (not an error)
+    // Missing optional directories are normal, but only mask the error when it
+    // names the requested directory. Other 400s likely indicate bad IDs/params.
     if (isHttp400(error)) {
       const msg = error instanceof Error ? error.message : String(error);
-      if (msg.includes("doesn't exist")) {
+      if (missingDirectoryMessageMatches(msg, apiDirPath)) {
         return [];
       }
     }
-    // For other errors, log and return empty
+    if (isHttp400(error)) {
+      throw error;
+    }
+    // For transient/non-400 errors, log and return empty.
     logger.warn(
       `Failed to list files for part=${partId}, dir=${apiDirPath}: ${error instanceof Error ? error.message : 'Unknown'}`
     );

@@ -146,10 +146,10 @@ describe('initial set contents', () => {
 
   it('part KNOWN set matches mapPartSettings keys', () => {
     expect([...KNOWN_PART_SETTING_KEYS].sort()).toEqual([
-      'cloud_labs', 'container_image', 'databricks_maxusers',
+      'cloud_labs', 'container_image', 'databricks_maxusers', 'deadlinedate',
       'endlab', 'instant_aws_access', 'lab_interface', 'labtype',
-      'monthly_dollar',
-      'monthly_time', 'session_length',
+      'late_penalty_percent', 'late_penalty_percent_rule', 'monthly_dollar',
+      'monthly_time', 'number_of_submissions', 'session_length',
       'submission_filters', 'tags', 'total_dollar', 'total_time',
     ].sort());
   });

@@ -71,9 +71,13 @@ export const KNOWN_PART_SETTING_KEYS: ReadonlySet<string> = new Set([
   'monthly_time',
   'total_time',
   'total_dollar',
+  'late_penalty_percent',
+  'late_penalty_percent_rule',
+  'deadlinedate',
   'endlab',
   'labtype',
   'container_image',
+  'number_of_submissions',
   'lab_interface',
   'databricks_maxusers',
   'tags',
@@ -81,10 +85,6 @@ export const KNOWN_PART_SETTING_KEYS: ReadonlySet<string> = new Set([
 
 export const OBSERVED_PART_SETTING_KEYS: ReadonlySet<string> = new Set([
   'description',
-  'late_penalty_percent',
-  'late_penalty_percent_rule',
-  'deadlinedate',
-  'number_of_submissions',
 ]);
 
 export const NON_SETTING_FIELDS_PART: ReadonlySet<string> = new Set([

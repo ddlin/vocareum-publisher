@@ -316,6 +316,10 @@ describe('publish', () => {
           settings: {
             cloud_labs: true,
             session_length: '3600',
+            late_penalty_percent: 10,
+            late_penalty_percent_rule: 'max score',
+            deadlinedate: '2026-12-31T23:59:00Z',
+            number_of_submissions: 5,
             submission_filters: { include: ['*.py'], exclude: ['*.pyc'] },
           },
         },
@@ -364,6 +368,10 @@ describe('publish', () => {
       name: 'Updated Part',  // Required for all part updates
       cloud_labs: true,
       session_length: '3600',
+      late_penalty_percent: 10,
+      late_penalty_percent_rule: 'max score',
+      deadlinedate: '2026-12-31T23:59:00Z',
+      number_of_submissions: 5,
       submission_filters: {
         include: ['*.py'],
         exclude: ['*.pyc'],
@@ -735,6 +743,10 @@ describe('publish', () => {
       ])
     );
     expect(historyArg.file_size_state['lab1/part1/docs/readme.md']).toBe(5);
+    expect(historyArg.settings_state).toMatchObject({
+      'assignments/lab1/parts/part1/settings/session_length': '60',
+    });
+    expect(historyArg.settings_state).not.toHaveProperty('assignments/lab1/settings/description');
   });
 });
 

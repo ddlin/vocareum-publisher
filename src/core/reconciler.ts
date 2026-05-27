@@ -24,6 +24,67 @@ import { mapParts } from './mapper';
 import { calculateDirectoryHash } from '../utils/files';
 import { logger } from '../utils/logger';
 
+const ACCEPTED_UNVERIFIED_ASSIGNMENT_KEYS = [
+  'anonymous_grading',
+  'exam_duration',
+  'exam_mode',
+  'grading_visibility',
+  'live_code_comments',
+  'num_attempts',
+] as const;
+
+const ACCEPTED_UNVERIFIED_PART_KEYS = [
+  'deadlinedate',
+  'endlab',
+  'lab_interface',
+  'late_penalty_percent',
+  'late_penalty_percent_rule',
+  'number_of_submissions',
+] as const;
+
+function assignmentSettingStateKey(assignment: Assignment, key: string): string {
+  return `assignments/${assignment.path}/settings/${key}`;
+}
+
+function partSettingStateKey(assignment: Assignment, part: Part, key: string): string {
+  return `assignments/${assignment.path}/parts/${part.path}/settings/${key}`;
+}
+
+function hasAcceptedUnverifiedAssignmentChange(
+  assignment: Assignment,
+  lastPublishHistory?: PublishHistory
+): boolean {
+  const settings = assignment.settings;
+  if (!settings) { return false; }
+  const state = lastPublishHistory?.status === 'failed' ? undefined : lastPublishHistory?.settings_state;
+  for (const key of ACCEPTED_UNVERIFIED_ASSIGNMENT_KEYS) {
+    const value = settings[key];
+    if (value === undefined || value === null) { continue; }
+    if (!state || !deepEqual(value, state[assignmentSettingStateKey(assignment, key)])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasAcceptedUnverifiedPartChange(
+  assignment: Assignment,
+  part: Part,
+  lastPublishHistory?: PublishHistory
+): boolean {
+  const settings = part.settings;
+  if (!settings) { return false; }
+  const state = lastPublishHistory?.status === 'failed' ? undefined : lastPublishHistory?.settings_state;
+  for (const key of ACCEPTED_UNVERIFIED_PART_KEYS) {
+    const value = settings[key];
+    if (value === undefined || value === null) { continue; }
+    if (!state || !deepEqual(value, state[partSettingStateKey(assignment, part, key)])) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Generate reconciliation plan by comparing local config with Vocareum state
  *
@@ -140,7 +201,9 @@ export async function reconcile(
       // Check for changes in fields that can be updated via API
       // Working fields: name, description, nosubmit, auto_submit, grading_on_submit, publish, etc.
       // NOT working: due_date, points (return "No valid parameters")
-      assignmentMetadataChanged = detectAssignmentSettingsChanged(configAssignment, fullAssignment);
+      assignmentMetadataChanged =
+        detectAssignmentSettingsChanged(configAssignment, fullAssignment) ||
+        hasAcceptedUnverifiedAssignmentChange(configAssignment, lastPublishHistory);
 
       // Fetch parts list for mapping
       const remoteParts = await listParts(client, config.vocareum.course_id, remoteAssignment.id);
@@ -160,7 +223,9 @@ export async function reconcile(
 
           // Fetch full part details for accurate settings comparison and architecture detection
           const fullPart = await getPart(client, config.vocareum.course_id, remoteAssignment.id, mapping.apiPartId);
-          const metadataChanged = detectPartSettingsChanged(configPart, fullPart);
+          const metadataChanged =
+            detectPartSettingsChanged(configPart, fullPart) ||
+            hasAcceptedUnverifiedPartChange(configAssignment, configPart, lastPublishHistory);
 
           // Determine directories to sync based on course-level architecture
           // Config-level part override takes precedence, then course architecture, then default
@@ -408,16 +473,16 @@ function detectAssignmentSettingsChanged(
   if (hasValue(s.noworkarea) && settingsDiffer(s.noworkarea, remoteAssignment.noworkarea)) { return true; }
   if (hasValue(s.show_end_exam_button) && settingsDiffer(s.show_end_exam_button, remoteAssignment.show_end_exam_button)) { return true; }
   if (hasValue(s.lti_on) && settingsDiffer(s.lti_on, remoteAssignment.lti_on)) { return true; }
-  if (hasValue(s.anonymous_grading) && settingsDiffer(s.anonymous_grading, remoteAssignment.anonymous_grading)) { return true; }
-  if (hasValue(s.live_code_comments) && settingsDiffer(s.live_code_comments, remoteAssignment.live_code_comments)) { return true; }
+  if (hasValue(s.anonymous_grading) && remoteAssignment.anonymous_grading !== undefined && settingsDiffer(s.anonymous_grading, remoteAssignment.anonymous_grading)) { return true; }
+  if (hasValue(s.live_code_comments) && remoteAssignment.live_code_comments !== undefined && settingsDiffer(s.live_code_comments, remoteAssignment.live_code_comments)) { return true; }
 
   // String/enum settings
-  if (hasValue(s.exam_mode) && settingsDiffer(s.exam_mode, remoteAssignment.exam_mode)) { return true; }
-  if (hasValue(s.grading_visibility) && settingsDiffer(s.grading_visibility, remoteAssignment.grading_visibility)) { return true; }
+  if (hasValue(s.exam_mode) && remoteAssignment.exam_mode !== undefined && settingsDiffer(s.exam_mode, remoteAssignment.exam_mode)) { return true; }
+  if (hasValue(s.grading_visibility) && remoteAssignment.grading_visibility !== undefined && settingsDiffer(s.grading_visibility, remoteAssignment.grading_visibility)) { return true; }
 
   // Number settings
-  if (hasValue(s.exam_duration) && settingsDiffer(s.exam_duration, remoteAssignment.exam_duration)) { return true; }
-  if (hasValue(s.num_attempts) && settingsDiffer(s.num_attempts, remoteAssignment.num_attempts)) { return true; }
+  if (hasValue(s.exam_duration) && remoteAssignment.exam_duration !== undefined && settingsDiffer(s.exam_duration, remoteAssignment.exam_duration)) { return true; }
+  if (hasValue(s.num_attempts) && remoteAssignment.num_attempts !== undefined && settingsDiffer(s.num_attempts, remoteAssignment.num_attempts)) { return true; }
 
   return false;
 }
@@ -427,13 +492,14 @@ function detectAssignmentSettingsChanged(
  *
  * Writable fields are based on the draft OpenAPI contract plus live probes:
  * - name, submission_filters, session_length, monthly_dollar, monthly_time, total_time, total_dollar
- * - endlab, labtype, container_image, lab_interface, databricks_maxusers, tags
+ * - late_penalty_percent, late_penalty_percent_rule, deadlinedate, endlab
+ * - labtype, container_image, number_of_submissions, lab_interface, databricks_maxusers, tags
  *
  * Conditional fields (require org permissions):
  * - cloud_labs, instant_aws_access
  *
- * Non-schema/read-only fields may be preserved under _observed_settings but
- * should not trigger push updates.
+ * Accepted-unverified fields are written when payloads are sent, but absent
+ * readback is not treated as drift.
  */
 function detectPartSettingsChanged(
   configPart: Part,
@@ -456,10 +522,16 @@ function detectPartSettingsChanged(
   if (s.total_time !== undefined && s.total_time !== null && settingsDiffer(s.total_time, remotePart.total_time)) { return true; }
   if (s.total_dollar !== undefined && s.total_dollar !== null && settingsDiffer(s.total_dollar, remotePart.total_dollar)) { return true; }
 
+  // Accepted-unverified fields: compare only when the API echoes a value.
+  if (s.late_penalty_percent !== undefined && s.late_penalty_percent !== null && remotePart.late_penalty_percent !== undefined && settingsDiffer(s.late_penalty_percent, remotePart.late_penalty_percent)) { return true; }
+  if (s.late_penalty_percent_rule !== undefined && s.late_penalty_percent_rule !== null && remotePart.late_penalty_percent_rule !== undefined && settingsDiffer(s.late_penalty_percent_rule, remotePart.late_penalty_percent_rule)) { return true; }
+  if (s.deadlinedate !== undefined && s.deadlinedate !== null && remotePart.deadlinedate !== undefined && settingsDiffer(s.deadlinedate, remotePart.deadlinedate)) { return true; }
+
   // Lab settings
-  if (s.endlab !== undefined && s.endlab !== null && settingsDiffer(s.endlab, remotePart.endlab)) { return true; }
+  if (s.endlab !== undefined && s.endlab !== null && remotePart.endlab !== undefined && settingsDiffer(s.endlab, remotePart.endlab)) { return true; }
   if (s.labtype !== undefined && s.labtype !== null && settingsDiffer(s.labtype, remotePart.labtype)) { return true; }
   if (s.container_image !== undefined && s.container_image !== null && settingsDiffer(s.container_image, remotePart.container_image)) { return true; }
+  if (s.number_of_submissions !== undefined && s.number_of_submissions !== null && remotePart.number_of_submissions !== undefined && settingsDiffer(s.number_of_submissions, remotePart.number_of_submissions)) { return true; }
   if (s.databricks_maxusers !== undefined && s.databricks_maxusers !== null && settingsDiffer(s.databricks_maxusers, remotePart.databricks_maxusers)) { return true; }
 
   // Compare submission filters (normalize both to object format)
@@ -474,8 +546,7 @@ function detectPartSettingsChanged(
 
   // Compare lab_interface
   if (s.lab_interface !== undefined) {
-    if (!remotePart.lab_interface) { return true; }
-    if (!deepEqual(s.lab_interface, remotePart.lab_interface)) { return true; }
+    if (remotePart.lab_interface !== undefined && !deepEqual(s.lab_interface, remotePart.lab_interface)) { return true; }
   }
 
   // Compare tags (API returns object, config may have array or object)

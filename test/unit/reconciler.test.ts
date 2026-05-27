@@ -384,6 +384,20 @@ describe('reconcile options behavior', () => {
         'lab1/part1/docs': 'same-hash',
         'lab1/part1/data': 'same-hash',
       },
+      settings_state: {
+        'assignments/lab1/settings/exam_mode': 'TIMED',
+        'assignments/lab1/settings/exam_duration': 45,
+        'assignments/lab1/settings/num_attempts': 3,
+        'assignments/lab1/settings/anonymous_grading': false,
+        'assignments/lab1/settings/grading_visibility': 'ALL',
+        'assignments/lab1/settings/live_code_comments': false,
+        'assignments/lab1/parts/part1/settings/late_penalty_percent': 10,
+        'assignments/lab1/parts/part1/settings/late_penalty_percent_rule': 'max score',
+        'assignments/lab1/parts/part1/settings/deadlinedate': '2026-12-31T23:59:00Z',
+        'assignments/lab1/parts/part1/settings/endlab': true,
+        'assignments/lab1/parts/part1/settings/number_of_submissions': 5,
+        'assignments/lab1/parts/part1/settings/lab_interface': { panels: ['Console'] },
+      },
     };
 
     const config: Config = {
@@ -419,6 +433,137 @@ describe('reconcile options behavior', () => {
 
     expect(plan.assignments[0].parts[0].type).toBe('skip');
     expect(plan.assignments[0].parts[0].metadataChanged).toBeUndefined();
+  });
+
+  it('should not mark accepted-unverified settings changed when API omits readback', async () => {
+    const publishHistory = {
+      timestamp: '2026-02-12T00:00:00Z',
+      commit_sha: 'abc',
+      published_by: 'tester',
+      status: 'success' as const,
+      content_state: {
+        'lab1/part1/startercode': 'same-hash',
+        'lab1/part1/scripts': 'same-hash',
+        'lab1/part1/docs': 'same-hash',
+        'lab1/part1/data': 'same-hash',
+      },
+      settings_state: {
+        'assignments/lab1/settings/exam_mode': 'TIMED',
+        'assignments/lab1/settings/exam_duration': 45,
+        'assignments/lab1/settings/num_attempts': 3,
+        'assignments/lab1/settings/anonymous_grading': false,
+        'assignments/lab1/settings/grading_visibility': 'ALL',
+        'assignments/lab1/settings/live_code_comments': false,
+        'assignments/lab1/parts/part1/settings/late_penalty_percent': 10,
+        'assignments/lab1/parts/part1/settings/late_penalty_percent_rule': 'max score',
+        'assignments/lab1/parts/part1/settings/deadlinedate': '2026-12-31T23:59:00Z',
+        'assignments/lab1/parts/part1/settings/endlab': true,
+        'assignments/lab1/parts/part1/settings/number_of_submissions': 5,
+        'assignments/lab1/parts/part1/settings/lab_interface': { panels: ['Console'] },
+      },
+    };
+    const config: Config = {
+      ...baseConfig,
+      assignments: [
+        {
+          ...baseConfig.assignments[0],
+          assignment_id: 'asn-1',
+          settings: {
+            exam_mode: 'TIMED',
+            exam_duration: 45,
+            num_attempts: 3,
+            anonymous_grading: false,
+            grading_visibility: 'ALL',
+            live_code_comments: false,
+          },
+          parts: [
+            {
+              part_id: 'part-1',
+              path: 'part1',
+              name: 'Part 1',
+              directories: ['startercode', 'scripts', 'docs', 'data'],
+              settings: {
+                late_penalty_percent: 10,
+                late_penalty_percent_rule: 'max score',
+                deadlinedate: '2026-12-31T23:59:00Z',
+                endlab: true,
+                number_of_submissions: 5,
+                lab_interface: { panels: ['Console'] },
+              },
+            },
+          ],
+        },
+      ],
+      publish_history: [publishHistory],
+    };
+
+    listAssignmentsMock.mockResolvedValue([
+      { id: 'asn-1', name: 'Lab 1', deleted: '0' },
+    ]);
+    getAssignmentMock.mockResolvedValue({ id: 'asn-1', name: 'Lab 1', deleted: '0', courseid: '201303' });
+    listPartsMock.mockResolvedValue([
+      { id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0' },
+    ]);
+    getPartMock.mockResolvedValue({ id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0', assignmentid: 'asn-1', courseid: '201303' });
+
+    const plan = await reconcile(config, client, publishHistory);
+
+    expect(plan.assignments[0].assignmentMetadataChanged).toBe(false);
+    expect(plan.assignments[0].parts[0].type).toBe('skip');
+    expect(plan.assignments[0].parts[0].metadataChanged).toBeUndefined();
+  });
+
+  it('marks accepted-unverified settings changed when local value differs from last pushed state', async () => {
+    const publishHistory = {
+      timestamp: '2026-02-12T00:00:00Z',
+      commit_sha: 'abc',
+      published_by: 'tester',
+      status: 'success' as const,
+      content_state: {
+        'lab1/part1/startercode': 'same-hash',
+        'lab1/part1/scripts': 'same-hash',
+        'lab1/part1/docs': 'same-hash',
+        'lab1/part1/data': 'same-hash',
+      },
+      settings_state: {
+        'assignments/lab1/settings/exam_duration': 30,
+        'assignments/lab1/parts/part1/settings/late_penalty_percent': 5,
+      },
+    };
+    const config: Config = {
+      ...baseConfig,
+      assignments: [
+        {
+          ...baseConfig.assignments[0],
+          assignment_id: 'asn-1',
+          settings: { exam_duration: 45 },
+          parts: [
+            {
+              part_id: 'part-1',
+              path: 'part1',
+              name: 'Part 1',
+              directories: ['startercode', 'scripts', 'docs', 'data'],
+              settings: { late_penalty_percent: 10 },
+            },
+          ],
+        },
+      ],
+      publish_history: [publishHistory],
+    };
+
+    listAssignmentsMock.mockResolvedValue([
+      { id: 'asn-1', name: 'Lab 1', deleted: '0' },
+    ]);
+    getAssignmentMock.mockResolvedValue({ id: 'asn-1', name: 'Lab 1', deleted: '0', courseid: '201303' });
+    listPartsMock.mockResolvedValue([
+      { id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0' },
+    ]);
+    getPartMock.mockResolvedValue({ id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0', assignmentid: 'asn-1', courseid: '201303' });
+
+    const plan = await reconcile(config, client, publishHistory);
+
+    expect(plan.assignments[0].assignmentMetadataChanged).toBe(true);
+    expect(plan.assignments[0].parts[0].metadataChanged).toBe(true);
   });
 
   it('should mark all directories as changed when forceAll=true', async () => {

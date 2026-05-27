@@ -352,14 +352,6 @@ describe('pullCommand — unknown-only settings drift', () => {
             nosubmit: false,
             description: 'Remote description',
           },
-          parts: [
-            {
-              ...config.assignments[0].parts[0],
-              settings: {
-                late_penalty_percent: 10,
-              },
-            },
-          ],
         },
       ],
     };
@@ -368,9 +360,7 @@ describe('pullCommand — unknown-only settings drift', () => {
       nosubmit: false,
       _observed_settings: { description: 'Remote description' },
     });
-    mapPartSettingsMock.mockReturnValue({
-      _observed_settings: { late_penalty_percent: 10 },
-    });
+    mapPartSettingsMock.mockReturnValue({});
 
     await pullCommand({ batch: true });
 
@@ -384,14 +374,6 @@ describe('pullCommand — unknown-only settings drift', () => {
       _observed_settings: { description: 'Remote description' },
     });
     expect(updatedAssignment?.settings).not.toHaveProperty('description');
-
-    const updatedPart = updatedAssignment?.parts?.find(
-      (p: { path: string }) => p.path === 'part1',
-    );
-    expect(updatedPart?.settings).toEqual({
-      _observed_settings: { late_penalty_percent: 10 },
-    });
-    expect(updatedPart?.settings).not.toHaveProperty('late_penalty_percent');
   });
 });
 

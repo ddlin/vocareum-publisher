@@ -5,7 +5,7 @@ Push assignment content from GitHub to Vocareum.
 A CLI tool and GitHub Action that enables instructors to maintain assignment content in Git with full version control while seamlessly syncing to Vocareum.
 
 Current stable release in this repository:
-- CLI package: `vocareum-publisher@1.0.21`
+- CLI package: `vocareum-publisher@1.0.22`
 - VS Code extension: `vocgit@1.0.2`
 
 **[Video Walkthrough](https://www.loom.com/share/2af5f925c0244db0bf9825f8e7e133bd)** - Watch a quick demo of vocgit in action.
@@ -113,7 +113,7 @@ assignments:
       publish_grades: false
       auto_submit: false
       grading_on_submit: true
-      exam_mode: "TIMED"            # TIMED, SCHEDULED, or TIMED_SCHEDULED
+      exam_mode: "TIMED"            # NO_EXAM, SCHEDULED, TIMED, TIMED_UNRESTRICTED
       exam_duration: 120
       num_attempts: 3
       grading_visibility: "ALL"     # ALL or ASSIGNED
@@ -128,14 +128,13 @@ assignments:
             include: ["*.py"]
             exclude: ["*.pyc"]
           session_length: "60"      # minutes
+          late_penalty_percent: 10  # Accepted by API; may not echo on read
+          late_penalty_percent_rule: "max score"
+          deadlinedate: "2025-03-15T23:59:00Z"
+          number_of_submissions: 5
           lab_interface:
             panels: ["Console"]
             controls: ["Reset"]
-          _observed_settings:       # Pull-only API fields; vocgit does not push these
-            late_penalty_percent: 10
-            late_penalty_percent_rule: "max score"
-            deadlinedate: "2025-03-15T23:59:00Z"
-            number_of_submissions: 5
   - assignment_id: null
     name: "Lab 2: Classification"
     assignment_name_for_lookup: "Lab 2: Classification"  # Optional name-based ID discovery

@@ -134,6 +134,30 @@ function withoutUndefined<T extends Record<string, unknown>>(payload: T): T {
   ) as T;
 }
 
+function collectSettingsState(config: Config): Record<string, unknown> {
+  const state: Record<string, unknown> = {};
+  for (const assignment of config.assignments) {
+    const asnSettings = assignment.settings;
+    if (asnSettings) {
+      for (const [key, value] of Object.entries(asnSettings)) {
+        if (value === undefined || value === null || key.startsWith('_')) { continue; }
+        if (!KNOWN_ASSIGNMENT_SETTING_KEYS.has(key)) { continue; }
+        state[`assignments/${assignment.path}/settings/${key}`] = value;
+      }
+    }
+    for (const part of assignment.parts) {
+      const partSettings = part.settings;
+      if (!partSettings) { continue; }
+      for (const [key, value] of Object.entries(partSettings)) {
+        if (value === undefined || value === null || key.startsWith('_')) { continue; }
+        if (!KNOWN_PART_SETTING_KEYS.has(key)) { continue; }
+        state[`assignments/${assignment.path}/parts/${part.path}/settings/${key}`] = value;
+      }
+    }
+  }
+  return state;
+}
+
 export function buildPartSettingsPayload(
   partName: string,
   partSettings: PartSettings | undefined,
@@ -158,9 +182,13 @@ export function buildPartSettingsPayload(
     ...base,
     cloud_labs: nullToUndefined(partSettings?.cloud_labs),
     instant_aws_access: nullToUndefined(partSettings?.instant_aws_access),
+    late_penalty_percent: nullToUndefined(partSettings?.late_penalty_percent),
+    late_penalty_percent_rule: nullToUndefined(partSettings?.late_penalty_percent_rule),
+    deadlinedate: nullToUndefined(partSettings?.deadlinedate),
     endlab: nullToUndefined(partSettings?.endlab),
     labtype: nullToUndefined(partSettings?.labtype),
     container_image: nullToUndefined(partSettings?.container_image),
+    number_of_submissions: nullToUndefined(partSettings?.number_of_submissions),
     lab_interface: labInterfaceToWriteObject(partSettings?.lab_interface),
     databricks_maxusers: nullToUndefined(partSettings?.databricks_maxusers),
     tags: normalizeTags(partSettings?.tags),
@@ -706,9 +734,13 @@ export async function publish(
               'monthly_time',
               'total_time',
               'total_dollar',
+              'late_penalty_percent',
+              'late_penalty_percent_rule',
+              'deadlinedate',
               'endlab',
               'labtype',
               'container_image',
+              'number_of_submissions',
               'lab_interface',
               'databricks_maxusers',
               'tags',
@@ -892,12 +924,23 @@ export async function publish(
   }
 
   // 6. Update Config (IDs) and History
+  const settingsState = result.success
+    ? {
+      ...(lastHistory?.settings_state ?? {}),
+      ...collectSettingsState({
+        ...workingConfig,
+        assignments: plan.assignments.map((assignmentAction) => assignmentAction.assignment),
+      }),
+    }
+    : lastHistory?.settings_state;
+
   const historyEntry: PublishHistory = {
     timestamp: new Date().toISOString(),
     commit_sha: commitSha,
     published_by: userName,
     status: result.success ? 'success' : 'failed',
     content_state: result.contentState,
+    settings_state: settingsState,
     file_size_state: fileSizeState,
     changes: settingChanges.length > 0 || fileChanges.length > 0
       ? {

@@ -190,8 +190,9 @@ export function labInterfaceToWriteObject(
 }
 
 const ExamModeSchema = z.union([
-  z.enum(['TIMED', 'SCHEDULED', 'TIMED_SCHEDULED']),
-  z.enum(['timed', 'scheduled', 'timed_scheduled']).transform((value) => value.toUpperCase() as 'TIMED' | 'SCHEDULED' | 'TIMED_SCHEDULED'),
+  z.enum(['NO_EXAM', 'SCHEDULED', 'TIMED', 'TIMED_UNRESTRICTED', 'TIMED_SCHEDULED']),
+  z.enum(['no_exam', 'scheduled', 'timed', 'timed_unrestricted', 'timed_scheduled'])
+    .transform((value) => value.toUpperCase() as 'NO_EXAM' | 'SCHEDULED' | 'TIMED' | 'TIMED_UNRESTRICTED' | 'TIMED_SCHEDULED'),
 ]);
 
 const GradingVisibilitySchema = z.union([
@@ -234,11 +235,11 @@ export const PartSettingsSchema = z
     total_time: z.string().nullish(),
     /** Total dollar budget for cloud resources */
     total_dollar: z.string().nullish(),
-    /** Observed on read; not sent during part update */
+    /** Accepted by PUT but often not echoed on GET */
     late_penalty_percent: z.number().nullish(),
-    /** Observed on read; not sent during part update */
+    /** Accepted by PUT but often not echoed on GET */
     late_penalty_percent_rule: z.enum(['max score', 'student score']).nullish(),
-    /** Observed on read; not sent during part update */
+    /** Accepted by PUT but often not echoed on GET */
     deadlinedate: z.string().nullish(),
     /** Whether the lab should end automatically when limits/deadlines require it */
     endlab: z.boolean().nullish(),
@@ -246,7 +247,7 @@ export const PartSettingsSchema = z
     labtype: z.string().nullish(),
     /** Container image name (must be valid for the labtype) */
     container_image: z.string().nullish(),
-    /** Observed on read; not sent during part update */
+    /** Accepted by PUT but often not echoed on GET */
     number_of_submissions: z.number().nullish(),
     /** Lab interface configuration */
     lab_interface: LabInterfaceConfigSchema.nullish(),
@@ -316,7 +317,7 @@ export const AssignmentSettingsSchema = z
     grading_on_submit: z.boolean().nullish(),
     /** Disable work area for students */
     noworkarea: z.boolean().nullish(),
-    /** Exam mode: TIMED, SCHEDULED, or TIMED_SCHEDULED */
+    /** Exam mode: NO_EXAM, SCHEDULED, TIMED, TIMED_UNRESTRICTED, or TIMED_SCHEDULED */
     exam_mode: ExamModeSchema.nullish(),
     /** Exam duration in minutes */
     exam_duration: z.number().nullish(),
@@ -498,6 +499,7 @@ export const PublishHistorySchema = z.object({
   published_by: z.string(),
   status: z.enum(['success', 'failed']).optional().default('success'),
   content_state: z.record(z.string(), z.string()),
+  settings_state: z.record(z.string(), z.unknown()).optional(),
   file_size_state: z.record(z.string(), z.number()).optional(),
   changes: HistoryChangesSchema.optional(),
   created: z.array(HistoryCreatedEntitySchema).optional(),
