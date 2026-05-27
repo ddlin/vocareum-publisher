@@ -34,6 +34,10 @@ import {
   OBSERVED_ASSIGNMENT_SETTING_KEYS,
   OBSERVED_PART_SETTING_KEYS,
 } from '../utils/known-settings';
+import {
+  shouldSyncAssignmentSettings,
+  shouldSyncPartSettings,
+} from '../utils/settings-sync';
 
 export interface PullOptions {
   config?: string;
@@ -397,7 +401,11 @@ function comparePartSettings(
  * @param skipAssignmentIds - Assignment IDs to skip (stale or excluded)
  */
 async function detectSettingsDrift(
-  config: { assignments: Assignment[]; vocareum: { course_id: string; excluded_assignments?: string[]; architecture?: 'elite' | 'container' } },
+  config: {
+    assignments: Assignment[];
+    vocareum: { course_id: string; excluded_assignments?: string[]; architecture?: 'elite' | 'container' };
+    publish_options?: { sync_settings?: boolean };
+  },
   client: VocareumClient,
   skipAssignmentIds: Set<string>,
   reporter?: UnknownFieldReporter
@@ -418,79 +426,91 @@ async function detectSettingsDrift(
     if (excludedIds.has(assignment.assignment_id)) { continue; }
 
     try {
-      // Fetch full assignment details
-      const remoteAssignment = await getAssignment(client, config.vocareum.course_id, assignment.assignment_id);
-      const remoteAssignmentSettings = mapAssignmentSettings(remoteAssignment, reporter, remoteAssignment.id);
+      const syncAssignmentSettings = shouldSyncAssignmentSettings(config, assignment);
+      const syncAnyPartSettings = assignment.parts.some((part) => shouldSyncPartSettings(config, assignment, part));
+      if (!syncAssignmentSettings && !syncAnyPartSettings) { continue; }
 
-      // Compare assignment settings
-      const assignmentDiffs = compareAssignmentSettings(assignment.settings, remoteAssignmentSettings);
+      let remoteAssignmentSettings: NonNullable<AssignmentSettings> = {};
+      let assignmentDiffs: SettingDiff[] = [];
+      let asnUnknownsChanged = false;
+      let asnObservedChanged = false;
+      let asnHasLegacyObservedTopLevel = false;
+
+      if (syncAssignmentSettings) {
+        const remoteAssignment = await getAssignment(client, config.vocareum.course_id, assignment.assignment_id);
+        remoteAssignmentSettings = mapAssignmentSettings(remoteAssignment, reporter, remoteAssignment.id);
+
+        // Compare assignment settings
+        assignmentDiffs = compareAssignmentSettings(assignment.settings, remoteAssignmentSettings);
+        const localAsnUnknowns = assignment.settings?._unknown_settings ?? {};
+        const remoteAsnUnknowns = remoteAssignmentSettings._unknown_settings ?? {};
+        asnUnknownsChanged = !valuesEqual(
+          Object.keys(localAsnUnknowns).length > 0 ? localAsnUnknowns : undefined,
+          Object.keys(remoteAsnUnknowns).length > 0 ? remoteAsnUnknowns : undefined
+        );
+        const localAsnObserved = assignment.settings?._observed_settings ?? {};
+        const remoteAsnObserved = remoteAssignmentSettings._observed_settings ?? {};
+        asnObservedChanged = !valuesEqual(
+          Object.keys(localAsnObserved).length > 0 ? localAsnObserved : undefined,
+          Object.keys(remoteAsnObserved).length > 0 ? remoteAsnObserved : undefined
+        );
+        asnHasLegacyObservedTopLevel = hasObservedTopLevelSettings(
+          assignment.settings,
+          OBSERVED_ASSIGNMENT_SETTING_KEYS
+        );
+      }
 
       // Check parts
       const partsDrift: PartSettingsDrift[] = [];
-      const remoteParts = await listParts(client, config.vocareum.course_id, assignment.assignment_id);
+      if (syncAnyPartSettings) {
+        const remoteParts = await listParts(client, config.vocareum.course_id, assignment.assignment_id);
 
-      for (const configPart of assignment.parts) {
-        if (configPart.part_id === undefined || configPart.part_id === null || configPart.part_id === '') { continue; }
+        for (const configPart of assignment.parts) {
+          if (!shouldSyncPartSettings(config, assignment, configPart)) { continue; }
+          if (configPart.part_id === undefined || configPart.part_id === null || configPart.part_id === '') { continue; }
 
-        // Find matching remote part
-        const remotePart = remoteParts.find(p => p.id === configPart.part_id);
-        if (!remotePart) { continue; }
+          // Find matching remote part
+          const remotePart = remoteParts.find(p => p.id === configPart.part_id);
+          if (!remotePart) { continue; }
 
-        // Fetch full part details
-        const fullRemotePart = await getPart(client, config.vocareum.course_id, assignment.assignment_id, configPart.part_id);
-        const remotePartSettings = mapPartSettings(fullRemotePart, reporter, fullRemotePart.id);
+          // Fetch full part details
+          const fullRemotePart = await getPart(client, config.vocareum.course_id, assignment.assignment_id, configPart.part_id);
+          const remotePartSettings = mapPartSettings(fullRemotePart, reporter, fullRemotePart.id);
 
-        // Compare part settings
-        const partDiffs = comparePartSettings(configPart.settings, remotePartSettings);
+          // Compare part settings
+          const partDiffs = comparePartSettings(configPart.settings, remotePartSettings);
 
-        // Compare _unknown_settings independently
-        const localPartUnknowns = configPart.settings?._unknown_settings ?? {};
-        const remotePartUnknowns = remotePartSettings._unknown_settings ?? {};
-        const partUnknownsChanged = !valuesEqual(
-          Object.keys(localPartUnknowns).length > 0 ? localPartUnknowns : undefined,
-          Object.keys(remotePartUnknowns).length > 0 ? remotePartUnknowns : undefined
-        );
-        const localPartObserved = configPart.settings?._observed_settings ?? {};
-        const remotePartObserved = remotePartSettings._observed_settings ?? {};
-        const partObservedChanged = !valuesEqual(
-          Object.keys(localPartObserved).length > 0 ? localPartObserved : undefined,
-          Object.keys(remotePartObserved).length > 0 ? remotePartObserved : undefined
-        );
-        const partHasLegacyObservedTopLevel = hasObservedTopLevelSettings(
-          configPart.settings,
-          OBSERVED_PART_SETTING_KEYS
-        );
+          // Compare _unknown_settings independently
+          const localPartUnknowns = configPart.settings?._unknown_settings ?? {};
+          const remotePartUnknowns = remotePartSettings._unknown_settings ?? {};
+          const partUnknownsChanged = !valuesEqual(
+            Object.keys(localPartUnknowns).length > 0 ? localPartUnknowns : undefined,
+            Object.keys(remotePartUnknowns).length > 0 ? remotePartUnknowns : undefined
+          );
+          const localPartObserved = configPart.settings?._observed_settings ?? {};
+          const remotePartObserved = remotePartSettings._observed_settings ?? {};
+          const partObservedChanged = !valuesEqual(
+            Object.keys(localPartObserved).length > 0 ? localPartObserved : undefined,
+            Object.keys(remotePartObserved).length > 0 ? remotePartObserved : undefined
+          );
+          const partHasLegacyObservedTopLevel = hasObservedTopLevelSettings(
+            configPart.settings,
+            OBSERVED_PART_SETTING_KEYS
+          );
 
-        if (partDiffs.length > 0 || partUnknownsChanged || partObservedChanged || partHasLegacyObservedTopLevel) {
-          partsDrift.push({
-            partId: configPart.part_id,
-            partName: configPart.name ?? remotePart.name,
-            partPath: configPart.path,
-            diffs: partDiffs,
-            remoteSettings: remotePartSettings,
-            unknownsChanged: partUnknownsChanged,
-            observedChanged: partObservedChanged,
-          });
+          if (partDiffs.length > 0 || partUnknownsChanged || partObservedChanged || partHasLegacyObservedTopLevel) {
+            partsDrift.push({
+              partId: configPart.part_id,
+              partName: configPart.name ?? remotePart.name,
+              partPath: configPart.path,
+              diffs: partDiffs,
+              remoteSettings: remotePartSettings,
+              unknownsChanged: partUnknownsChanged,
+              observedChanged: partObservedChanged,
+            });
+          }
         }
       }
-
-      // Compare assignment _unknown_settings independently
-      const localAsnUnknowns = assignment.settings?._unknown_settings ?? {};
-      const remoteAsnUnknowns = remoteAssignmentSettings._unknown_settings ?? {};
-      const asnUnknownsChanged = !valuesEqual(
-        Object.keys(localAsnUnknowns).length > 0 ? localAsnUnknowns : undefined,
-        Object.keys(remoteAsnUnknowns).length > 0 ? remoteAsnUnknowns : undefined
-      );
-      const localAsnObserved = assignment.settings?._observed_settings ?? {};
-      const remoteAsnObserved = remoteAssignmentSettings._observed_settings ?? {};
-      const asnObservedChanged = !valuesEqual(
-        Object.keys(localAsnObserved).length > 0 ? localAsnObserved : undefined,
-        Object.keys(remoteAsnObserved).length > 0 ? remoteAsnObserved : undefined
-      );
-      const asnHasLegacyObservedTopLevel = hasObservedTopLevelSettings(
-        assignment.settings,
-        OBSERVED_ASSIGNMENT_SETTING_KEYS
-      );
 
       // Add to drift list if there are any differences (known or unknown)
       const hasDrift = assignmentDiffs.length > 0 || asnUnknownsChanged || asnObservedChanged || asnHasLegacyObservedTopLevel ||

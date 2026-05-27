@@ -181,6 +181,7 @@ export async function updateConfig(configPath: string, updates: ConfigUpdates): 
       on_missing_id: 'skip' as const,
       auto_commit: false,
       abort_on_error: false,
+      sync_settings: true,
       sync_deletes: false,
       exclude_patterns: [] as string[]
     };

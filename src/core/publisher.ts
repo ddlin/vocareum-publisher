@@ -36,6 +36,11 @@ import {
   OBSERVED_ASSIGNMENT_SETTING_KEYS,
   OBSERVED_PART_SETTING_KEYS,
 } from '../utils/known-settings';
+import {
+  shouldSyncAssignmentSettings,
+  shouldSyncCourseSettings,
+  shouldSyncPartSettings,
+} from '../utils/settings-sync';
 
 /** All keys that must not be overridden by _unknown_settings for assignment payloads.
  *  Includes '_unknown_settings' itself to prevent nested {_unknown_settings: {_unknown_settings: ...}}
@@ -138,7 +143,7 @@ function collectSettingsState(config: Config): Record<string, unknown> {
   const state: Record<string, unknown> = {};
   for (const assignment of config.assignments) {
     const asnSettings = assignment.settings;
-    if (asnSettings) {
+    if (asnSettings && shouldSyncAssignmentSettings(config, assignment)) {
       for (const [key, value] of Object.entries(asnSettings)) {
         if (value === undefined || value === null || key.startsWith('_')) { continue; }
         if (!KNOWN_ASSIGNMENT_SETTING_KEYS.has(key)) { continue; }
@@ -148,6 +153,7 @@ function collectSettingsState(config: Config): Record<string, unknown> {
     for (const part of assignment.parts) {
       const partSettings = part.settings;
       if (!partSettings) { continue; }
+      if (!shouldSyncPartSettings(config, assignment, part)) { continue; }
       for (const [key, value] of Object.entries(partSettings)) {
         if (value === undefined || value === null || key.startsWith('_')) { continue; }
         if (!KNOWN_PART_SETTING_KEYS.has(key)) { continue; }
@@ -409,7 +415,11 @@ export async function publish(
   const fileSizeState: Record<string, number> = { ...(lastHistory?.file_size_state ?? {}) };
 
   // 4. Course Updates
-  if (plan.course.type === 'update' && workingConfig.vocareum.course_settings) {
+  if (
+    plan.course.type === 'update' &&
+    workingConfig.vocareum.course_settings &&
+    shouldSyncCourseSettings(workingConfig)
+  ) {
     try {
       logger.info('Updating course settings...');
       await updateCourse(client, workingConfig.vocareum.course_id, {
@@ -553,7 +563,11 @@ export async function publish(
         configChanged = true;
       }
 
-      if (action.assignmentMetadataChanged === true && (action.assignment.assignment_id !== undefined && action.assignment.assignment_id !== null && action.assignment.assignment_id !== '')) {
+      if (
+        action.assignmentMetadataChanged === true &&
+        shouldSyncAssignmentSettings(workingConfig, action.assignment) &&
+        (action.assignment.assignment_id !== undefined && action.assignment.assignment_id !== null && action.assignment.assignment_id !== '')
+      ) {
         try {
           const remoteAssignment = await getAssignment(
             client,
@@ -696,7 +710,11 @@ export async function publish(
       let partWasUpdated = false;
 
       // Update part metadata/settings if needed
-      if (partAction.metadataChanged === true && action.willCreate !== true) {
+      if (
+        partAction.metadataChanged === true &&
+        action.willCreate !== true &&
+        shouldSyncPartSettings(workingConfig, action.assignment, partAction.part)
+      ) {
         // name is REQUIRED for part updates
         const partName = partAction.part.name ?? partAction.part.path;
         const partSettings = partAction.part.settings;

@@ -605,4 +605,93 @@ describe('reconcile options behavior', () => {
       'data',
     ]);
   });
+
+  it('skips assignment and part settings drift when global sync_settings is false', async () => {
+    const config: Config = {
+      ...baseConfig,
+      publish_options: {
+        ...baseConfig.publish_options!,
+        sync_settings: false,
+      },
+      assignments: [{
+        ...baseConfig.assignments[0],
+        assignment_id: 'asn-1',
+        name: 'Local Name',
+        settings: { nosubmit: true },
+        parts: [{
+          ...baseConfig.assignments[0].parts[0],
+          name: 'Local Part',
+          settings: { session_length: '90' },
+        }],
+      }],
+    };
+    listAssignmentsMock.mockResolvedValue([{ id: 'asn-1', name: 'Remote Name', deleted: '0' }]);
+    getAssignmentMock.mockResolvedValue({ id: 'asn-1', name: 'Remote Name', courseid: '201303', deleted: '0', nosubmit: false });
+    getPartMock.mockResolvedValue({ id: 'part-1', seqnum: '0', name: 'Remote Part', deleted: '0', assignmentid: 'asn-1', courseid: '201303', session_length: '30' });
+
+    const unchangedContent = {
+      'lab1/part1/startercode': 'same-hash',
+      'lab1/part1/scripts': 'same-hash',
+      'lab1/part1/docs': 'same-hash',
+      'lab1/part1/data': 'same-hash',
+    };
+    const plan = await reconcile(config, client, {
+      timestamp: '2026-05-27T00:00:00.000Z',
+      commit_sha: 'abc',
+      published_by: 'tester',
+      status: 'success',
+      content_state: unchangedContent,
+      settings_state: {},
+    });
+
+    expect(plan.assignments[0].assignmentMetadataChanged).toBe(false);
+    expect(plan.assignments[0].parts[0].type).toBe('skip');
+    expect(getAssignmentMock).toHaveBeenCalled();
+    expect(getPartMock).not.toHaveBeenCalled();
+  });
+
+  it('allows a part sync_settings override when assignment/global settings sync is false', async () => {
+    const config: Config = {
+      ...baseConfig,
+      publish_options: {
+        ...baseConfig.publish_options!,
+        sync_settings: false,
+      },
+      assignments: [{
+        ...baseConfig.assignments[0],
+        assignment_id: 'asn-1',
+        sync_settings: false,
+        settings: { nosubmit: true },
+        parts: [{
+          ...baseConfig.assignments[0].parts[0],
+          sync_settings: true,
+          settings: { session_length: '90' },
+        }],
+      }],
+    };
+    listAssignmentsMock.mockResolvedValue([{ id: 'asn-1', name: 'Lab 1', deleted: '0' }]);
+    getAssignmentMock.mockResolvedValue({ id: 'asn-1', name: 'Lab 1', courseid: '201303', deleted: '0', nosubmit: false });
+    getPartMock.mockResolvedValue({ id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0', assignmentid: 'asn-1', courseid: '201303', session_length: '30' });
+
+    const plan = await reconcile(config, client, {
+      timestamp: '2026-05-27T00:00:00.000Z',
+      commit_sha: 'abc',
+      published_by: 'tester',
+      status: 'success',
+      content_state: {
+        'lab1/part1/startercode': 'same-hash',
+        'lab1/part1/scripts': 'same-hash',
+        'lab1/part1/docs': 'same-hash',
+        'lab1/part1/data': 'same-hash',
+      },
+    });
+
+    expect(plan.assignments[0].assignmentMetadataChanged).toBe(false);
+    expect(plan.assignments[0].parts[0]).toMatchObject({
+      type: 'update',
+      metadataChanged: true,
+      contentChanged: false,
+    });
+    expect(getPartMock).toHaveBeenCalledWith(client, '201303', 'asn-1', 'part-1');
+  });
 });

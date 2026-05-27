@@ -191,6 +191,23 @@ describe('pullCommand settings drift behavior', () => {
     );
     expect(updateConfigMock).not.toHaveBeenCalled();
   });
+
+  it('skips settings drift detection when global sync_settings is false', async () => {
+    loadConfigMock.mockResolvedValue({
+      ...config,
+      publish_options: {
+        ...config.publish_options!,
+        sync_settings: false,
+      },
+    });
+
+    await pullCommand({ nonInteractive: true });
+
+    expect(getAssignmentMock).not.toHaveBeenCalled();
+    expect(listPartsMock).not.toHaveBeenCalled();
+    expect(updateConfigMock).not.toHaveBeenCalled();
+    expect(loggerSuccessMock).toHaveBeenCalledWith('No sync issues found.');
+  });
 });
 
 describe('pullCommand — unknown-only settings drift', () => {

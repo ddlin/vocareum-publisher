@@ -23,6 +23,11 @@ import { listParts, getPart } from '../api/parts';
 import { mapParts } from './mapper';
 import { calculateDirectoryHash } from '../utils/files';
 import { logger } from '../utils/logger';
+import {
+  shouldSyncAssignmentSettings,
+  shouldSyncCourseSettings,
+  shouldSyncPartSettings,
+} from '../utils/settings-sync';
 
 const ACCEPTED_UNVERIFIED_ASSIGNMENT_KEYS = [
   'anonymous_grading',
@@ -107,7 +112,7 @@ export async function reconcile(
 
   // Check if course settings need updating
   const configCourseSettings = config.vocareum.course_settings;
-  if (configCourseSettings !== undefined) {
+  if (shouldSyncCourseSettings(config) && configCourseSettings !== undefined) {
     const needsUpdate =
       (configCourseSettings.name !== undefined && configCourseSettings.name !== remoteCourse.name) ||
       (configCourseSettings.description !== undefined && configCourseSettings.description !== remoteCourse.description);
@@ -201,9 +206,10 @@ export async function reconcile(
       // Check for changes in fields that can be updated via API
       // Working fields: name, description, nosubmit, auto_submit, grading_on_submit, publish, etc.
       // NOT working: due_date, points (return "No valid parameters")
-      assignmentMetadataChanged =
-        detectAssignmentSettingsChanged(configAssignment, fullAssignment) ||
-        hasAcceptedUnverifiedAssignmentChange(configAssignment, lastPublishHistory);
+      assignmentMetadataChanged = shouldSyncAssignmentSettings(config, configAssignment)
+        ? detectAssignmentSettingsChanged(configAssignment, fullAssignment) ||
+          hasAcceptedUnverifiedAssignmentChange(configAssignment, lastPublishHistory)
+        : false;
 
       // Fetch parts list for mapping
       const remoteParts = await listParts(client, config.vocareum.course_id, remoteAssignment.id);
@@ -221,11 +227,13 @@ export async function reconcile(
             partIdsDiscovered = true;
           }
 
-          // Fetch full part details for accurate settings comparison and architecture detection
-          const fullPart = await getPart(client, config.vocareum.course_id, remoteAssignment.id, mapping.apiPartId);
-          const metadataChanged =
-            detectPartSettingsChanged(configPart, fullPart) ||
-            hasAcceptedUnverifiedPartChange(configAssignment, configPart, lastPublishHistory);
+          let metadataChanged = false;
+          if (shouldSyncPartSettings(config, configAssignment, configPart)) {
+            const fullPart = await getPart(client, config.vocareum.course_id, remoteAssignment.id, mapping.apiPartId);
+            metadataChanged =
+              detectPartSettingsChanged(configPart, fullPart) ||
+              hasAcceptedUnverifiedPartChange(configAssignment, configPart, lastPublishHistory);
+          }
 
           // Determine directories to sync based on course-level architecture
           // Config-level part override takes precedence, then course architecture, then default

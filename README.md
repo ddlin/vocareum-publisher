@@ -107,6 +107,7 @@ assignments:
   - assignment_id: "11111"
     name: "Lab 1: Introduction"
     path: "lab1-intro"
+    sync_settings: true              # Optional override; defaults to publish_options.sync_settings
     settings:                       # Optional assignment settings
       nosubmit: false
       publish: true
@@ -123,6 +124,7 @@ assignments:
       - part_id: "22222"
         path: "part1"
         name: "Part 1: Setup"
+        sync_settings: true          # Optional part-level override
         settings:                   # Optional part settings
           submission_filters:
             include: ["*.py"]
@@ -152,6 +154,7 @@ assignments:
 publish_options:
   on_missing_id: "skip"
   auto_commit: false
+  sync_settings: true                # Set false to sync files only, not settings
   sync_deletes: false
 
 publish_history:
@@ -232,6 +235,8 @@ vocgit pull --non-interactive  # Skip all issues
 - **Pull**: Update local config with settings from Vocareum
 - **Keep**: Keep local settings (will overwrite Vocareum on next push)
 - **Skip**: Do nothing for now
+
+Set `publish_options.sync_settings: false` to skip course, assignment, and part settings sync while still syncing files. Assignments and parts can override this with their own `sync_settings` value; part settings take precedence over assignment settings, which take precedence over the global publish option. Disabled settings remain in `vocareum.yaml` but are ignored for drift detection and push updates.
 
 **For content drift** (files in Vocareum differ from local):
 - **Pull**: Download remote files (overwrites local files)

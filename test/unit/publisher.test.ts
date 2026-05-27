@@ -1475,4 +1475,81 @@ describe('publish — Fix #3: reporter threading through update-path reads', () 
       ])
     );
   });
+
+  it('does not send or trust assignment settings when assignment sync_settings is false', async () => {
+    const localConfig: Config = {
+      version: '1.0',
+      vocareum: { org_id: '1', course_id: '201303', api_base_url: 'https://api.vocareum.com' },
+      assignments: [{
+        assignment_id: 'a1',
+        name: 'Lab 1',
+        path: 'lab1',
+        create_from_template: false,
+        sync_settings: false,
+        parts: [],
+        settings: { nosubmit: true },
+      }],
+      publish_history: [],
+      publish_options: {
+        on_missing_id: 'skip', auto_commit: false, abort_on_error: false,
+        sync_deletes: false, exclude_patterns: [],
+      },
+    };
+
+    reconcileMock.mockResolvedValue(makeUpdatePlan(localConfig));
+
+    await publish(localConfig, client, baseOptions);
+
+    expect(updateAssignmentMock).not.toHaveBeenCalled();
+    const history = updateConfigMock.mock.calls[0][1].publish_history[0];
+    expect(history.settings_state ?? {}).not.toHaveProperty('assignments/lab1/settings/nosubmit');
+  });
+
+  it('allows part sync_settings to override a disabled assignment for publish', async () => {
+    const localConfig: Config = {
+      version: '1.0',
+      vocareum: { org_id: '1', course_id: '201303', api_base_url: 'https://api.vocareum.com' },
+      assignments: [{
+        assignment_id: 'a1',
+        name: 'Lab 1',
+        path: 'lab1',
+        create_from_template: false,
+        sync_settings: false,
+        parts: [{
+          part_id: 'p1',
+          path: 'part1',
+          name: 'Part 1',
+          sync_settings: true,
+          settings: { session_length: '60' },
+        }],
+        settings: { nosubmit: true },
+      }],
+      publish_history: [],
+      publish_options: {
+        on_missing_id: 'skip', auto_commit: false, abort_on_error: false,
+        sync_deletes: false, exclude_patterns: [],
+      },
+    };
+
+    reconcileMock.mockResolvedValue(makePartUpdatePlan(localConfig));
+    getPartMock.mockResolvedValue({
+      id: 'p1',
+      courseid: '201303',
+      assignmentid: 'a1',
+      name: 'Part 1',
+      seqnum: '0',
+      deleted: '0',
+      session_length: '30',
+    });
+
+    await publish(localConfig, client, baseOptions);
+
+    expect(updateAssignmentMock).not.toHaveBeenCalled();
+    expect(updatePartMock).toHaveBeenCalled();
+    const history = updateConfigMock.mock.calls[0][1].publish_history[0];
+    expect(history.settings_state).toMatchObject({
+      'assignments/lab1/parts/part1/settings/session_length': '60',
+    });
+    expect(history.settings_state).not.toHaveProperty('assignments/lab1/settings/nosubmit');
+  });
 });

@@ -276,6 +276,8 @@ export const PartSchema = z.object({
   part_id: z.string().nullable(),
   path: z.string(),
   name: z.string().optional(),
+  /** Override settings sync for this part. Defaults to assignment/global setting. */
+  sync_settings: z.boolean().optional(),
   directories: z.array(DirectoryTypeSchema).optional(),
   settings: PartSettingsSchema,
 });
@@ -366,6 +368,8 @@ export const AssignmentSchema = z.object({
   /** Optional name to search for in Vocareum when assignment_id is null.
    *  Used to prevent duplicate creation in CI/CD environments. */
   assignment_name_for_lookup: z.string().optional(),
+  /** Override settings sync for this assignment and its parts. Defaults to publish_options.sync_settings. */
+  sync_settings: z.boolean().optional(),
   settings: AssignmentSettingsSchema,
   parts: z.array(PartSchema),
 });
@@ -517,6 +521,7 @@ export const PublishOptionsSchema = z
     on_missing_id: z.enum(['skip', 'abort']).optional().default('skip'),
     auto_commit: z.boolean().optional().default(false),
     abort_on_error: z.boolean().optional().default(false),
+    sync_settings: z.boolean().optional().default(true),
     sync_deletes: z.boolean().optional().default(false),
     exclude_patterns: z.array(z.string()).optional().default([]),
   })
