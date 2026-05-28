@@ -30,7 +30,7 @@ describe('waitForAssignmentObjId', () => {
     expect(requestMock).toHaveBeenCalledTimes(1);
     expect(requestMock).toHaveBeenCalledWith({
       method: 'GET',
-      url: '/api/v2/transaction/txn-123',
+      url: '/transaction/txn-123',
     });
   });
 
@@ -144,7 +144,7 @@ describe('listAssignments', () => {
     expect(result.map((assignment) => assignment.id)).toEqual(['5373476']);
     expect(requestMock).toHaveBeenCalledWith({
       method: 'GET',
-      url: '/api/v2/courses/212211/assignments',
+      url: '/courses/212211/assignments',
       params: { page: 0, size: 100 },
     });
   });
@@ -172,12 +172,12 @@ describe('listAssignments', () => {
     expect(result.map((assignment) => assignment.id)).toEqual(['a1', 'a2', 'a3']);
     expect(requestMock).toHaveBeenNthCalledWith(1, {
       method: 'GET',
-      url: '/api/v2/courses/c1/assignments',
+      url: '/courses/c1/assignments',
       params: { page: 0, size: 100 },
     });
     expect(requestMock).toHaveBeenNthCalledWith(2, {
       method: 'GET',
-      url: '/api/v2/courses/c1/assignments',
+      url: '/courses/c1/assignments',
       params: { page: 1, size: 100 },
     });
   });

@@ -32,7 +32,7 @@ export async function listParts(
 ): Promise<VocareumPartResponse[]> {
   const response = await client.request<PartsListResponse>({
     method: 'GET',
-    url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts`,
+    url: `/courses/${courseId}/assignments/${assignmentId}/parts`,
   });
 
   const parts = response.parts ?? [];
@@ -45,7 +45,7 @@ export async function listParts(
 /**
  * Get part details
  *
- * IMPORTANT: Direct endpoint /api/v2/parts/{id} returns 400.
+ * IMPORTANT: Direct endpoint /parts/{id} returns 400.
  * Must use course-scoped endpoint.
  *
  * @param client - Vocareum API client
@@ -62,7 +62,7 @@ export async function getPart(
 ): Promise<VocareumPartResponse> {
   const response = await client.request<PartsListResponse>({
     method: 'GET',
-    url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
+    url: `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
   });
   if (!response.parts || response.parts.length === 0) {
     throw new Error(
@@ -76,7 +76,7 @@ export async function getPart(
 /**
  * Update part settings
  *
- * IMPORTANT: Direct endpoint /api/v2/parts/{id} returns 400.
+ * IMPORTANT: Direct endpoint /parts/{id} returns 400.
  * Must use course-scoped endpoint.
  *
  * Writable fields are based on the draft OpenAPI contract plus live probes:
@@ -113,7 +113,7 @@ export async function updatePart(
     objid?: string;
   }>({
     method: 'PUT',
-    url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
+    url: `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
     data: settings,
   });
 
@@ -129,7 +129,7 @@ export async function updatePart(
         message?: string;
       }>({
         method: 'GET',
-        url: `/api/v2/transaction/${response.transactionid}`,
+        url: `/transaction/${response.transactionid}`,
       });
 
       if (txn.state === 'success') {

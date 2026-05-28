@@ -20,7 +20,7 @@ export async function getCourse(
 ): Promise<VocareumCourseResponse> {
   const response = await client.request<CoursesListResponse>({
     method: 'GET',
-    url: `/api/v2/courses/${courseId}`,
+    url: `/courses/${courseId}`,
   });
 
   const course = (response.courses ?? []).find((c) => c.id === courseId);
@@ -46,7 +46,7 @@ export async function updateCourse(
 ): Promise<VocareumCourseResponse> {
   const response = await client.request<{ status: 'success'; course?: VocareumCourseResponse }>({
     method: 'PUT',
-    url: `/api/v2/courses/${courseId}`,
+    url: `/courses/${courseId}`,
     data: settings,
   });
 

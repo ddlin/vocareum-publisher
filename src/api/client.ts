@@ -103,37 +103,35 @@ export class InsecureBaseUrlError extends VocareumError {
   }
 }
 
-/** Default allowed API hosts */
-const ALLOWED_API_HOSTS = ['api.vocareum.com'];
+/** Canonical, allowed (host, version-path) base URLs. */
+const ALLOWED_BASE_URLS: ReadonlySet<string> = new Set([
+  'https://api.vocareum.com/api/v2',
+  'https://labs.vocareum.com/api/v3',
+]);
+
+/** Append /api/v2 when the base URL carries no /api/vN version path. */
+export function normalizeApiBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, '');
+  return /\/api\/v\d+$/.test(trimmed) ? trimmed : `${trimmed}/api/v2`;
+}
 
 /**
- * Validate that the API base URL is safe to use with credentials
- * @throws InsecureBaseUrlError if URL is not allowed and override not set
+ * Validate a base URL is safe to send credentials to: HTTPS + an allowed
+ * (host, version-path) pair, unless VOCAREUM_ALLOW_CUSTOM_BASE_URL=1.
  */
-function validateBaseUrl(baseUrl: string): void {
+export function assertAllowedBaseUrl(baseUrl: string): void {
   const allowCustom = process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL === '1';
-
   let parsed: URL;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    throw new InsecureBaseUrlError(baseUrl);
-  }
-
-  // Must be HTTPS
+  try { parsed = new URL(baseUrl); } catch { throw new InsecureBaseUrlError(baseUrl); }
   if (parsed.protocol !== 'https:') {
-    if (!allowCustom) {
-      throw new InsecureBaseUrlError(baseUrl);
-    }
+    if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
     logger.warn(`WARNING: Using non-HTTPS API URL: ${baseUrl}`);
+    return;
   }
-
-  // Must be an allowed host (unless override is set)
-  if (!ALLOWED_API_HOSTS.includes(parsed.hostname)) {
-    if (!allowCustom) {
-      throw new InsecureBaseUrlError(baseUrl);
-    }
-    logger.warn(`WARNING: Using non-standard API host: ${parsed.hostname}. Your API token will be sent to this host.`);
+  const canonical = `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, '')}`;
+  if (!ALLOWED_BASE_URLS.has(canonical)) {
+    if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
+    logger.warn(`WARNING: Using non-standard API base URL: ${canonical}. Your credentials will be sent to this host.`);
   }
 }
 
@@ -199,12 +197,11 @@ export class VocareumClient {
   private apiKey: string;
 
   constructor(apiKey: string, baseUrl: string = 'https://api.vocareum.com') {
-    // Validate base URL to prevent token theft via malicious config
-    validateBaseUrl(baseUrl);
-
+    const normalized = normalizeApiBaseUrl(baseUrl);
+    assertAllowedBaseUrl(normalized);
     this.apiKey = apiKey;
     this.axios = axios.create({
-      baseURL: baseUrl,
+      baseURL: normalized,
       timeout: 30000,
       headers: {
         Authorization: `Token ${apiKey}`,

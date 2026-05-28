@@ -278,7 +278,7 @@ describe('waitForPartUpdateTransaction', () => {
 
     expect(requestMock).toHaveBeenCalledWith({
       method: 'GET',
-      url: '/api/v2/transaction/txn-abc-123',
+      url: '/transaction/txn-abc-123',
     });
   });
 });
@@ -303,7 +303,7 @@ describe('uploadContent', () => {
     expect(requestMock).toHaveBeenCalledTimes(1);
     const callArgs = requestMock.mock.calls[0][0];
     expect(callArgs.method).toBe('PUT');
-    expect(callArgs.url).toBe('/api/v2/courses/201303/assignments/5137423/parts/5137424');
+    expect(callArgs.url).toBe('/courses/201303/assignments/5137423/parts/5137424');
     expect(callArgs.timeout).toBe(60000);
     expect(callArgs.data.update).toBe(1);
     expect(callArgs.data.content).toHaveLength(1);
@@ -352,7 +352,7 @@ describe('uploadContent', () => {
 
     expect(requestMock).toHaveBeenCalledTimes(3);
     // Second call should be the transaction poll
-    expect(requestMock.mock.calls[1][0].url).toBe('/api/v2/transaction/txn-upload-1');
+    expect(requestMock.mock.calls[1][0].url).toBe('/transaction/txn-upload-1');
     expect(result.succeeded).toEqual(['file.txt']);
   });
 
@@ -452,7 +452,7 @@ describe('listFiles', () => {
 
     expect(requestMock).toHaveBeenCalledWith({
       method: 'GET',
-      url: '/api/v2/courses/c1/assignments/a1/parts/p1/files',
+      url: '/courses/c1/assignments/a1/parts/p1/files',
       params: { dir: '/voc/startercode', list: true },
     });
   });
@@ -465,12 +465,12 @@ describe('listFiles', () => {
 
     expect(requestMock).toHaveBeenNthCalledWith(1, {
       method: 'GET',
-      url: '/api/v2/courses/c1/assignments/a1/parts/p1/files',
+      url: '/courses/c1/assignments/a1/parts/p1/files',
       params: { dir: '/resource/lib', list: true },
     });
     expect(requestMock).toHaveBeenNthCalledWith(2, {
       method: 'GET',
-      url: '/api/v2/courses/c1/assignments/a1/parts/p1/files',
+      url: '/courses/c1/assignments/a1/parts/p1/files',
       params: { dir: '/resource/asnlib', list: true },
     });
   });
@@ -568,7 +568,7 @@ describe('deleteFile', () => {
 
     expect(requestMock).toHaveBeenCalledWith({
       method: 'DELETE',
-      url: '/api/v2/courses/c1/assignments/a1/parts/p1/files',
+      url: '/courses/c1/assignments/a1/parts/p1/files',
       params: {
         dir: '/voc/startercode',
         filename: 'old-file.py',

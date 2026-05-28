@@ -47,7 +47,7 @@ export async function listAssignments(
   while (true) {
     const response = await client.request<AssignmentsListResponse>({
       method: 'GET',
-      url: `/api/v2/courses/${courseId}/assignments`,
+      url: `/courses/${courseId}/assignments`,
       params: { page, size: 100 },
     });
 
@@ -68,7 +68,7 @@ export async function listAssignments(
 /**
  * Get assignment details
  *
- * IMPORTANT: Direct endpoint /api/v2/assignments/{id} returns 400.
+ * IMPORTANT: Direct endpoint /assignments/{id} returns 400.
  * Must use course-scoped endpoint.
  *
  * @param client - Vocareum API client
@@ -83,7 +83,7 @@ export async function getAssignment(
 ): Promise<VocareumAssignmentResponse> {
   const response = await client.request<AssignmentsListResponse>({
     method: 'GET',
-    url: `/api/v2/courses/${courseId}/assignments/${assignmentId}`,
+    url: `/courses/${courseId}/assignments/${assignmentId}`,
   });
   if (!response.assignments || response.assignments.length === 0) {
     throw new Error(
@@ -113,7 +113,7 @@ export async function copyAssignment(
   sourceCourseId?: string
 ): Promise<AssignmentCopyResponse> {
   // Postman contract:
-  // POST /api/v2/courses/{courseId}/assignments
+  // POST /courses/{courseId}/assignments
   // { method: "copy", source: "{source-assignmentId}", name: "assignment copy" }
   // For cross-course copies, include source_course_id
   const data: Record<string, string> = {
@@ -134,7 +134,7 @@ export async function copyAssignment(
     objid?: string;
   }>({
     method: 'POST',
-    url: `/api/v2/courses/${courseId}/assignments`,
+    url: `/courses/${courseId}/assignments`,
     data,
   });
 
@@ -196,7 +196,7 @@ export async function waitForAssignmentObjId(
 
     const txn = await client.request<TransactionResponse>({
       method: 'GET',
-      url: `/api/v2/transaction/${transactionId}`,
+      url: `/transaction/${transactionId}`,
     });
 
     if (txn.state === 'success') {
@@ -219,7 +219,7 @@ export async function waitForAssignmentObjId(
 /**
  * Update assignment settings
  *
- * IMPORTANT: Direct endpoint /api/v2/assignments/{id} returns 400.
+ * IMPORTANT: Direct endpoint /assignments/{id} returns 400.
  * Must use course-scoped endpoint.
  *
  * Writable fields are based on the draft OpenAPI contract plus live probes.
@@ -249,7 +249,7 @@ export async function updateAssignment(
     objid?: string;
   }>({
     method: 'PUT',
-    url: `/api/v2/courses/${courseId}/assignments/${assignmentId}`,
+    url: `/courses/${courseId}/assignments/${assignmentId}`,
     data: settings,
   });
 

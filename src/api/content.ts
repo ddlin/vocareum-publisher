@@ -148,7 +148,7 @@ async function fetchFileContent(
   directory: DirectoryType,
   filePath: string
 ): Promise<string | Buffer> {
-  const url = `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
+  const url = `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
   const fullPath = `${directory}/${filePath}`;
 
   // Request download URL from API
@@ -299,7 +299,7 @@ export async function waitForPartUpdateTransaction(
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const txn = await client.request<TransactionResponse>({
       method: 'GET',
-      url: `/api/v2/transaction/${transactionId}`,
+      url: `/transaction/${transactionId}`,
     });
 
     if (txn.state === 'success') {
@@ -346,7 +346,7 @@ export async function uploadContent(
 
   const response = await client.request<PartUpdateResponse>({
     method: 'PUT',
-    url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
+    url: `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
     data: {
       update: 1,
       content: [
@@ -536,7 +536,7 @@ async function listFilesByApiPath(
   partId: string,
   apiDirPath: string
 ): Promise<FileInfo[]> {
-  const url = `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
+  const url = `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
 
   try {
     const response = await client.request<unknown>({
@@ -596,7 +596,7 @@ export async function deleteFile(
   try {
     await client.request({
       method: 'DELETE',
-      url: `/api/v2/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`,
+      url: `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`,
       params: {
         dir: apiDirPath,
         filename: filePath,
