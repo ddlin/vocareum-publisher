@@ -9,12 +9,12 @@ import * as path from 'path';
 import { loadConfig, updateConfig } from '../core/config';
 import { reconcile } from '../core/reconciler';
 import { VocareumClient } from '../api/client';
-import { TokenAuthProvider } from '../api/auth/token-auth-provider';
+import { resolveAuthProvider } from '../api/auth/cli-auth-options';
 import { getAssignment } from '../api/assignments';
 import { listParts, getPart } from '../api/parts';
 import { downloadContent } from '../api/content';
 import { logger } from '../utils/logger';
-import { loadDotEnvIfPresent, isCI, getApiKeyOrThrow } from '../utils/env';
+import { loadDotEnvIfPresent, isCI } from '../utils/env';
 import { prompt, promptChoice } from '../utils/prompts';
 import { pathExists, ensureDirectory, writeFile, calculateDirectoryHash, validatePath, readDirectory } from '../utils/files';
 import { getCommitSha, getGitUserName } from '../utils/git';
@@ -51,6 +51,9 @@ export interface PullOptions {
    * directory already has content on disk (e.g. after a prior failed pull).
    */
   skipContent?: boolean;
+  auth?: string;
+  clientId?: string;
+  clientSecret?: string;
 }
 
 interface PullSummary {
@@ -952,8 +955,7 @@ export async function pullCommand(options: PullOptions): Promise<void> {
     loadDotEnvIfPresent();
     const config = await loadConfig(configPath);
 
-    const apiKey = getApiKeyOrThrow();
-    const client = new VocareumClient(new TokenAuthProvider(apiKey, config.vocareum.api_base_url));
+    const client = new VocareumClient(resolveAuthProvider(options, config.vocareum.api_base_url));
 
     logger.info('Scanning for assignment sync issues...');
 

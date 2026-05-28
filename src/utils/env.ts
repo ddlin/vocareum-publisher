@@ -104,6 +104,27 @@ export function getApiKeyOrThrow(): string {
   return apiKey;
 }
 
+export function getOAuthClientId(): string | undefined {
+  const v = process.env.VOCAREUM_OAUTH_CLIENT_ID;
+  return v && v.length > 0 ? v : undefined;
+}
+export function getOAuthClientSecret(): string | undefined {
+  const v = process.env.VOCAREUM_OAUTH_CLIENT_SECRET;
+  return v && v.length > 0 ? v : undefined;
+}
+/** Raw VOCAREUM_AUTH_MODE (trimmed, lowercased), or undefined if unset/empty.
+ *  Value validated in createAuthProvider so a typo fails fast. */
+export function getAuthModeEnv(): string | undefined {
+  const v = process.env.VOCAREUM_AUTH_MODE?.trim().toLowerCase();
+  return v && v.length > 0 ? v : undefined;
+}
+export function getV3ApiBaseUrl(): string {
+  return process.env.VOCAREUM_API_V3_BASE_URL ?? 'https://labs.vocareum.com/api/v3';
+}
+export function getOAuthTokenUrl(): string {
+  return process.env.VOCAREUM_OAUTH_TOKEN_URL ?? 'https://labs.vocareum.com/api/v3/oauth/token';
+}
+
 export function loadDotEnvIfPresent(filePath: string = '.env'): void {
   if (!existsSync(filePath)) {
     return;

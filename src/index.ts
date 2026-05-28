@@ -28,6 +28,7 @@ program
   .description('Sync assignment content between GitHub and Vocareum')
   .version(getVersion());
 
+import { addAuthOptions } from './api/auth/cli-auth-options';
 import { initCommand, InitOptions } from './commands/init';
 import { newCommand } from './commands/new';
 import { publishCommand, PublishCommandOptions } from './commands/publish';
@@ -174,14 +175,16 @@ Examples:
   });
 
 // Pull command - handle orphaned assignments
-program
+const pullCmd = program
   .command('pull')
   .description('Sync assignments from Vocareum: import orphans, detect drift, handle stale entries')
   .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
   .option('--non-interactive', 'Skip all prompts (no changes made)')
   .option('--batch', 'Apply sensible defaults without prompting (import orphans, pull drift, skip stale)')
   .option('--skip-content', 'Reuse existing local content for orphan imports instead of re-downloading (recovers from failed pulls)')
-  .option('--verbose', 'Show detailed output including file lists')
+  .option('--verbose', 'Show detailed output including file lists');
+addAuthOptions(pullCmd);
+pullCmd
   .addHelpText('after', `
 Description:
   Scans for sync issues between your local config and Vocareum, then offers
@@ -261,7 +264,7 @@ Examples:
   });
 
 // Push command
-program
+const pushCmd = program
   .command('push')
   .description('Push assignment content to Vocareum')
   .option('--dry-run', 'Preview changes without executing')
@@ -274,7 +277,9 @@ program
   .option('--auto-commit', 'Auto-commit vocareum.yaml changes (local use only)')
   .option('--non-interactive', 'Skip confirmation prompts')
   .option('--verbose', 'Show detailed logging')
-  .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
+  .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml');
+addAuthOptions(pushCmd);
+pushCmd
   .addHelpText('after', `
 Description:
   Pushes assignment content from your local repository to Vocareum.

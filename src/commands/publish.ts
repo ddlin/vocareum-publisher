@@ -7,9 +7,9 @@
 import { loadConfig } from '../core/config';
 import { publish } from '../core/publisher';
 import { VocareumClient } from '../api/client';
-import { TokenAuthProvider } from '../api/auth/token-auth-provider';
+import { resolveAuthProvider } from '../api/auth/cli-auth-options';
 import { logger } from '../utils/logger';
-import { loadDotEnvIfPresent, isCI, getApiKeyOrThrow } from '../utils/env';
+import { loadDotEnvIfPresent, isCI } from '../utils/env';
 import { UnknownFieldReporter } from '../utils/unknown-field-reporter';
 import type { PublishOperationOptions } from '../types/state';
 
@@ -17,6 +17,9 @@ export interface PublishCommandOptions extends PublishOperationOptions {
   config?: string;
   dryRun?: boolean;
   verbose?: boolean;
+  auth?: string;
+  clientId?: string;
+  clientSecret?: string;
 }
 
 /**
@@ -29,8 +32,7 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
   try {
     loadDotEnvIfPresent();
     const config = await loadConfig(configPath);
-    const apiKey = getApiKeyOrThrow();
-    const client = new VocareumClient(new TokenAuthProvider(apiKey, config.vocareum.api_base_url));
+    const client = new VocareumClient(resolveAuthProvider(options, config.vocareum.api_base_url));
 
     const requestedAutoCommit = options.autoCommit ?? config.publish_options?.auto_commit ?? false;
     const autoCommit = isCI() ? false : requestedAutoCommit;

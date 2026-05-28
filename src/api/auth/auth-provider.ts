@@ -1,6 +1,3 @@
-import { OAuthClientCredentialsProvider } from './oauth-provider';
-import { TokenAuthProvider } from './token-auth-provider';
-
 /**
  * Abstraction over Vocareum authentication. Owns the API base URL (including
  * the version path) and produces the Authorization header. See spec
@@ -18,55 +15,39 @@ export interface AuthProvider {
   refreshAfterUnauthorized?(): Promise<void>;
 }
 
-function getAuthModeEnv(): string | undefined {
-  return process.env.VOCAREUM_AUTH_MODE;
-}
-
-function getOAuthClientId(): string | undefined {
-  return process.env.VOCAREUM_OAUTH_CLIENT_ID;
-}
-
-function getOAuthClientSecret(): string | undefined {
-  return process.env.VOCAREUM_OAUTH_CLIENT_SECRET;
-}
+import { TokenAuthProvider } from './token-auth-provider';
+import { OAuthClientCredentialsProvider } from './oauth-provider';
+import {
+  getApiKeyOrThrow, getOAuthClientId, getOAuthClientSecret,
+  getAuthModeEnv, getV3ApiBaseUrl, getOAuthTokenUrl,
+} from '../../utils/env';
 
 export interface CreateAuthProviderOptions {
-  authMode?: string;
+  authMode?: string;         // validated here; from --auth or VOCAREUM_AUTH_MODE
   clientId?: string;
   clientSecret?: string;
-  apiBaseUrl?: string;
+  apiBaseUrl?: string;       // v2 base from config.vocareum.api_base_url
 }
 
-export function createAuthProvider(opts: CreateAuthProviderOptions = {}): AuthProvider {
-  const mode = (opts.authMode ?? getAuthModeEnv() ?? 'token').trim().toLowerCase();
-  const baseUrl = opts.apiBaseUrl ?? 'https://api.vocareum.com';
-
+export function createAuthProvider(opts: CreateAuthProviderOptions): AuthProvider {
+  const mode = (opts.authMode ?? getAuthModeEnv() ?? 'token').toLowerCase();
+  if (mode !== 'token' && mode !== 'oauth') {
+    throw new Error(`Invalid auth mode "${mode}". Use "token" (v2, default) or "oauth" (v3).`);
+  }
   if (mode === 'oauth') {
     const clientId = (opts.clientId ?? getOAuthClientId())?.trim();
     const clientSecret = (opts.clientSecret ?? getOAuthClientSecret())?.trim();
     if (!clientId || !clientSecret) {
       throw new Error(
-        'OAuth mode requires both VOCAREUM_OAUTH_CLIENT_ID and VOCAREUM_OAUTH_CLIENT_SECRET ' +
-        '(or opts.clientId and opts.clientSecret). Set via environment variables or pass them in options.'
+        'OAuth mode requires client credentials. Set VOCAREUM_OAUTH_CLIENT_ID and ' +
+        'VOCAREUM_OAUTH_CLIENT_SECRET (env or secret manager), or pass --client-id/--client-secret.'
       );
     }
     return new OAuthClientCredentialsProvider({
-      clientId,
-      clientSecret,
-      apiBaseUrl: baseUrl,
-      tokenUrl: 'https://labs.vocareum.com/api/v3/oauth/token',
+      clientId, clientSecret,
+      apiBaseUrl: getV3ApiBaseUrl(),
+      tokenUrl: getOAuthTokenUrl(),
     });
   }
-
-  if (mode === 'token') {
-    const token = process.env.VOCAREUM_API_KEY ?? process.env.VOCAREUM_API_TOKEN;
-    if (!token) {
-      throw new Error(
-        'Token mode requires VOCAREUM_API_KEY or VOCAREUM_API_TOKEN environment variable.'
-      );
-    }
-    return new TokenAuthProvider(token, baseUrl);
-  }
-
-  throw new Error(`Unknown auth mode: '${mode}'. Must be 'token' or 'oauth'.`);
+  return new TokenAuthProvider(getApiKeyOrThrow(), opts.apiBaseUrl ?? 'https://api.vocareum.com');
 }
