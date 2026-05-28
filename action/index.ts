@@ -8,6 +8,7 @@ import * as core from '@actions/core';
 import { loadConfig } from '../src/core/config';
 import { publish } from '../src/core/publisher';
 import { VocareumClient } from '../src/api/client';
+import { TokenAuthProvider } from '../src/api/auth/token-auth-provider';
 import { logger } from '../src/utils/logger';
 import type { PublishOperationOptions } from '../src/types/state';
 
@@ -36,7 +37,11 @@ async function run(): Promise<void> {
 
     // 3. Load Config & Init Client
     const config = await loadConfig(configFile);
-    const client = new VocareumClient(apiKey, config.vocareum.api_base_url);
+    // The Action authenticates with the v2 personal token (`api-key` input).
+    // v3 OAuth is opt-in via the CLI (`--auth oauth` / env); the Action stays
+    // token-only for now. VocareumClient takes an AuthProvider since the v3
+    // OAuth refactor — wrap the token in a TokenAuthProvider.
+    const client = new VocareumClient(new TokenAuthProvider(apiKey, config.vocareum.api_base_url));
 
     // 4. Construct Options
     if (requestedAutoCommit) {
