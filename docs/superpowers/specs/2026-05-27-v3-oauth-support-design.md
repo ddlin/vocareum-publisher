@@ -149,6 +149,7 @@ This guarantees at most one refresh+retry per `request()` call, never `maxRetrie
   - oauth mode → `https://labs.vocareum.com/api/v3`
   - A known host with an unexpected path (e.g. `https://api.vocareum.com/evil`) is rejected unless `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`.
   - Both `api.vocareum.com` and `labs.vocareum.com` are allowed hosts.
+  - **Mode↔host binding (post-review hardening).** The union allowlist alone would let a crossed override (e.g. `VOCAREUM_API_V3_BASE_URL=https://api.vocareum.com/api/v2` in oauth mode) send a `Bearer` token to the v2 host. So each provider additionally asserts its base URL against a **version-specific** allowlist in its constructor: `TokenAuthProvider`→v2 only, `OAuthClientCredentialsProvider`→v3 only (`assertBaseUrlForVersion`, same `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1` escape hatch). This prevents sending the wrong credential type to the wrong known host.
 
 ### 6. Auth-mode selection + shared CLI surface
 
