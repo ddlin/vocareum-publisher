@@ -516,12 +516,69 @@ Or add to your shell profile (`~/.bashrc`, `~/.zshrc`).
 3. Name: `VOCAREUM_API_KEY`
 4. Value: Your token
 
+### Authentication: v2 Token vs v3 OAuth
+
+vocgit supports two authentication modes:
+
+| Mode | Flag / Env | Credential env vars | API base |
+|------|-----------|---------------------|----------|
+| `token` (default) | `--auth token` / `VOCAREUM_AUTH_MODE=token` | `VOCAREUM_API_KEY` or `VOCAREUM_API_TOKEN` | `https://api.vocareum.com/api/v2` |
+| `oauth` (opt-in) | `--auth oauth` / `VOCAREUM_AUTH_MODE=oauth` | `VOCAREUM_OAUTH_CLIENT_ID` + `VOCAREUM_OAUTH_CLIENT_SECRET` | `https://labs.vocareum.com/api/v3` |
+
+**v2 token (default)** — Set `VOCAREUM_API_KEY` (or the alias `VOCAREUM_API_TOKEN`) to your Personal Access Token. Requests carry `Authorization: Token <token>` against `https://api.vocareum.com/api/v2`. No additional configuration needed.
+
+**v3 OAuth (opt-in)** — Set `VOCAREUM_OAUTH_CLIENT_ID` and `VOCAREUM_OAUTH_CLIENT_SECRET` and select the mode via `--auth oauth` or `VOCAREUM_AUTH_MODE=oauth`. vocgit performs an OAuth client-credentials exchange at `https://labs.vocareum.com/api/v3/oauth/token`, caches the resulting access token for the lifetime of the process, and retries automatically on a single 401 response. Requests carry `Authorization: Bearer <access_token>` against `https://labs.vocareum.com/api/v3`.
+
+Optional URL overrides for v3 OAuth:
+
+| Variable | Default |
+|----------|---------|
+| `VOCAREUM_API_V3_BASE_URL` | `https://labs.vocareum.com/api/v3` |
+| `VOCAREUM_OAUTH_TOKEN_URL` | `https://labs.vocareum.com/api/v3/oauth/token` |
+
+#### Security guidance
+
+Prefer environment variables or a secrets manager over CLI flags:
+
+- `--client-id` / `--client-secret` CLI flags exist but are **discouraged** — they appear in shell history and process listings.
+- **Never** put OAuth credentials in `vocareum.yaml`; the file is committed to Git.
+
+#### Usage examples
+
+```bash
+# Opt in per-invocation
+vocgit push --auth oauth
+
+# Opt in for the whole shell session
+export VOCAREUM_AUTH_MODE=oauth
+vocgit pull
+vocgit push
+```
+
+#### CI / GitHub Actions example
+
+Store credentials as repository secrets (`VOCAREUM_OAUTH_CLIENT_ID`, `VOCAREUM_OAUTH_CLIENT_SECRET`) and pass them as environment variables in your workflow step:
+
+```yaml
+- name: Push to Vocareum (v3 OAuth)
+  env:
+    VOCAREUM_AUTH_MODE: oauth
+    VOCAREUM_OAUTH_CLIENT_ID: ${{ secrets.VOCAREUM_OAUTH_CLIENT_ID }}
+    VOCAREUM_OAUTH_CLIENT_SECRET: ${{ secrets.VOCAREUM_OAUTH_CLIENT_SECRET }}
+  run: vocgit push --non-interactive
+```
+
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `VOCAREUM_API_KEY` | API key for authentication (supported) |
-| `VOCAREUM_API_TOKEN` | API key for authentication (supported alias) |
+| `VOCAREUM_API_KEY` | v2 Personal Access Token (default auth mode) |
+| `VOCAREUM_API_TOKEN` | Alias for `VOCAREUM_API_KEY` |
+| `VOCAREUM_AUTH_MODE` | Auth mode: `token` (default) or `oauth` |
+| `VOCAREUM_OAUTH_CLIENT_ID` | v3 OAuth client ID (required when `VOCAREUM_AUTH_MODE=oauth`) |
+| `VOCAREUM_OAUTH_CLIENT_SECRET` | v3 OAuth client secret (required when `VOCAREUM_AUTH_MODE=oauth`) |
+| `VOCAREUM_API_V3_BASE_URL` | Override the v3 API base URL (default: `https://labs.vocareum.com/api/v3`) |
+| `VOCAREUM_OAUTH_TOKEN_URL` | Override the v3 token endpoint URL (default: `https://labs.vocareum.com/api/v3/oauth/token`) |
 | `VOCAREUM_LOG_LEVEL` | Log level: ERROR, WARN, INFO, DEBUG, TRACE |
 
 ## License
