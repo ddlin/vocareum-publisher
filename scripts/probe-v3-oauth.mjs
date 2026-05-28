@@ -50,15 +50,20 @@ try {
   const name = `vocgit-smoke-${stamp}`;
   const copy = await api.post(`/courses/${courseId}/assignments`, { method: 'copy', source: templateId, name });
   console.log(`copy -> ${copy.status} txn=${copy.data.transactionid ?? copy.data.objid}`);
-  let objid = copy.data.objid;
+  // NOTE: copy.data.objid during pending is the course id, not the new assignment id.
+  // The real assignment id only appears in txn.data.objid when state==='success'.
+  let objid = undefined;
   if (copy.data.transactionid) {
-    for (let i = 0; i < 15; i++) {
+    for (let i = 0; i < 30; i++) {
       const txn = await api.get(`/transaction/${copy.data.transactionid}`);
-      if (txn.data.state === 'success') { objid = txn.data.objid ?? objid; break; }
+      if (txn.data.state === 'success') { objid = txn.data.objid; break; }
       if (txn.data.state === 'error' || txn.data.state === 'failed') { console.error(`txn ${txn.data.state}`); process.exit(2); }
       await new Promise((r) => setTimeout(r, 2000));
     }
+  } else {
+    objid = copy.data.objid;
   }
+  if (!objid) { console.error('txn did not resolve to an assignment id within poll budget'); process.exit(2); }
   console.log(`created assignment ${objid} ("${name}") — LEFT IN COURSE, manual cleanup`);
   const upd = await api.put(`/courses/${courseId}/assignments/${objid}`, { name: `${name}-renamed` });
   console.log(`update assignment name -> ${upd.status}`);
