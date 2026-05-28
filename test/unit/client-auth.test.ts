@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { vi } from 'vitest';
 import { AxiosError } from 'axios';
 import { normalizeApiBaseUrl, assertAllowedBaseUrl, VocareumClient, sanitizeForLog } from '../../src/api/client';
+import { OAuthTokenExchangeError } from '../../src/api/auth/oauth-provider';
 import type { AuthProvider } from '../../src/api/auth/auth-provider';
 
 class FakeProvider implements AuthProvider {
@@ -148,6 +149,20 @@ describe('VocareumClient 401 refresh-retry', () => {
     const client = new VocareumClient(provider);
     setAdapter(client, mockAdapter([{ status: 200, data: { ok: true } }]));
     await expect(client.request({ method: 'GET', url: '/courses' })).rejects.toThrow(/token exchange failed/);
+    expect(provider.refreshed).toBe(0);
+  });
+
+  it('an OAuthTokenExchangeError (statusCode 401, not an AxiosError) does NOT trigger refresh', async () => {
+    // Pins that the refresh decision keys on an AxiosError carrying a 401 RESPONSE,
+    // not on statusCode === 401. A bad-secret token-exchange failure carries 401 but
+    // must propagate immediately — refreshing would loop a known-bad credential.
+    const provider = new FakeProvider();
+    provider.getAuthorizationHeader = async () => {
+      throw new OAuthTokenExchangeError('OAuth token exchange failed (HTTP 401).');
+    };
+    const client = new VocareumClient(provider);
+    setAdapter(client, mockAdapter([{ status: 200, data: { ok: true } }]));
+    await expect(client.request({ method: 'GET', url: '/courses' })).rejects.toBeInstanceOf(OAuthTokenExchangeError);
     expect(provider.refreshed).toBe(0);
   });
 
