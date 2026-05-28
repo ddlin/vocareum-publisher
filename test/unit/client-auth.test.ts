@@ -6,6 +6,7 @@ import type { AuthProvider } from '../../src/api/auth/auth-provider';
 class FakeProvider implements AuthProvider {
   readonly apiBaseUrl = 'https://api.vocareum.com/api/v2';
   header = 'Token fake';
+  // refreshed/refreshAfterUnauthorized are scaffolding exercised by the 401-retry task.
   refreshed = 0;
   async getAuthorizationHeader() { return this.header; }
   async refreshAfterUnauthorized() { this.refreshed += 1; }
@@ -57,10 +58,12 @@ describe('VocareumClient header injection', () => {
     const provider = new FakeProvider();
     const client = new VocareumClient(provider);
     const spy = vi.spyOn(provider, 'getAuthorizationHeader');
+    let capturedConfig: unknown;
     (client as unknown as { axios: { defaults: Record<string, unknown> } }).axios.defaults.adapter =
-      async (config: unknown) => ({ data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config });
+      async (config: unknown) => { capturedConfig = config; return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config }; };
     await client.request({ method: 'GET', url: '/courses' });
     expect(spy).toHaveBeenCalled();
+    expect((capturedConfig as { headers: { get(k: string): string } }).headers.get('Authorization')).toBe('Token fake');
   });
 });
 

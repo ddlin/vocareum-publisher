@@ -181,13 +181,15 @@ const REDACT_FORM_PARAM = /((?:^|&)(?:authorization|client_secret|access_token|r
 /**
  * Sanitize a value for logging (redact secrets recursively in objects, arrays, and form strings)
  */
-export function sanitizeForLog(value: unknown): unknown {
+export function sanitizeForLog(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
   if (typeof value === 'string') { return value.replace(REDACT_FORM_PARAM, '$1[REDACTED]'); }
-  if (Array.isArray(value)) { return value.map(sanitizeForLog); }
+  if (Array.isArray(value)) { return value.map((v) => sanitizeForLog(v, seen)); }
   if (value && typeof value === 'object') {
+    if (seen.has(value as object)) { return '[Circular]'; }
+    seen.add(value as object);
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = REDACT_KEY.test(k) ? '[REDACTED]' : sanitizeForLog(v);
+      out[k] = REDACT_KEY.test(k) ? '[REDACTED]' : sanitizeForLog(v, seen);
     }
     return out;
   }
