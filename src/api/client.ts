@@ -256,6 +256,8 @@ export class VocareumClient {
       const apiUnauthorized = (err as ApiUnauthorizedFlag).isApiResponseUnauthorized === true;
       if (apiUnauthorized && this.authProvider.refreshAfterUnauthorized) {
         await this.authProvider.refreshAfterUnauthorized();
+        // The post-refresh attempt uses the normal retry budget (429/5xx/network);
+        // the 401-refresh itself happens at most once per request() call.
         return await this.attempt<T>(config, options);   // exactly one refresh+retry
       }
       throw err;
@@ -282,7 +284,8 @@ export class VocareumClient {
         if (isRawApiResponse401(error)) {
           (wrapped as VocareumError & ApiUnauthorizedFlag).isApiResponseUnauthorized = true;
         }
-        if (a === maxRetries - 1 || !isRetryable(wrapped)) { throw wrapped; }
+        const retryable = isRetryable(wrapped) || isRetryable(error);
+        if (a === maxRetries - 1 || !retryable) { throw wrapped; }
         await sleep(backoff * Math.pow(2, a));
       }
     }

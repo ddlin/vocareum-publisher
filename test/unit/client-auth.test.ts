@@ -150,4 +150,20 @@ describe('VocareumClient 401 refresh-retry', () => {
     await expect(client.request({ method: 'GET', url: '/courses' })).rejects.toThrow(/token exchange failed/);
     expect(provider.refreshed).toBe(0);
   });
+
+  it('retries a transient network error (ECONNRESET) then succeeds', async () => {
+    const provider = new FakeProvider();
+    const client = new VocareumClient(provider);
+    let calls = 0;
+    setAdapter(client, async (config: unknown) => {
+      calls += 1;
+      if (calls === 1) {
+        throw new AxiosError('socket hang up', 'ECONNRESET', config as never, {}, undefined);
+      }
+      return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config };
+    });
+    const out = await client.request<{ ok: boolean }>({ method: 'GET', url: '/courses' }, { backoff: 1 });
+    expect(out).toEqual({ ok: true });
+    expect(calls).toBe(2);
+  });
 });
