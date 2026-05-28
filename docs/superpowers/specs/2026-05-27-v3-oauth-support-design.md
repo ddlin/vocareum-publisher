@@ -1,11 +1,16 @@
 # v3 OAuth Support — Design
 
 **Date:** 2026-05-27
-**Status:** Approved (with review refinements). Implementation begins with a **blocking gate** (below): confirm the live v3 token endpoint before finalizing the OAuth provider's default `tokenUrl` and its validation allowlist.
+**Status:** Approved (with review refinements). Blocking gate **CLEARED** 2026-05-28 via live read-only smoke — endpoint and Bearer flow confirmed. Ready for implementation plan.
 
-## Implementation gate (do first)
+## Implementation gate — RESOLVED (2026-05-28)
 
-Before building the OAuth provider's defaults, run the read-only smoke (§11 #12) against test course 215500 with real `VOCAREUM_OAUTH_CLIENT_ID`/`SECRET` to confirm the actual token endpoint (`/api/v3/oauth/token` vs host-root `/oauth/token`) and the Bearer flow. Pin the confirmed `tokenUrl` default and the `tokenUrl` validation allowlist from this result. Everything else in the plan can be built in parallel against mocks, but the OAuth provider's shipped default must reflect the confirmed endpoint.
+A live read-only smoke against test course 215500 (instructor-RW client; client_id hash matched voc-mcp's capability report) confirmed:
+
+- **Token endpoint:** `https://labs.vocareum.com/api/v3/oauth/token`. The host-root `/oauth/token` returns 404 — so `/oauth/token` in the capability report is relative to the v3 base. **This is the pinned default `tokenUrl`** and the sole allowed token host+path.
+- **Token exchange:** `POST` form-encoded `client_credentials` → `200`, `token_type: Bearer`, `expires_in: 3600`.
+- **Reads:** `GET /courses` → `{status, courses}`; `GET /courses/{id}/assignments` → `{status, assignments, total_records}`; all IDs strings — shapes mirror v2.
+- **Credential note:** the instructor-RW pair (`VOCAREUM_INSTRUCTOR_RW_V3`/`_SEC_V3`) works and will drive the gated write smoke. The org-readonly pair (`VOCAREUM_ORG_READONLY_V3`/`_SEC_V3`) is currently rejected (`invalid_client`) and is **not** relied upon by this plan.
 **Author:** David Lin (vocgit maintainer)
 **Sources:** `.claude/oauth-support-recommendation.md`, `.claude/oauth-capability-report.json` (voc-mcp live probe), `.claude/feedback-from-voc-mcp.md`
 
@@ -109,7 +114,7 @@ export class OAuthClientCredentialsProvider implements AuthProvider {
 
 **`tokenUrl` validation (review #1).** `tokenUrl` is where `client_secret` is transmitted, so it is validated independently and at least as strictly as the API base URL: **HTTPS required**, host+path must match the allowed default (`https://labs.vocareum.com/api/v3/oauth/token`), and any override via `VOCAREUM_OAUTH_TOKEN_URL` is rejected unless `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`. Validation happens in the OAuth provider constructor, before any exchange.
 
-**Token URL default — resolved by a blocking first step.** The recommendation's "Request details" shows `POST /api/v3/oauth/token` while the capability report lists `token_endpoint: "/oauth/token"`. The default is set to `https://labs.vocareum.com/api/v3/oauth/token`, overridable via `VOCAREUM_OAUTH_TOKEN_URL`. **Confirming the real endpoint is the first implementation step** (read-only smoke, §11 #12) and gates finalizing the default + the validation allowlist; see "Implementation gate" below.
+**Token URL default — CONFIRMED.** Live smoke (2026-05-28) confirmed `https://labs.vocareum.com/api/v3/oauth/token` (host-root `/oauth/token` 404s). This is the pinned default and the sole allowed token host+path; overridable via `VOCAREUM_OAUTH_TOKEN_URL` only with `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`. See "Implementation gate — RESOLVED" above.
 
 ### 4. VocareumClient changes
 
