@@ -67,8 +67,16 @@ try {
   console.log(`created assignment ${objid} ("${name}") — LEFT IN COURSE, manual cleanup`);
   const upd = await api.put(`/courses/${courseId}/assignments/${objid}`, { name: `${name}-renamed` });
   console.log(`update assignment name -> ${upd.status}`);
-  const back = await api.get(`/courses/${courseId}/assignments`);
-  const found = (back.data.assignments ?? []).find((a) => String(a.id) === String(objid));
+  // The list endpoint returns max 10 per page; a freshly created assignment may
+  // be on a later page, so paginate until we find it (the direct GET
+  // /assignments/{id} does not return the name field).
+  let found;
+  for (let page = 1; page <= 20; page++) {
+    const back = await api.get(`/courses/${courseId}/assignments`, { params: { page } });
+    const list = back.data.assignments ?? [];
+    found = list.find((a) => String(a.id) === String(objid));
+    if (found || list.length === 0) break;
+  }
   console.log(`assignment readback name="${found?.name}" (expected "${name}-renamed")`);
 
   const partsRes = await api.get(`/courses/${courseId}/assignments/${objid}/parts`);
