@@ -1,7 +1,11 @@
 # v3 OAuth Support — Design
 
 **Date:** 2026-05-27
-**Status:** Approved (with review refinements), ready for implementation plan
+**Status:** Approved (with review refinements). Implementation begins with a **blocking gate** (below): confirm the live v3 token endpoint before finalizing the OAuth provider's default `tokenUrl` and its validation allowlist.
+
+## Implementation gate (do first)
+
+Before building the OAuth provider's defaults, run the read-only smoke (§11 #12) against test course 215500 with real `VOCAREUM_OAUTH_CLIENT_ID`/`SECRET` to confirm the actual token endpoint (`/api/v3/oauth/token` vs host-root `/oauth/token`) and the Bearer flow. Pin the confirmed `tokenUrl` default and the `tokenUrl` validation allowlist from this result. Everything else in the plan can be built in parallel against mocks, but the OAuth provider's shipped default must reflect the confirmed endpoint.
 **Author:** David Lin (vocgit maintainer)
 **Sources:** `.claude/oauth-support-recommendation.md`, `.claude/oauth-capability-report.json` (voc-mcp live probe), `.claude/feedback-from-voc-mcp.md`
 
@@ -39,9 +43,10 @@ export interface AuthProvider {
   readonly apiBaseUrl: string;
   /** Authorization header value, e.g. "Token x" or "Bearer y". May exchange/refresh lazily. */
   getAuthorizationHeader(): Promise<string>;
-  /** Invalidate cached credentials and produce a fresh header. Optional —
-   *  token auth has no refresh, so a 401 there is terminal. */
-  refreshAfterUnauthorized?(): Promise<string>;
+  /** Invalidate cached credentials so the next getAuthorizationHeader() re-acquires.
+   *  Optional — token auth has no refresh, so a 401 there is terminal. Returns void:
+   *  the client re-attempts and the interceptor re-fetches the header (review #4). */
+  refreshAfterUnauthorized?(): Promise<void>;
 }
 ```
 
@@ -80,9 +85,8 @@ export class OAuthClientCredentialsProvider implements AuthProvider {
     return `Bearer ${await this.getAccessToken()}`;
   }
 
-  async refreshAfterUnauthorized(): Promise<string> {
+  async refreshAfterUnauthorized(): Promise<void> {
     this.cached = undefined;            // force re-exchange on next getAccessToken
-    return `Bearer ${await this.getAccessToken()}`;
   }
 
   private async getAccessToken(): Promise<string> {
@@ -96,12 +100,16 @@ export class OAuthClientCredentialsProvider implements AuthProvider {
     // POST tokenUrl, Content-Type: application/x-www-form-urlencoded
     // body: grant_type=client_credentials&client_id=...&client_secret=...
     // On success: cache accessToken, expiresAtMs = now + (expires_in - 300)*1000  (5-min buffer)
-    // On failure: throw AuthenticationError (NO secret in the message).
+    // On failure: throw OAuthTokenExchangeError (NO secret in the message). This error
+    //   type is distinct from an API-resource 401 so the client never treats a bad-
+    //   credentials exchange failure as a "refresh-and-retry" situation (review #2).
   }
 }
 ```
 
-**Token URL ambiguity:** the recommendation's "Request details" shows `POST /api/v3/oauth/token` while the capability report lists `token_endpoint: "/oauth/token"`. Default `tokenUrl` to `https://labs.vocareum.com/api/v3/oauth/token`, make it overridable via `VOCAREUM_OAUTH_TOKEN_URL`, and **the live smoke test confirms the correct URL** before we finalize the default.
+**`tokenUrl` validation (review #1).** `tokenUrl` is where `client_secret` is transmitted, so it is validated independently and at least as strictly as the API base URL: **HTTPS required**, host+path must match the allowed default (`https://labs.vocareum.com/api/v3/oauth/token`), and any override via `VOCAREUM_OAUTH_TOKEN_URL` is rejected unless `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`. Validation happens in the OAuth provider constructor, before any exchange.
+
+**Token URL default — resolved by a blocking first step.** The recommendation's "Request details" shows `POST /api/v3/oauth/token` while the capability report lists `token_endpoint: "/oauth/token"`. The default is set to `https://labs.vocareum.com/api/v3/oauth/token`, overridable via `VOCAREUM_OAUTH_TOKEN_URL`. **Confirming the real endpoint is the first implementation step** (read-only smoke, §11 #12) and gates finalizing the default + the validation allowlist; see "Implementation gate" below.
 
 ### 4. VocareumClient changes
 
@@ -114,14 +122,16 @@ public async request<T>(config, options): Promise<T> {
   try {
     return await this.attempt<T>(config, options);     // normal retry loop; 401 not retryable
   } catch (err) {
-    if (isUnauthorized(err) && this.authProvider.refreshAfterUnauthorized) {
-      await this.authProvider.refreshAfterUnauthorized(); // clears OAuth cache
+    if (isApiResponseUnauthorized(err) && this.authProvider.refreshAfterUnauthorized) {
+      await this.authProvider.refreshAfterUnauthorized(); // clears OAuth cache (returns void)
       return await this.attempt<T>(config, options);     // single retry; interceptor picks up fresh token
     }
     throw err;
   }
 }
 ```
+
+- **`isApiResponseUnauthorized` is narrow and precise (review #2).** It means "the upstream API returned **401 in a response** to a request that already carried an auth header" — i.e., the raw error is an `AxiosError` with `response?.status === 401`. It is **not** any `AuthenticationError`. Critically, a **token-exchange failure** (bad `client_secret` → the OAuth provider's `exchange()` throws `OAuthTokenExchangeError`) surfaces from the request interceptor *before* an API call completes; it has no API `response` and is **not** an `AxiosError` 401, so it does **not** trigger the refresh path. It propagates immediately. This prevents the "bad credentials → exchange 401 → refresh → exchange again" pointless loop and surfaces the real cause. (`attempt` evaluates this on the raw axios error before `wrapError` collapses it into an `AuthenticationError`.)
 
 This guarantees at most one refresh+retry per `request()` call, never `maxRetries × authRetries`. Token-mode providers have no `refreshAfterUnauthorized`, so their 401 stays terminal (current behavior).
 
@@ -157,10 +167,10 @@ CLI flags (`--client-id`/`--client-secret`) override env. Secrets are never writ
 
 ### 8. Error handling
 
-- Token-exchange failure → `AuthenticationError` with an actionable message, **no secret in it**.
-- Post-refresh 401 → `AuthenticationError` (propagates from the second `attempt`).
+- Token-exchange failure → `OAuthTokenExchangeError` (extends `AuthenticationError`) with an actionable message, **no secret in it**. Distinct type so the client does not mistake it for an API-resource 401 (review #2); it propagates immediately without a refresh-retry.
+- Post-refresh API 401 → `AuthenticationError` (propagates from the second `attempt`).
 - Missing creds for the selected mode → actionable error at provider construction (before any API call).
-- Unknown host or unexpected path (no override) → `InsecureBaseUrlError`.
+- Unknown host or unexpected path (no override) → `InsecureBaseUrlError` — for both the API base URL **and** `tokenUrl`.
 
 ### 9. Security / redaction (review #8)
 
@@ -168,6 +178,7 @@ CLI flags (`--client-id`/`--client-secret`) override env. Secrets are never writ
 - `sanitizeForLog` becomes **recursive** over objects and form-like bodies (not just the `Authorization` header). Redact keys matching (case-insensitive): `authorization`, `client_secret`, `access_token`, `refresh_token`, `id_token`, `password`, `secret`, and the generic `token`.
 - If logging identity, log `sha256(client_id)`, not the raw id.
 - Keep ID-to-string normalization (v3 still returns mixed ID typing).
+- **`--client-secret`/`--client-id` flags are an escape hatch, documented as discouraged** (review #5): flags leak via shell history and process listings. README prefers env vars / secret managers; the flag is acceptable for local testing only.
 
 ### 10. Components touched
 
@@ -194,8 +205,10 @@ CLI flags (`--client-id`/`--client-secret`) override env. Secrets are never writ
 3. Token cache honors `expires_in` minus the 5-min buffer (no re-exchange before expiry; re-exchange after).
 4. Wrong `client_secret` for a given `client_id` does **not** reuse a previously cached token.
 5. Concurrent requests on an expired/empty cache trigger **one** exchange (coalescing).
-6. Upstream `401` → cache invalidated, re-exchange **once**, retry **once**; a second 401 throws `AuthenticationError` (no infinite loop, no `maxRetries × authRetries`).
+6. Upstream API `401` → cache invalidated, re-exchange **once**, retry **once**; a second 401 throws `AuthenticationError` (no infinite loop, no `maxRetries × authRetries`).
 7. Normal retry (429/5xx) still works and is independent of the 401 path.
+7a. **Token-exchange failure does NOT trigger the API-401 refresh path** (review #2): a `401` from the token endpoint (bad `client_secret`) throws `OAuthTokenExchangeError`, exchange runs once, and the client surfaces it immediately — it does not re-exchange or retry the API call.
+7b. **`tokenUrl` validation** (review #1): HTTPS required; the default host+path is accepted; an arbitrary `VOCAREUM_OAUTH_TOKEN_URL` is rejected as `InsecureBaseUrlError` unless `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`; an `http://` token URL is rejected.
 8. Redaction: logs/errors never contain `client_secret`/`access_token`; recursive redaction covers nested objects and the token-exchange form body.
 9. `validateBaseUrl`: accepts the two canonical host+path combos; rejects unexpected path on a known host unless override set; rejects unknown host.
 10. Token-exchange failure → `AuthenticationError` without the secret.
