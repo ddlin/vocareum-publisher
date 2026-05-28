@@ -1,6 +1,6 @@
 import axios, { type AxiosInstance } from 'axios';
 import type { AuthProvider } from './auth-provider';
-import { AuthenticationError, InsecureBaseUrlError } from '../client';
+import { AuthenticationError, InsecureBaseUrlError, assertBaseUrlForVersion } from '../client';
 
 const TOKEN_REFRESH_BUFFER_SEC = 300; // refresh 5 min early
 const ALLOWED_TOKEN_URLS: ReadonlySet<string> = new Set([
@@ -48,6 +48,9 @@ export class OAuthClientCredentialsProvider implements AuthProvider {
   private static sharedHttp?: AxiosInstance;
 
   constructor(opts: OAuthProviderOptions) {
+    // OAuth must target the v3 host; reject a crossed base URL (e.g. the v2
+    // host via VOCAREUM_API_V3_BASE_URL) so a Bearer token is never sent to v2.
+    assertBaseUrlForVersion(opts.apiBaseUrl, 'v3');
     assertAllowedTokenUrl(opts.tokenUrl);
     this.apiBaseUrl = opts.apiBaseUrl;
     this.tokenUrl = opts.tokenUrl;

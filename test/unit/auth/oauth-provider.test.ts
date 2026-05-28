@@ -69,6 +69,14 @@ describe('OAuthClientCredentialsProvider', () => {
     })).toThrow(/Insecure/);
   });
 
+  it('rejects a crossed apiBaseUrl pointed at the v2 host (no Bearer to v2)', () => {
+    expect(() => new OAuthClientCredentialsProvider({
+      clientId: 'c', clientSecret: 's',
+      apiBaseUrl: 'https://api.vocareum.com/api/v2', // v2 host in oauth mode
+      tokenUrl: 'https://labs.vocareum.com/api/v3/oauth/token',
+    })).toThrow(/Insecure/);
+  });
+
   it('throws OAuthTokenExchangeError when the response has no access_token', async () => {
     const post = vi.fn().mockResolvedValue({ data: { token_type: 'Bearer', expires_in: 3600 } });
     const p = makeProvider(post);

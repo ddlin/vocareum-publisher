@@ -112,10 +112,17 @@ function isRawApiResponse401(error: unknown): boolean {
 
 type ApiUnauthorizedFlag = { isApiResponseUnauthorized?: boolean };
 
-/** Canonical, allowed (host, version-path) base URLs. */
-const ALLOWED_BASE_URLS: ReadonlySet<string> = new Set([
+/** Canonical, allowed (host, version-path) base URLs, split by API version so
+ *  an auth mode can be bound to its host (token→v2, oauth→v3). */
+const ALLOWED_V2_BASE_URLS: ReadonlySet<string> = new Set([
   'https://api.vocareum.com/api/v2',
+]);
+const ALLOWED_V3_BASE_URLS: ReadonlySet<string> = new Set([
   'https://labs.vocareum.com/api/v3',
+]);
+const ALLOWED_BASE_URLS: ReadonlySet<string> = new Set([
+  ...ALLOWED_V2_BASE_URLS,
+  ...ALLOWED_V3_BASE_URLS,
 ]);
 
 /** Append /api/v2 when the base URL carries no /api/vN version path.
@@ -146,6 +153,31 @@ export function assertAllowedBaseUrl(baseUrl: string): void {
   if (!ALLOWED_BASE_URLS.has(canonical)) {
     if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
     logger.warn(`WARNING: Using non-standard API base URL: ${canonical}. Your credentials will be sent to this host.`);
+  }
+}
+
+/**
+ * Bind an auth mode to its API host: token auth must target the v2 host, OAuth
+ * must target the v3 host. Prevents sending a Bearer token to the v2 host (or a
+ * personal Token to v3) when a crossed base-URL override (e.g.
+ * VOCAREUM_API_V3_BASE_URL pointed at the v2 host) slips past the union
+ * allowlist. HTTPS + exact (host, version-path) match required, unless
+ * VOCAREUM_ALLOW_CUSTOM_BASE_URL=1.
+ */
+export function assertBaseUrlForVersion(baseUrl: string, version: 'v2' | 'v3'): void {
+  const allowed = version === 'v2' ? ALLOWED_V2_BASE_URLS : ALLOWED_V3_BASE_URLS;
+  const allowCustom = process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL === '1';
+  let parsed: URL;
+  try { parsed = new URL(baseUrl); } catch { throw new InsecureBaseUrlError(baseUrl); }
+  if (parsed.protocol !== 'https:') {
+    if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
+    logger.warn(`WARNING: Using non-HTTPS API URL: ${baseUrl}`);
+    return;
+  }
+  const canonical = `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, '')}`;
+  if (!allowed.has(canonical)) {
+    if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
+    logger.warn(`WARNING: Using non-standard ${version} API base URL: ${canonical}. Your credentials will be sent to this host.`);
   }
 }
 

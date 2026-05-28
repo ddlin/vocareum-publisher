@@ -18,4 +18,7 @@ describe('TokenAuthProvider', () => {
     const p = new TokenAuthProvider('tok');
     expect(p.refreshAfterUnauthorized).toBeUndefined();
   });
+  it('rejects a crossed base URL pointed at the v3 host (no Token to v3)', () => {
+    expect(() => new TokenAuthProvider('tok', 'https://labs.vocareum.com/api/v3')).toThrow(/Insecure/);
+  });
 });
