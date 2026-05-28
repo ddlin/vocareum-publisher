@@ -104,6 +104,14 @@ export class InsecureBaseUrlError extends VocareumError {
   }
 }
 
+/** True for a raw upstream API response 401 — NOT a token-exchange/auth-acquisition
+ *  failure (which is not an AxiosError carrying a 401 response). */
+function isRawApiResponse401(error: unknown): boolean {
+  return error instanceof AxiosError && error.response?.status === 401;
+}
+
+type ApiUnauthorizedFlag = { isApiResponseUnauthorized?: boolean };
+
 /** Canonical, allowed (host, version-path) base URLs. */
 const ALLOWED_BASE_URLS: ReadonlySet<string> = new Set([
   'https://api.vocareum.com/api/v2',
@@ -155,6 +163,12 @@ interface RetryOptions {
 function isRetryable(error: unknown): boolean {
   if (error instanceof RateLimitError) {
     return true;
+  }
+  if (error instanceof VocareumError) {
+    const status = error.statusCode;
+    if (status !== undefined && status >= 500 && status < 600) {
+      return true;
+    }
   }
   if (error instanceof AxiosError) {
     const status = error.response?.status;
@@ -225,35 +239,51 @@ export class VocareumClient {
   }
 
   /**
-   * Make an authenticated request to the Vocareum API
+   * Make an authenticated request to the Vocareum API.
+   *
+   * Wraps `attempt` to handle a single refresh-and-retry on an upstream API
+   * 401 response. The "was this an API 401?" signal is carried as a flag on
+   * the thrown error (not instance state) so concurrent requests cannot race.
    *
    * @param config - Axios request configuration
    * @returns Response data
    * @throws VocareumError on failure
    */
-  public async request<T>(
-    config: AxiosRequestConfig,
-    options: RetryOptions = {}
-  ): Promise<T> {
+  public async request<T>(config: AxiosRequestConfig, options: RetryOptions = {}): Promise<T> {
+    try {
+      return await this.attempt<T>(config, options);
+    } catch (err) {
+      const apiUnauthorized = (err as ApiUnauthorizedFlag).isApiResponseUnauthorized === true;
+      if (apiUnauthorized && this.authProvider.refreshAfterUnauthorized) {
+        await this.authProvider.refreshAfterUnauthorized();
+        return await this.attempt<T>(config, options);   // exactly one refresh+retry
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Inner retry loop — retries on 429/5xx up to maxRetries times.
+   * On a raw API 401, sets `isApiResponseUnauthorized` on the thrown error
+   * so the outer `request` can do a single refresh+retry.
+   */
+  private async attempt<T>(config: AxiosRequestConfig, options: RetryOptions = {}): Promise<T> {
     const maxRetries = options.maxRetries ?? 3;
     const backoff = options.backoff ?? 1000;
 
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
+    for (let a = 0; a < maxRetries; a++) {
       try {
         logger.debug('API request', sanitizeForLog(config));
         const response = await this.axios.request<T>(config);
         logger.debug(`API response: ${response.status}`, { data: response.data });
         return response.data;
       } catch (error) {
-        const wrappedError = this.wrapError(error);
-
-        if (attempt === maxRetries - 1 || !isRetryable(wrappedError)) {
-          throw wrappedError;
+        const wrapped = this.wrapError(error);
+        if (isRawApiResponse401(error)) {
+          (wrapped as VocareumError & ApiUnauthorizedFlag).isApiResponseUnauthorized = true;
         }
-
-        const waitTime = backoff * Math.pow(2, attempt);
-        logger.debug(`Retrying in ${waitTime}ms (attempt ${attempt + 1}/${maxRetries})`);
-        await sleep(waitTime);
+        if (a === maxRetries - 1 || !isRetryable(wrapped)) { throw wrapped; }
+        await sleep(backoff * Math.pow(2, a));
       }
     }
 

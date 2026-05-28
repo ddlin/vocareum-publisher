@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { vi } from 'vitest';
+import { AxiosError } from 'axios';
 import { normalizeApiBaseUrl, assertAllowedBaseUrl, VocareumClient, sanitizeForLog } from '../../src/api/client';
 import type { AuthProvider } from '../../src/api/auth/auth-provider';
 
@@ -84,5 +85,69 @@ describe('sanitizeForLog (recursive)', () => {
     expect(out).not.toContain('shh');
     expect(out).toContain('client_id=cid');
     expect(out).toContain('client_secret=[REDACTED]');
+  });
+});
+
+// A custom adapter must reject non-2xx itself — axios only applies validateStatus
+// inside its built-in adapters (via settle), not to a custom adapter's resolved
+// value. So we throw a REAL AxiosError (carrying .response.status) for status >= 400.
+function mockAdapter(responses: Array<{ status: number; data?: unknown }>) {
+  let i = 0;
+  return async (config: unknown) => {
+    const r = responses[Math.min(i, responses.length - 1)]; i += 1;
+    const response = { data: r.data ?? {}, status: r.status, statusText: '', headers: {}, config };
+    if (r.status >= 400) {
+      throw new AxiosError(`Request failed with status code ${r.status}`, 'ERR_BAD_RESPONSE',
+        config as never, {}, response as never);
+    }
+    return response;
+  };
+}
+function setAdapter(client: VocareumClient, adapter: unknown) {
+  (client as unknown as { axios: { defaults: Record<string, unknown> } }).axios.defaults.adapter = adapter;
+}
+
+describe('VocareumClient 401 refresh-retry', () => {
+  it('refreshes once and retries once on an API 401, then succeeds', async () => {
+    const provider = new FakeProvider();
+    const client = new VocareumClient(provider);
+    setAdapter(client, mockAdapter([{ status: 401 }, { status: 200, data: { ok: true } }]));
+    const out = await client.request<{ ok: boolean }>({ method: 'GET', url: '/courses' });
+    expect(out).toEqual({ ok: true });
+    expect(provider.refreshed).toBe(1);
+  });
+
+  it('does not retry past one refresh; a second 401 throws', async () => {
+    const provider = new FakeProvider();
+    const client = new VocareumClient(provider);
+    setAdapter(client, mockAdapter([{ status: 401 }, { status: 401 }]));
+    await expect(client.request({ method: 'GET', url: '/courses' })).rejects.toThrow();
+    expect(provider.refreshed).toBe(1);
+  });
+
+  it('does not attempt refresh when the provider has no refreshAfterUnauthorized', async () => {
+    const provider = new FakeProvider();
+    (provider as Partial<FakeProvider>).refreshAfterUnauthorized = undefined;
+    const client = new VocareumClient(provider as AuthProvider);
+    setAdapter(client, mockAdapter([{ status: 401 }]));
+    await expect(client.request({ method: 'GET', url: '/courses' })).rejects.toThrow();
+  });
+
+  it('normal retry (500 then 200) still works and is independent of the 401 path', async () => {
+    const provider = new FakeProvider();
+    const client = new VocareumClient(provider);
+    setAdapter(client, mockAdapter([{ status: 500 }, { status: 200, data: { ok: true } }]));
+    const out = await client.request<{ ok: boolean }>({ method: 'GET', url: '/courses' }, { backoff: 1 });
+    expect(out).toEqual({ ok: true });
+    expect(provider.refreshed).toBe(0);
+  });
+
+  it('an auth-acquisition failure (interceptor throws) does NOT trigger the 401 refresh path', async () => {
+    const provider = new FakeProvider();
+    provider.getAuthorizationHeader = async () => { throw new Error('token exchange failed'); };
+    const client = new VocareumClient(provider);
+    setAdapter(client, mockAdapter([{ status: 200, data: { ok: true } }]));
+    await expect(client.request({ method: 'GET', url: '/courses' })).rejects.toThrow(/token exchange failed/);
+    expect(provider.refreshed).toBe(0);
   });
 });
