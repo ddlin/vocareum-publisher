@@ -343,6 +343,13 @@ describe('sanitizeForLog (recursive)', () => {
     expect(out).not.toContain('"tok"');
     expect(out).toContain('[REDACTED]');
   });
+
+  it('redacts secrets in a urlencoded form-string body, preserving non-secret params', () => {
+    const out = sanitizeForLog('grant_type=client_credentials&client_id=cid&client_secret=shh') as string;
+    expect(out).not.toContain('shh');
+    expect(out).toContain('client_id=cid');            // non-secret preserved
+    expect(out).toContain('client_secret=[REDACTED]');
+  });
 });
 ```
 
@@ -388,8 +395,12 @@ Replace `sanitizeForLog` with a recursive, exported version:
 
 ```ts
 const REDACT_KEY = /^(authorization|client_secret|access_token|refresh_token|id_token|password|secret|token)$/i;
+// Redact sensitive params inside a urlencoded form string (the OAuth token-exchange
+// body is a string, not an object). Non-secret params (e.g. client_id) are preserved.
+const REDACT_FORM_PARAM = /((?:^|&)(?:authorization|client_secret|access_token|refresh_token|id_token|password|secret|token)=)[^&]*/gi;
 
 export function sanitizeForLog(value: unknown): unknown {
+  if (typeof value === 'string') { return value.replace(REDACT_FORM_PARAM, '$1[REDACTED]'); }
   if (Array.isArray(value)) { return value.map(sanitizeForLog); }
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
@@ -450,13 +461,21 @@ git commit -m "feat: VocareumClient takes an AuthProvider; async header injectio
 Append to `test/unit/client-auth.test.ts`:
 
 ```ts
-// Adapter RESOLVES the response; axios's default validateStatus converts
-// status >= 400 into a real AxiosError (so `instanceof AxiosError` holds).
+import { AxiosError } from 'axios';
+
+// A custom adapter must reject non-2xx itself — axios only applies validateStatus
+// inside its built-in adapters (via settle), not to a custom adapter's resolved
+// value. So we throw a REAL AxiosError (carrying .response.status) for status >= 400.
 function mockAdapter(responses: Array<{ status: number; data?: unknown }>) {
   let i = 0;
   return async (config: unknown) => {
     const r = responses[Math.min(i, responses.length - 1)]; i += 1;
-    return { data: r.data ?? {}, status: r.status, statusText: 'OK', headers: {}, config };
+    const response = { data: r.data ?? {}, status: r.status, statusText: '', headers: {}, config };
+    if (r.status >= 400) {
+      throw new AxiosError(`Request failed with status code ${r.status}`, 'ERR_BAD_RESPONSE',
+        config as never, {}, response as never);
+    }
+    return response;
   };
 }
 function setAdapter(client: VocareumClient, adapter: unknown) {
@@ -869,6 +888,15 @@ describe('createAuthProvider', () => {
   it('throws when token mode has no token', () => {
     expect(() => createAuthProvider({ authMode: 'token' })).toThrow(/VOCAREUM_API_KEY/);
   });
+
+  it('throws fast on an invalid auth mode from options', () => {
+    expect(() => createAuthProvider({ authMode: 'bogus' })).toThrow(/Invalid auth mode/);
+  });
+
+  it('throws fast on an invalid VOCAREUM_AUTH_MODE env value (typo)', () => {
+    process.env.VOCAREUM_AUTH_MODE = 'ouath';
+    expect(() => createAuthProvider({})).toThrow(/Invalid auth mode/);
+  });
 });
 ```
 
@@ -888,9 +916,12 @@ export function getOAuthClientSecret(): string | undefined {
   const v = process.env.VOCAREUM_OAUTH_CLIENT_SECRET;
   return v && v.length > 0 ? v : undefined;
 }
-export function getAuthModeEnv(): 'token' | 'oauth' | undefined {
-  const v = process.env.VOCAREUM_AUTH_MODE?.toLowerCase();
-  return v === 'token' || v === 'oauth' ? v : undefined;
+/** Raw VOCAREUM_AUTH_MODE (trimmed, lowercased), or undefined if unset/empty.
+ *  The VALUE is validated in createAuthProvider so a typo fails fast rather than
+ *  silently falling back to token mode. */
+export function getAuthModeEnv(): string | undefined {
+  const v = process.env.VOCAREUM_AUTH_MODE?.trim().toLowerCase();
+  return v && v.length > 0 ? v : undefined;
 }
 export function getV3ApiBaseUrl(): string {
   return process.env.VOCAREUM_API_V3_BASE_URL ?? 'https://labs.vocareum.com/api/v3';
@@ -911,14 +942,17 @@ import {
 } from '../../utils/env';
 
 export interface CreateAuthProviderOptions {
-  authMode?: 'token' | 'oauth';
+  authMode?: string;         // validated here; from --auth or VOCAREUM_AUTH_MODE
   clientId?: string;
   clientSecret?: string;
   apiBaseUrl?: string;       // v2 base from config.vocareum.api_base_url
 }
 
 export function createAuthProvider(opts: CreateAuthProviderOptions): AuthProvider {
-  const mode = opts.authMode ?? getAuthModeEnv() ?? 'token';
+  const mode = (opts.authMode ?? getAuthModeEnv() ?? 'token').toLowerCase();
+  if (mode !== 'token' && mode !== 'oauth') {
+    throw new Error(`Invalid auth mode "${mode}". Use "token" (v2, default) or "oauth" (v3).`);
+  }
   if (mode === 'oauth') {
     const clientId = opts.clientId ?? getOAuthClientId();
     const clientSecret = opts.clientSecret ?? getOAuthClientSecret();
@@ -949,20 +983,21 @@ Expected: PASS.
 `src/api/auth/cli-auth-options.ts`:
 
 ```ts
-import type { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { createAuthProvider } from './auth-provider';
 import type { AuthProvider } from './auth-provider';
 
 export interface AuthCliOptions {
-  auth?: 'token' | 'oauth';
+  auth?: string;            // validated by commander .choices() + the factory
   clientId?: string;
   clientSecret?: string;
 }
 
-/** Add shared auth flags to a command. Used by push and pull. */
+/** Add shared auth flags to a command. Used by push and pull.
+ *  `.choices` makes commander reject an invalid --auth value at parse time. */
 export function addAuthOptions(cmd: Command): Command {
   return cmd
-    .option('--auth <mode>', 'Auth mode: token (v2, default) or oauth (v3)')
+    .addOption(new Option('--auth <mode>', 'Auth mode: token (v2, default) or oauth (v3)').choices(['token', 'oauth']))
     .option('--client-id <id>', 'v3 OAuth client id (prefer VOCAREUM_OAUTH_CLIENT_ID; flags can leak via shell history)')
     .option('--client-secret <secret>', 'v3 OAuth client secret (prefer VOCAREUM_OAUTH_CLIENT_SECRET; discouraged on the CLI)');
 }
@@ -1041,16 +1076,19 @@ git commit -m "feat: auth-mode factory, env readers, shared CLI auth options, co
 // --write copies a template into a "vocgit-smoke-YYYYMMDD-HHMMSS" assignment,
 // polls the transaction, updates the copied assignment + part name, verifies
 // readback, and NEVER deletes. Manual cleanup required in the Vocareum UI.
-import { readFileSync } from 'fs';
-import axios from '../node_modules/axios/index.js';
+import { existsSync, readFileSync } from 'fs';
+import axios from 'axios';
 import { createHash } from 'crypto';
 
-for (const line of readFileSync(new URL('../.env', import.meta.url), 'utf8').split(/\r?\n/)) {
-  const t = line.trim(); if (!t || t.startsWith('#')) continue;
-  const i = t.indexOf('='); if (i <= 0) continue;
-  const k = t.slice(0, i).trim().replace(/^export\s+/, ''); let v = t.slice(i + 1).trim();
-  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
-  if (!(k in process.env)) process.env[k] = v;
+const envPath = new URL('../.env', import.meta.url);
+if (existsSync(envPath)) {
+  for (const line of readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+    const t = line.trim(); if (!t || t.startsWith('#')) continue;
+    const i = t.indexOf('='); if (i <= 0) continue;
+    const k = t.slice(0, i).trim().replace(/^export\s+/, ''); let v = t.slice(i + 1).trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+    if (!(k in process.env)) process.env[k] = v;
+  }
 }
 const arg = (f) => { const i = process.argv.indexOf(f); return i >= 0 ? process.argv[i + 1] : undefined; };
 const doWrite = process.argv.includes('--write');
@@ -1093,10 +1131,30 @@ if (copy.data.transactionid) {
 }
 console.log(`created assignment ${objid} ("${name}") — LEFT IN COURSE, manual cleanup`);
 const upd = await api.put(`/courses/${courseId}/assignments/${objid}`, { name: `${name}-renamed` });
-console.log(`update name -> ${upd.status}`);
+console.log(`update assignment name -> ${upd.status}`);
 const back = await api.get(`/courses/${courseId}/assignments`);
 const found = (back.data.assignments ?? []).find((a) => String(a.id) === String(objid));
-console.log(`readback name="${found?.name}" (expected "${name}-renamed")`);
+console.log(`assignment readback name="${found?.name}" (expected "${name}-renamed")`);
+
+// Update a copied part name + readback (poll if the update is async)
+const partsRes = await api.get(`/courses/${courseId}/assignments/${objid}/parts`);
+const parts = partsRes.data.parts ?? [];
+if (parts.length === 0) { console.error('copied assignment has no parts to update'); process.exit(2); }
+const partId = parts[0].id;
+const partName = `${name}-part-renamed`;
+const pUpd = await api.put(`/courses/${courseId}/assignments/${objid}/parts/${partId}`, { name: partName });
+console.log(`update part name -> ${pUpd.status}`);
+if (pUpd.data?.transactionid) {
+  for (let i = 0; i < 15; i++) {
+    const txn = await api.get(`/transaction/${pUpd.data.transactionid}`);
+    if (txn.data.state === 'success') break;
+    if (txn.data.state === 'error' || txn.data.state === 'failed') { console.error(`part txn ${txn.data.state}`); process.exit(2); }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+const partsBack = await api.get(`/courses/${courseId}/assignments/${objid}/parts`);
+const pFound = (partsBack.data.parts ?? []).find((p) => String(p.id) === String(partId));
+console.log(`part readback name="${pFound?.name}" (expected "${partName}")`);
 console.log('write smoke OK');
 ```
 
