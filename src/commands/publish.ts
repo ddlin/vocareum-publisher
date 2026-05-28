@@ -7,6 +7,7 @@
 import { loadConfig } from '../core/config';
 import { publish } from '../core/publisher';
 import { VocareumClient } from '../api/client';
+import { TokenAuthProvider } from '../api/auth/token-auth-provider';
 import { logger } from '../utils/logger';
 import { loadDotEnvIfPresent, isCI, getApiKeyOrThrow } from '../utils/env';
 import { UnknownFieldReporter } from '../utils/unknown-field-reporter';
@@ -29,7 +30,7 @@ export async function publishCommand(options: PublishCommandOptions): Promise<vo
     loadDotEnvIfPresent();
     const config = await loadConfig(configPath);
     const apiKey = getApiKeyOrThrow();
-    const client = new VocareumClient(apiKey, config.vocareum.api_base_url);
+    const client = new VocareumClient(new TokenAuthProvider(apiKey, config.vocareum.api_base_url));
 
     const requestedAutoCommit = options.autoCommit ?? config.publish_options?.auto_commit ?? false;
     const autoCommit = isCI() ? false : requestedAutoCommit;

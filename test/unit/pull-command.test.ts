@@ -42,9 +42,13 @@ vi.mock('../../src/core/reconciler', () => ({
   reconcile: reconcileMock,
 }));
 
-vi.mock('../../src/api/client', () => ({
-  VocareumClient: vi.fn().mockImplementation(() => ({ request: vi.fn() })),
-}));
+vi.mock('../../src/api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/api/client')>();
+  return {
+    ...actual,
+    VocareumClient: vi.fn().mockImplementation(() => ({ request: vi.fn() })),
+  };
+});
 
 vi.mock('../../src/api/assignments', () => ({
   getAssignment: getAssignmentMock,

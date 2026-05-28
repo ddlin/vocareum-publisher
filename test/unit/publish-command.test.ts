@@ -33,9 +33,13 @@ vi.mock('../../src/core/publisher', () => ({
   publish: publishMock,
 }));
 
-vi.mock('../../src/api/client', () => ({
-  VocareumClient: vi.fn().mockImplementation(() => ({ request: vi.fn() })),
-}));
+vi.mock('../../src/api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/api/client')>();
+  return {
+    ...actual,
+    VocareumClient: vi.fn().mockImplementation(() => ({ request: vi.fn() })),
+  };
+});
 
 vi.mock('../../src/utils/env', () => ({
   loadDotEnvIfPresent: loadDotEnvIfPresentMock,

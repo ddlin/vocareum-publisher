@@ -9,6 +9,7 @@ import * as path from 'path';
 import { loadConfig, updateConfig } from '../core/config';
 import { reconcile } from '../core/reconciler';
 import { VocareumClient } from '../api/client';
+import { TokenAuthProvider } from '../api/auth/token-auth-provider';
 import { getAssignment } from '../api/assignments';
 import { listParts, getPart } from '../api/parts';
 import { downloadContent } from '../api/content';
@@ -952,7 +953,7 @@ export async function pullCommand(options: PullOptions): Promise<void> {
     const config = await loadConfig(configPath);
 
     const apiKey = getApiKeyOrThrow();
-    const client = new VocareumClient(apiKey, config.vocareum.api_base_url);
+    const client = new VocareumClient(new TokenAuthProvider(apiKey, config.vocareum.api_base_url));
 
     logger.info('Scanning for assignment sync issues...');
 

@@ -8,6 +8,7 @@
 
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosError } from 'axios';
 import { logger } from '../utils/logger';
+import type { AuthProvider } from './auth/auth-provider';
 
 /**
  * Base error class for Vocareum API errors
@@ -174,18 +175,23 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const REDACT_KEY = /^(authorization|client_secret|access_token|refresh_token|id_token|password|secret|token)$/i;
+const REDACT_FORM_PARAM = /((?:^|&)(?:authorization|client_secret|access_token|refresh_token|id_token|password|secret|token)=)[^&]*/gi;
+
 /**
- * Sanitize request config for logging (redact API keys)
+ * Sanitize a value for logging (redact secrets recursively in objects, arrays, and form strings)
  */
-function sanitizeForLog(config: AxiosRequestConfig): unknown {
-  const sanitized = { ...config };
-  if (sanitized.headers) {
-    sanitized.headers = { ...sanitized.headers };
-    if (typeof sanitized.headers['Authorization'] === 'string') {
-      sanitized.headers['Authorization'] = '[REDACTED]';
+export function sanitizeForLog(value: unknown): unknown {
+  if (typeof value === 'string') { return value.replace(REDACT_FORM_PARAM, '$1[REDACTED]'); }
+  if (Array.isArray(value)) { return value.map(sanitizeForLog); }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = REDACT_KEY.test(k) ? '[REDACTED]' : sanitizeForLog(v);
     }
+    return out;
   }
-  return sanitized;
+  return value;
 }
 
 /**
@@ -199,19 +205,20 @@ function sanitizeForLog(config: AxiosRequestConfig): unknown {
  */
 export class VocareumClient {
   private axios: AxiosInstance;
-  private apiKey: string;
+  private authProvider: AuthProvider;
 
-  constructor(apiKey: string, baseUrl: string = 'https://api.vocareum.com') {
-    const normalized = normalizeApiBaseUrl(baseUrl);
-    assertAllowedBaseUrl(normalized);
-    this.apiKey = apiKey;
+  constructor(authProvider: AuthProvider) {
+    assertAllowedBaseUrl(authProvider.apiBaseUrl);
+    this.authProvider = authProvider;
     this.axios = axios.create({
-      baseURL: normalized,
+      baseURL: authProvider.apiBaseUrl,
       timeout: 30000,
-      headers: {
-        Authorization: `Token ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
+    });
+    // Inject the auth header per request (async: OAuth may exchange/cache a token).
+    this.axios.interceptors.request.use(async (config) => {
+      config.headers.set('Authorization', await this.authProvider.getAuthorizationHeader());
+      return config;
     });
   }
 
@@ -305,10 +312,4 @@ export class VocareumClient {
     return undefined;
   }
 
-  /**
-   * Get API key (for testing - never log this!)
-   */
-  protected getApiKey(): string {
-    return this.apiKey;
-  }
 }

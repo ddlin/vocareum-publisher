@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeApiBaseUrl, assertAllowedBaseUrl } from '../../src/api/client';
+import { vi } from 'vitest';
+import { normalizeApiBaseUrl, assertAllowedBaseUrl, VocareumClient, sanitizeForLog } from '../../src/api/client';
+import type { AuthProvider } from '../../src/api/auth/auth-provider';
+
+class FakeProvider implements AuthProvider {
+  readonly apiBaseUrl = 'https://api.vocareum.com/api/v2';
+  header = 'Token fake';
+  refreshed = 0;
+  async getAuthorizationHeader() { return this.header; }
+  async refreshAfterUnauthorized() { this.refreshed += 1; }
+}
 
 describe('normalizeApiBaseUrl', () => {
   it('appends /api/v2 when no version path present', () => {
@@ -39,5 +49,37 @@ describe('assertAllowedBaseUrl', () => {
     process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL = '1';
     try { expect(() => assertAllowedBaseUrl('http://localhost/api/v2')).not.toThrow(); }
     finally { delete process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL; }
+  });
+});
+
+describe('VocareumClient header injection', () => {
+  it('asks the provider for the Authorization header on each request', async () => {
+    const provider = new FakeProvider();
+    const client = new VocareumClient(provider);
+    const spy = vi.spyOn(provider, 'getAuthorizationHeader');
+    (client as unknown as { axios: { defaults: Record<string, unknown> } }).axios.defaults.adapter =
+      async (config: unknown) => ({ data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config });
+    await client.request({ method: 'GET', url: '/courses' });
+    expect(spy).toHaveBeenCalled();
+  });
+});
+
+describe('sanitizeForLog (recursive)', () => {
+  it('redacts secrets nested in objects and bodies', () => {
+    const out = JSON.stringify(sanitizeForLog({
+      headers: { Authorization: 'Bearer abc' },
+      data: { grant_type: 'client_credentials', client_secret: 'shh', nested: { access_token: 'tok' } },
+    } as never));
+    expect(out).not.toContain('shh');
+    expect(out).not.toContain('Bearer abc');
+    expect(out).not.toContain('"tok"');
+    expect(out).toContain('[REDACTED]');
+  });
+
+  it('redacts secrets in a urlencoded form-string body, preserving non-secret params', () => {
+    const out = sanitizeForLog('grant_type=client_credentials&client_id=cid&client_secret=shh') as string;
+    expect(out).not.toContain('shh');
+    expect(out).toContain('client_id=cid');
+    expect(out).toContain('client_secret=[REDACTED]');
   });
 });

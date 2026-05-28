@@ -64,18 +64,15 @@ vi.mock('../../src/utils/prompts', () => ({
 // Mock Client
 const mockRequest = vi.fn();
 
-vi.mock('../../src/api/client', () => {
+vi.mock('../../src/api/client', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../src/api/client')>();
     return {
+        ...actual,
         VocareumClient: vi.fn().mockImplementation(() => {
             return {
                 request: mockRequest
             };
         }),
-        VocareumError: class extends Error { },
-        APIError: class extends Error { },
-        AuthenticationError: class extends Error { },
-        RateLimitError: class extends Error { },
-        NotFoundError: class extends Error { },
     };
 });
 
