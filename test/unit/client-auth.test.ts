@@ -35,4 +35,9 @@ describe('assertAllowedBaseUrl', () => {
     try { expect(() => assertAllowedBaseUrl('https://staging.example.com/api/v2')).not.toThrow(); }
     finally { delete process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL; }
   });
+  it('allows override with VOCAREUM_ALLOW_CUSTOM_BASE_URL=1 for http', () => {
+    process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL = '1';
+    try { expect(() => assertAllowedBaseUrl('http://localhost/api/v2')).not.toThrow(); }
+    finally { delete process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL; }
+  });
 });

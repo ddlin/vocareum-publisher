@@ -95,7 +95,7 @@ export class InsecureBaseUrlError extends VocareumError {
   constructor(url: string) {
     super(
       `Insecure API base URL: "${url}". ` +
-      `Only https://api.vocareum.com is allowed by default. ` +
+      `Only https://api.vocareum.com and https://labs.vocareum.com are allowed by default. ` +
       `Set VOCAREUM_ALLOW_CUSTOM_BASE_URL=1 to override (use with caution).`,
       'INSECURE_BASE_URL'
     );
@@ -109,7 +109,10 @@ const ALLOWED_BASE_URLS: ReadonlySet<string> = new Set([
   'https://labs.vocareum.com/api/v3',
 ]);
 
-/** Append /api/v2 when the base URL carries no /api/vN version path. */
+/** Append /api/v2 when the base URL carries no /api/vN version path.
+ *  Note: a bare host always normalizes to /api/v2 (the default). The v3 host
+ *  (labs.vocareum.com) must be passed with its full /api/v3 path; a bare labs
+ *  host would normalize to /api/v2 and then fail assertAllowedBaseUrl. */
 export function normalizeApiBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.replace(/\/+$/, '');
   return /\/api\/v\d+$/.test(trimmed) ? trimmed : `${trimmed}/api/v2`;
@@ -125,6 +128,8 @@ export function assertAllowedBaseUrl(baseUrl: string): void {
   try { parsed = new URL(baseUrl); } catch { throw new InsecureBaseUrlError(baseUrl); }
   if (parsed.protocol !== 'https:') {
     if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
+    // Non-HTTPS is only reachable with the explicit override; skip the path
+    // allowlist check since TLS is already absent (dev/test escape hatch).
     logger.warn(`WARNING: Using non-HTTPS API URL: ${baseUrl}`);
     return;
   }
