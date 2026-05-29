@@ -67,17 +67,22 @@ try {
   console.log(`created assignment ${objid} ("${name}") — LEFT IN COURSE, manual cleanup`);
   const upd = await api.put(`/courses/${courseId}/assignments/${objid}`, { name: `${name}-renamed` });
   console.log(`update assignment name -> ${upd.status}`);
-  // The list endpoint returns max 10 per page; a freshly created assignment may
-  // be on a later page, so paginate until we find it (the direct GET
-  // /assignments/{id} does not return the name field).
+  // The list endpoint paginates zero-based with an optional `size` (mirrors the
+  // real client); a freshly created assignment may be on a later page, so
+  // paginate (size 100) until found. The direct GET /assignments/{id} omits name.
   let found;
-  for (let page = 1; page <= 20; page++) {
-    const back = await api.get(`/courses/${courseId}/assignments`, { params: { page } });
+  for (let page = 0; page <= 20; page++) {
+    const back = await api.get(`/courses/${courseId}/assignments`, { params: { page, size: 100 } });
     const list = back.data.assignments ?? [];
     found = list.find((a) => String(a.id) === String(objid));
     if (found || list.length === 0) break;
   }
-  console.log(`assignment readback name="${found?.name}" (expected "${name}-renamed")`);
+  const expectedAsnName = `${name}-renamed`;
+  console.log(`assignment readback name="${found?.name}" (expected "${expectedAsnName}")`);
+  if (found?.name !== expectedAsnName) {
+    console.error(`assignment name readback MISMATCH — write smoke FAILED`);
+    process.exit(3);
+  }
 
   const partsRes = await api.get(`/courses/${courseId}/assignments/${objid}/parts`);
   const parts = partsRes.data.parts ?? [];
@@ -97,6 +102,10 @@ try {
   const partsBack = await api.get(`/courses/${courseId}/assignments/${objid}/parts`);
   const pFound = (partsBack.data.parts ?? []).find((p) => String(p.id) === String(partId));
   console.log(`part readback name="${pFound?.name}" (expected "${partName}")`);
+  if (pFound?.name !== partName) {
+    console.error(`part name readback MISMATCH — write smoke FAILED`);
+    process.exit(3);
+  }
   console.log('write smoke OK');
   process.exit(0);
 } catch (e) {
