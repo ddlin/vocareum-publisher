@@ -328,6 +328,10 @@ Summary:
 
 ## GitHub Action
 
+The Action is a **composite** action: it installs the published `vocgit` CLI (pinned to the action's version) and runs `vocgit push`. It supports both v2 token auth and v3 OAuth.
+
+**v2 token auth:**
+
 ```yaml
 name: Push to Vocareum
 on:
@@ -349,7 +353,19 @@ jobs:
           non-interactive: true
 ```
 
-Supported action inputs in `action/action.yml`: `config-file`, `api-key`, `dry-run`, `non-interactive`, `assignment`, `part`, `force-all`, `sync-deletes`, `auto-commit`, `verbose`.
+**v3 OAuth:**
+
+```yaml
+      - name: Push to Vocareum (v3 OAuth)
+        uses: ddlin/vocareum-publisher@v1
+        with:
+          auth: oauth
+          client-id: ${{ secrets.VOCAREUM_OAUTH_CLIENT_ID }}
+          client-secret: ${{ secrets.VOCAREUM_OAUTH_CLIENT_SECRET }}
+          non-interactive: true
+```
+
+Supported action inputs (`action/action.yml`): `config-file`, `api-key`, `auth`, `client-id`, `client-secret`, `dry-run`, `non-interactive`, `assignment`, `part`, `force-all`, `sync-deletes`, `auto-commit` (ignored in CI), `verbose`. Output: `success`. Requires Node.js (GitHub-hosted runners include it). `api-key` is optional — omit it when using `auth: oauth`.
 
 ## Directory Structure
 

@@ -5,14 +5,29 @@ branding:
   icon: 'upload-cloud'
   color: 'blue'
 
+# Composite action: installs the published `vocgit` CLI (pinned to this action's
+# version) and runs `vocgit push`. Inputs map to CLI flags / env vars. This
+# supports both v2 token auth (api-key) and v3 OAuth (auth + client-id/secret).
+# Requires Node.js (>=18) on the runner — GitHub-hosted runners include it.
+
 inputs:
   config-file:
     description: 'Path to vocareum.yaml'
     required: false
     default: 'vocareum.yaml'
   api-key:
-    description: 'Vocareum API key'
-    required: true
+    description: 'Vocareum v2 API key/token (token auth). Leave empty when using v3 OAuth.'
+    required: false
+  auth:
+    description: 'Auth mode: token (v2, default) or oauth (v3).'
+    required: false
+    default: 'token'
+  client-id:
+    description: 'v3 OAuth client id (use with auth: oauth). Pass via a secret.'
+    required: false
+  client-secret:
+    description: 'v3 OAuth client secret (use with auth: oauth). Pass via a secret.'
+    required: false
   dry-run:
     description: 'Preview changes without publishing'
     required: false
@@ -36,7 +51,7 @@ inputs:
     required: false
     default: 'false'
   auto-commit:
-    description: 'Auto-commit config updates (NOT RECOMMENDED for CI/CD)'
+    description: 'Ignored in CI/CD (auto-commit causes state drift); kept for compatibility.'
     required: false
     default: 'false'
   verbose:
@@ -46,14 +61,49 @@ inputs:
 
 outputs:
   success:
-    description: 'Whether publish succeeded (true/false)'
-  summary:
-    description: 'Publish summary text'
-  created-ids:
-    description: 'JSON of newly created entity IDs'
-  updated-ids:
-    description: 'JSON of updated entity IDs'
+    description: 'true when the push completed successfully (the job fails otherwise)'
+    value: ${{ steps.push.outputs.success }}
 
 runs:
-  using: 'node20'
-  main: 'dist/action/index.js'
+  using: 'composite'
+  steps:
+    - name: Install vocgit (version pinned to this action)
+      shell: bash
+      run: |
+        set -euo pipefail
+        VERSION="$(node -p "require('${GITHUB_ACTION_PATH}/package.json').version")"
+        echo "Installing vocareum-publisher@${VERSION}"
+        npm install -g "vocareum-publisher@${VERSION}"
+    - name: Publish to Vocareum
+      id: push
+      shell: bash
+      env:
+        CONFIG_FILE: ${{ inputs.config-file }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        NON_INTERACTIVE: ${{ inputs.non-interactive }}
+        ASSIGNMENT: ${{ inputs.assignment }}
+        PART: ${{ inputs.part }}
+        FORCE_ALL: ${{ inputs.force-all }}
+        SYNC_DELETES: ${{ inputs.sync-deletes }}
+        AUTO_COMMIT: ${{ inputs.auto-commit }}
+        VERBOSE: ${{ inputs.verbose }}
+        # Credentials passed as env (preferred over flags, which leak in process listings).
+        VOCAREUM_API_KEY: ${{ inputs.api-key }}
+        VOCAREUM_AUTH_MODE: ${{ inputs.auth }}
+        VOCAREUM_OAUTH_CLIENT_ID: ${{ inputs.client-id }}
+        VOCAREUM_OAUTH_CLIENT_SECRET: ${{ inputs.client-secret }}
+      run: |
+        set -euo pipefail
+        ARGS=(push --config "${CONFIG_FILE}")
+        [ "${NON_INTERACTIVE}" = "true" ] && ARGS+=(--non-interactive)
+        [ "${DRY_RUN}" = "true" ] && ARGS+=(--dry-run)
+        [ "${FORCE_ALL}" = "true" ] && ARGS+=(--force-all)
+        [ "${SYNC_DELETES}" = "true" ] && ARGS+=(--sync-deletes)
+        [ "${VERBOSE}" = "true" ] && ARGS+=(--verbose)
+        [ -n "${ASSIGNMENT}" ] && ARGS+=(--assignment "${ASSIGNMENT}")
+        [ -n "${PART}" ] && ARGS+=(--part "${PART}")
+        if [ "${AUTO_COMMIT}" = "true" ]; then
+          echo "::warning::auto-commit is ignored in CI/CD (causes state drift); commit vocareum.yaml locally instead."
+        fi
+        vocgit "${ARGS[@]}"
+        echo "success=true" >> "${GITHUB_OUTPUT}"
