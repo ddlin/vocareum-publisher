@@ -5,7 +5,7 @@
  */
 
 import { loadConfig } from '../core/config';
-import { loadDotEnvIfPresent, isCI, getCIProvider } from '../utils/env';
+import { loadDotEnvIfPresent, isCI, getCIProvider, getAuthModeEnv, getOAuthClientId, getOAuthClientSecret } from '../utils/env';
 import { getCurrentBranch, getCommitSha, hasUncommittedChanges, isGitRepo } from '../utils/git';
 import { logger } from '../utils/logger';
 import type { PublishHistory } from '../types/config';
@@ -66,9 +66,14 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
     const templateCount = templates.length + legacyTemplateIds.length;
 
     const lastPush = getLastPushEntry(config.publish_history);
-    const apiKeyConfigured =
-      (process.env.VOCAREUM_API_KEY !== undefined && process.env.VOCAREUM_API_KEY !== '') ||
-      (process.env.VOCAREUM_API_TOKEN !== undefined && process.env.VOCAREUM_API_TOKEN !== '');
+    // Report credentials for the selected auth mode: token (v2) checks the API
+    // key/token; oauth (v3) checks the client id + secret. Checking only the v2
+    // key would report an OAuth-configured shell as "missing".
+    const authMode = getAuthModeEnv() === 'oauth' ? 'oauth' : 'token';
+    const credentialsConfigured = authMode === 'oauth'
+      ? (getOAuthClientId() !== undefined && getOAuthClientSecret() !== undefined)
+      : ((process.env.VOCAREUM_API_KEY ?? process.env.VOCAREUM_API_TOKEN ?? '') !== '');
+    const credentialLabel = authMode === 'oauth' ? 'OAuth client credentials' : 'API key';
     const runtime = isCI() ? `CI (${getCIProvider() ?? 'unknown'})` : 'local';
 
     const insideRepo = await isGitRepo();
@@ -94,7 +99,7 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
     logger.plain('Current Vocareum Publisher status');
     logger.newline();
     logger.plain('Readiness');
-    logger.plain(`- API key: ${apiKeyConfigured ? 'configured' : 'missing'}`);
+    logger.plain(`- Auth (${authMode}): ${credentialLabel} ${credentialsConfigured ? 'configured' : 'missing'}`);
     logger.plain(`- Runtime: ${runtime}`);
 
     logger.newline();
