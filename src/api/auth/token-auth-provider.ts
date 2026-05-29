@@ -3,6 +3,9 @@ import { normalizeApiBaseUrl, assertBaseUrlForVersion } from '../client';
 
 export class TokenAuthProvider implements AuthProvider {
   readonly apiBaseUrl: string;
+  readonly unauthorizedHint =
+    'Your API token may be invalid or expired. ' +
+    'Generate a new token at: Profile > Settings > Personal Access Tokens';
   constructor(private readonly token: string, baseUrl = 'https://api.vocareum.com') {
     this.apiBaseUrl = normalizeApiBaseUrl(baseUrl);
     // Token auth must target the v2 host; reject a crossed base URL (e.g. the v3

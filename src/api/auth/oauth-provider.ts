@@ -38,6 +38,9 @@ function assertAllowedTokenUrl(tokenUrl: string): void {
 
 export class OAuthClientCredentialsProvider implements AuthProvider {
   readonly apiBaseUrl: string;
+  readonly unauthorizedHint =
+    'OAuth authentication failed. Verify VOCAREUM_OAUTH_CLIENT_ID / ' +
+    'VOCAREUM_OAUTH_CLIENT_SECRET and that the client is authorized for this org.';
   private readonly tokenUrl: string;
   private readonly clientId: string;
   private readonly clientSecret: string;

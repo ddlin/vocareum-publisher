@@ -347,8 +347,9 @@ export class VocareumClient {
       switch (status) {
         case 401:
           return new AuthenticationError(
-            message + '\n\nYour API token may be invalid or expired. ' +
-            'Generate a new token at: Profile > Settings > Personal Access Tokens'
+            message + '\n\n' + (this.authProvider.unauthorizedHint ??
+              'Your API token may be invalid or expired. ' +
+              'Generate a new token at: Profile > Settings > Personal Access Tokens')
           );
         case 403:
           return new ForbiddenError(message, resourceType);

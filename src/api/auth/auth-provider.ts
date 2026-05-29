@@ -10,6 +10,10 @@ export interface AuthProvider {
   readonly apiBaseUrl: string;
   /** Authorization header value, e.g. "Token x" or "Bearer y". May exchange/refresh lazily. */
   getAuthorizationHeader(): Promise<string>;
+  /** Hint appended to a 401 AuthenticationError, tailored to the credential
+   *  type (personal token vs OAuth client credentials). Optional — the client
+   *  falls back to a generic token-centric message when absent. */
+  readonly unauthorizedHint?: string;
   /** Invalidate cached credentials so the next getAuthorizationHeader() re-acquires.
    *  Optional — token auth has no refresh, so a 401 there is terminal. */
   refreshAfterUnauthorized?(): Promise<void>;

@@ -166,6 +166,17 @@ describe('VocareumClient 401 refresh-retry', () => {
     expect(provider.refreshed).toBe(0);
   });
 
+  it('uses the provider unauthorizedHint in the 401 message (OAuth wording)', async () => {
+    const provider = new FakeProvider();
+    (provider as { unauthorizedHint?: string }).unauthorizedHint =
+      'OAuth authentication failed. Verify VOCAREUM_OAUTH_CLIENT_ID / VOCAREUM_OAUTH_CLIENT_SECRET.';
+    (provider as Partial<FakeProvider>).refreshAfterUnauthorized = undefined; // 401 terminal
+    const client = new VocareumClient(provider as AuthProvider);
+    setAdapter(client, mockAdapter([{ status: 401 }]));
+    await expect(client.request({ method: 'GET', url: '/courses' }))
+      .rejects.toThrow(/VOCAREUM_OAUTH_CLIENT_ID/);
+  });
+
   it('retries a transient network error (ECONNRESET) then succeeds', async () => {
     const provider = new FakeProvider();
     const client = new VocareumClient(provider);
