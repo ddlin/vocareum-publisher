@@ -280,7 +280,7 @@ export function valuesEqual(a: unknown, b: unknown): boolean {
       return a.length === b.length && a.every((v, i) => valuesEqual(v, (b as unknown[])[i]));
     }
     if (Array.isArray(a) !== Array.isArray(b)) { return false; }
-    const aKeys = Object.keys(a as object).sort();
+    const aKeys = Object.keys(a).sort();
     const bKeys = Object.keys(b as object).sort();
     if (aKeys.length !== bKeys.length || !aKeys.every((k, i) => k === bKeys[i])) { return false; }
     return aKeys.every((k) => valuesEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));

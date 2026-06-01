@@ -70,8 +70,9 @@ export class OAuthClientCredentialsProvider implements AuthProvider {
     return `Bearer ${await this.getAccessToken()}`;
   }
 
-  async refreshAfterUnauthorized(): Promise<void> {
+  refreshAfterUnauthorized(): Promise<void> {
     this.cached = undefined;
+    return Promise.resolve();
   }
 
   private async getAccessToken(): Promise<string> {

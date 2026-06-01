@@ -43,8 +43,9 @@ export async function listAssignments(
 ): Promise<VocareumAssignmentResponse[]> {
   const allAssignments: VocareumAssignmentResponse[] = [];
   let page = 0;
+  let more = true;
 
-  while (true) {
+  while (more) {
     const response = await client.request<AssignmentsListResponse>({
       method: 'GET',
       url: `/courses/${courseId}/assignments`,
@@ -55,10 +56,7 @@ export async function listAssignments(
     allAssignments.push(...assignments);
 
     const totalRecords = Number(response.total_records ?? 0);
-    if (allAssignments.length >= totalRecords || assignments.length === 0) {
-      break;
-    }
-
+    more = allAssignments.length < totalRecords && assignments.length > 0;
     page += 1;
   }
 

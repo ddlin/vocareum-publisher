@@ -231,8 +231,8 @@ export function sanitizeForLog(value: unknown, seen: WeakSet<object> = new WeakS
   if (typeof value === 'string') { return value.replace(REDACT_FORM_PARAM, '$1[REDACTED]'); }
   if (Array.isArray(value)) { return value.map((v) => sanitizeForLog(v, seen)); }
   if (value && typeof value === 'object') {
-    if (seen.has(value as object)) { return '[Circular]'; }
-    seen.add(value as object);
+    if (seen.has(value)) { return '[Circular]'; }
+    seen.add(value);
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       out[k] = REDACT_KEY.test(k) ? '[REDACTED]' : sanitizeForLog(v, seen);

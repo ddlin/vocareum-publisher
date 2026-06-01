@@ -12,7 +12,7 @@ export class TokenAuthProvider implements AuthProvider {
     // host in api_base_url) so a personal Token is never sent to v3.
     assertBaseUrlForVersion(this.apiBaseUrl, 'v2');
   }
-  async getAuthorizationHeader(): Promise<string> {
-    return `Token ${this.token}`;
+  getAuthorizationHeader(): Promise<string> {
+    return Promise.resolve(`Token ${this.token}`);
   }
 }
