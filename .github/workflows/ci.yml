@@ -28,6 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install js-yaml (used to parse action.yml below)
+        run: npm install --no-save --no-fund --no-audit js-yaml
       - name: action.yml exists at repository root
         run: |
           set -euo pipefail
