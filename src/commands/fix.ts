@@ -5,13 +5,19 @@
  */
 
 
+import * as path from 'path';
 import { loadConfig } from '../core/config';
+import { assertConfinedToWorkspace } from '../core/local-scan';
 import { validateStructure } from '../core/validator';
+import { resolveWorkspaceContext } from '../core/workspace';
 import { ensureDirectory } from '../utils/files';
 import { logger } from '../utils/logger';
 import { promptConfirm } from '../utils/prompts';
 
 export interface FixOptions {
+  config?: string;
+  /** Explicit workspace root (required when --config is not directly inside cwd) */
+  root?: string;
   nonInteractive?: boolean;
 }
 
@@ -19,15 +25,18 @@ export interface FixOptions {
  * Execute the fix command
  */
 export async function fixCommand(options: FixOptions): Promise<void> {
-  const configPath = 'vocareum.yaml';
+  const { configPath, workspaceRoot } = resolveWorkspaceContext({
+    config: options.config,
+    root: options.root,
+  });
 
   try {
     const config = await loadConfig(configPath);
     logger.info('Analyzing structure...');
 
-    // We pass config and basePath. 
+    // We pass config and basePath.
     // validateStructure(config, basePath) - ensure validator.ts signature matches
-    const result = await validateStructure(config, process.cwd());
+    const result = await validateStructure(config, workspaceRoot);
 
     if (result.valid) {
       logger.success('No issues found to fix.');
@@ -54,14 +63,19 @@ export async function fixCommand(options: FixOptions): Promise<void> {
       // The `path` in error is relative path.
 
       const folderPath = error.path;
+      // Validator paths are workspace-relative — create under the workspace
+      // root, and never outside it (defense in depth: the validator already
+      // refuses to classify escaping paths as missing_folder).
+      await assertConfinedToWorkspace(workspaceRoot, folderPath);
+      const folderAbs = path.resolve(workspaceRoot, folderPath);
 
       if (options.nonInteractive === true) {
         logger.info(`Creating ${folderPath}...`);
-        await ensureDirectory(folderPath);
+        await ensureDirectory(folderAbs);
       } else {
         const create = await promptConfirm(`Create missing folder "${folderPath}"?`);
         if (create) {
-          await ensureDirectory(folderPath);
+          await ensureDirectory(folderAbs);
           logger.success(`Created ${folderPath}`);
         }
       }

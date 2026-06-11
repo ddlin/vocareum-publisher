@@ -110,6 +110,8 @@ import { fixCommand } from './commands/fix';
 program
   .command('validate')
   .description('Validate vocareum.yaml configuration and local folder structure')
+  .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
+  .option('--root <path>', 'Workspace root that assignment paths resolve against (required when --config is not directly inside the current directory)')
   .option('--strict', 'Treat warnings as errors (exit code 1)')
   .option('--vocareum', 'Also validate against Vocareum API (checks IDs exist)')
   .addHelpText('after', `
@@ -146,6 +148,8 @@ Examples:
 program
   .command('fix')
   .description('Interactively detect and fix configuration or structure issues')
+  .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
+  .option('--root <path>', 'Workspace root that assignment paths resolve against (required when --config is not directly inside the current directory)')
   .option('--non-interactive', 'Skip all prompts (report issues only)')
   .addHelpText('after', `
 Description:
@@ -179,6 +183,7 @@ const pullCmd = program
   .command('pull')
   .description('Sync assignments from Vocareum: import orphans, detect drift, handle stale entries')
   .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
+  .option('--root <path>', 'Workspace root that assignment paths resolve against (required when --config is not directly inside the current directory)')
   .option('--non-interactive', 'Skip all prompts (no changes made)')
   .option('--batch', 'Apply sensible defaults without prompting (import orphans, pull drift, skip stale)')
   .option('--skip-content', 'Reuse existing local content for orphan imports instead of re-downloading (recovers from failed pulls)')
@@ -237,7 +242,9 @@ program
   .command('status', { isDefault: true })
   .description('Show current local sync status and last push details')
   .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
+  .option('--root <path>', 'Workspace root that assignment paths resolve against (required when --config is not directly inside the current directory)')
   .option('--verbose', 'Show assignment-by-assignment details')
+  .option('--json', 'Emit a machine-readable JSON report (for tooling, e.g. the VS Code extension)')
   .addHelpText('after', `
 Description:
   Shows the current local state without changing anything.
@@ -249,10 +256,17 @@ Description:
     - Git branch/commit/dirty state
     - Environment details (CI/local, API key presence)
 
+  With --json, prints a versioned JSON document on stdout including
+  per-assignment/part/directory CONTENT sync status, computed with the
+  same content change detection vocgit push uses. Offline — no API
+  calls — so settings drift is not included: a "synced" assignment may
+  still receive settings updates on push.
+
 Examples:
   $ vocgit           # Default status view
   $ vocgit status
   $ vocgit status --verbose
+  $ vocgit status --json
 `)
   .action(async (options: StatusCommandOptions) => {
     try {
@@ -277,7 +291,8 @@ const pushCmd = program
   .option('--auto-commit', 'Auto-commit vocareum.yaml changes (local use only)')
   .option('--non-interactive', 'Skip confirmation prompts')
   .option('--verbose', 'Show detailed logging')
-  .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml');
+  .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
+  .option('--root <path>', 'Workspace root that assignment paths resolve against (required when --config is not directly inside the current directory)');
 addAuthOptions(pushCmd);
 pushCmd
   .addHelpText('after', `

@@ -216,7 +216,27 @@ When settings sync is disabled for an assignment or part, vocgit skips both push
 ```bash
 vocgit                  # Same as: vocgit status
 vocgit status --verbose # Include per-assignment details
+vocgit status --json    # Machine-readable content sync status (for tooling)
 ```
+
+### Workspace Root (`--root`)
+
+Assignment and part paths in `vocareum.yaml` resolve against the **workspace
+root**. By default this is the current directory, and that only works when the
+config file sits directly inside it (the normal case — repo root, GitHub
+Action, VS Code extension).
+
+If you run vocgit from somewhere else, or keep the config in a subdirectory,
+you must say where the workspace root is — guessing it can corrupt sync state:
+
+```bash
+vocgit push --config ../course-repo/vocareum.yaml --root ../course-repo
+vocgit status --config configs/vocareum.yaml --root .   # nested config, cwd-relative paths
+```
+
+Without `--root` in those situations the command fails with an explanation
+rather than hashing the wrong directories. vocgit also refuses to read, upload,
+or delete anything outside the workspace root, including via symlinks.
 
 ### Push Options
 
@@ -365,7 +385,7 @@ jobs:
           non-interactive: true
 ```
 
-Supported action inputs (`action.yml`): `config-file`, `api-key`, `auth`, `client-id`, `client-secret`, `dry-run`, `non-interactive`, `assignment`, `part`, `force-all`, `sync-deletes`, `auto-commit` (ignored in CI), `verbose`. Output: `success`. Requires Node.js (GitHub-hosted runners include it). `api-key` is optional — omit it when using `auth: oauth`.
+Supported action inputs (`action.yml`): `config-file`, `root` (workspace root, default `.`), `api-key`, `auth`, `client-id`, `client-secret`, `dry-run`, `non-interactive`, `assignment`, `part`, `force-all`, `sync-deletes`, `auto-commit` (ignored in CI), `verbose`. Output: `success`. Requires Node.js (GitHub-hosted runners include it). `api-key` is optional — omit it when using `auth: oauth`.
 
 ## Directory Structure
 

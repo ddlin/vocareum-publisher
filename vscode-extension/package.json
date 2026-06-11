@@ -2,7 +2,7 @@
     "name": "vocgit",
     "displayName": "VocGit Studio",
     "description": "Integrated GUI and configuration schema for Vocareum Publisher (vocgit)",
-    "version": "1.0.2",
+    "version": "1.1.0",
     "engines": {
         "vscode": "^1.80.0"
     },
@@ -50,6 +50,12 @@
                     "scope": "machine",
                     "description": "Deprecated: use the \"VocGit: Set VOCAREUM_API_KEY\" command (stored in VS Code Secret Storage).",
                     "deprecationMessage": "Use the command \"VocGit: Set VOCAREUM_API_KEY\" instead. This setting remains for backward compatibility."
+                },
+                "vocgit.cliPath": {
+                    "type": "string",
+                    "default": "",
+                    "scope": "machine-overridable",
+                    "description": "Path to the vocgit CLI binary. Leave empty to use \"vocgit\" from PATH. Sync status badges run \"vocgit status --json\" (requires vocareum-publisher 1.2.0+)."
                 }
             }
         },

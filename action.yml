@@ -19,6 +19,10 @@ inputs:
     description: 'Path to vocareum.yaml'
     required: false
     default: 'vocareum.yaml'
+  root:
+    description: 'Workspace root that assignment paths resolve against. Defaults to the working directory, preserving prior behavior for nested config-file paths.'
+    required: false
+    default: '.'
   api-key:
     description: 'Vocareum v2 API key/token (token auth). Leave empty when using v3 OAuth.'
     required: false
@@ -88,6 +92,7 @@ runs:
       shell: bash
       env:
         CONFIG_FILE: ${{ inputs.config-file }}
+        WORKSPACE_ROOT: ${{ inputs.root }}
         DRY_RUN: ${{ inputs.dry-run }}
         NON_INTERACTIVE: ${{ inputs.non-interactive }}
         ASSIGNMENT: ${{ inputs.assignment }}
@@ -103,7 +108,9 @@ runs:
         VOCAREUM_OAUTH_CLIENT_SECRET: ${{ inputs.client-secret }}
       run: |
         set -euo pipefail
-        ARGS=(push --config "${CONFIG_FILE}")
+        # Always pass --root: a nested config-file (e.g. configs/vocareum.yaml)
+        # would otherwise trip the CLI's ambiguous-workspace-root failure.
+        ARGS=(push --config "${CONFIG_FILE}" --root "${WORKSPACE_ROOT}")
         [ "${NON_INTERACTIVE}" = "true" ] && ARGS+=(--non-interactive)
         [ "${DRY_RUN}" = "true" ] && ARGS+=(--dry-run)
         [ "${FORCE_ALL}" = "true" ] && ARGS+=(--force-all)

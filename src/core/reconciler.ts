@@ -4,9 +4,9 @@
  * Compare local configuration with Vocareum state to determine required actions.
  */
 
-import * as path from 'path';
-import type { Config, PublishHistory, DirectoryType, Part, Assignment } from '../types/config';
-import { normalizeSubmissionFilters, ELITE_DIRECTORIES, CONTAINER_DIRECTORIES, DEFAULT_PART_DIRECTORIES } from '../types/config';
+import type { Config, PublishHistory, Part, Assignment } from '../types/config';
+import { normalizeSubmissionFilters } from '../types/config';
+import { detectChangedDirectories, directoriesForPart, publishExcludePatterns } from './local-scan';
 import type { VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
 import type {
   ReconciliationPlan,
@@ -21,7 +21,6 @@ import { getCourse } from '../api/courses';
 import { listAssignments, getAssignment } from '../api/assignments';
 import { listParts, getPart } from '../api/parts';
 import { mapParts } from './mapper';
-import { calculateDirectoryHash } from '../utils/files';
 import { logger } from '../utils/logger';
 import {
   shouldSyncAssignmentSettings,
@@ -102,7 +101,7 @@ export async function reconcile(
   config: Config,
   client: VocareumClient,
   lastPublishHistory?: PublishHistory,
-  options: { forceAll?: boolean; onMissingId?: 'skip' | 'abort' } = {}
+  options: { forceAll?: boolean; onMissingId?: 'skip' | 'abort'; workspaceRoot?: string } = {}
 ): Promise<ReconciliationPlan> {
   logger.info('Fetching current state from Vocareum...');
 
@@ -235,23 +234,17 @@ export async function reconcile(
               hasAcceptedUnverifiedPartChange(configAssignment, configPart, lastPublishHistory);
           }
 
-          // Determine directories to sync based on course-level architecture
-          // Config-level part override takes precedence, then course architecture, then default
-          const archDirs = config.vocareum.architecture === 'elite' ? ELITE_DIRECTORIES
-            : config.vocareum.architecture === 'container' ? CONTAINER_DIRECTORIES
-            : DEFAULT_PART_DIRECTORIES;
-          const effectiveDirs = configPart.directories ?? archDirs;
+          const effectiveDirs = directoriesForPart(config, configPart);
 
-          // Check for content changes
-          // Use same exclude patterns as publisher for consistent hash comparison
-          const excludePatterns = ['.gitkeep', '**/.gitkeep', ...(config.publish_options?.exclude_patterns ?? [])];
+          const excludePatterns = publishExcludePatterns(config);
           const changedDirs = await detectChangedDirectories(
             configAssignment.path,
             configPart.path,
             effectiveDirs,
             lastPublishHistory,
             options.forceAll,
-            excludePatterns
+            excludePatterns,
+            options.workspaceRoot ?? process.cwd()
           );
 
           if (changedDirs.length > 0 || metadataChanged) {
@@ -286,12 +279,8 @@ export async function reconcile(
       }
     } else if (assignmentActionType === 'create') {
       // For creation, we mark all parts as needing creation/upload
-      // Use course-level architecture; fall back to full union
-      const createArchDirs = config.vocareum.architecture === 'elite' ? ELITE_DIRECTORIES
-        : config.vocareum.architecture === 'container' ? CONTAINER_DIRECTORIES
-        : DEFAULT_PART_DIRECTORIES;
       for (const part of configAssignment.parts) {
-        const createDirs = part.directories ?? createArchDirs;
+        const createDirs = directoriesForPart(config, part);
         partActions.push({
           type: 'create',
           part,
@@ -563,44 +552,6 @@ function detectPartSettingsChanged(
   }
 
   return false;
-}
-
-/**
- * Detect changed directories by comparing hashes
- *
- * @param excludePatterns - Patterns to exclude from hash calculation (must match publisher)
- */
-async function detectChangedDirectories(
-  assignmentPath: string,
-  partPath: string,
-  directories: DirectoryType[],
-  lastPublishHistory?: PublishHistory,
-  forceAll: boolean = false,
-  excludePatterns: string[] = []
-): Promise<DirectoryType[]> {
-  if (forceAll) {
-    return directories;
-  }
-
-  const changed: DirectoryType[] = [];
-
-  if (!lastPublishHistory?.content_state) {
-    return directories; // All changed if no history
-  }
-
-  for (const dir of directories) {
-    const key = path.join(assignmentPath, partPath, dir);
-
-    // Calculate hash with same exclude patterns as publisher to ensure consistency
-    const currentHash = await calculateDirectoryHash(key, excludePatterns);
-    const previousHash = lastPublishHistory.content_state[key];
-
-    if (currentHash !== previousHash) {
-      changed.push(dir);
-    }
-  }
-
-  return changed;
 }
 
 /**

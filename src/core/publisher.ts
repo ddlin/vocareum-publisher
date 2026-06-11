@@ -17,6 +17,7 @@ import type { HistorySettingChange, HistoryFileChange, AssignmentSettings } from
 import type { PublishResult, PublishOperationOptions } from '../types/state';
 import { VocareumClient } from '../api/client';
 import { reconcile, displayPlan } from './reconciler';
+import { assertConfinedToWorkspace } from './local-scan';
 import { copyAssignment, getAssignment, updateAssignment } from '../api/assignments';
 import { updateCourse } from '../api/courses';
 import { getPart, updatePart } from '../api/parts';
@@ -298,12 +299,16 @@ export async function publish(
       .filter((assignment) => assignment.parts.length > 0);
   }
 
+  // Workspace root: all assignment/part paths, git operations, and the
+  // confinement boundary resolve against this (never bare cwd assumptions).
+  const workspaceRoot = options.workspaceRoot ?? process.cwd();
+
   // 0. Get current git state for history
-  const commitSha = await getCommitSha().catch((err: unknown) => {
+  const commitSha = await getCommitSha(workspaceRoot).catch((err: unknown) => {
     logger.debug(`Could not get git commit SHA: ${err instanceof Error ? err.message : String(err)}`);
     return 'unknown';
   });
-  const userName = (await getGitUserName().catch((err: unknown) => {
+  const userName = (await getGitUserName(workspaceRoot).catch((err: unknown) => {
     logger.debug(`Could not get git user name: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   })) ?? 'unknown';
@@ -315,6 +320,7 @@ export async function publish(
   const plan = await reconcile(workingConfig, client, lastHistory, {
     forceAll: options.forceAll,
     onMissingId: options.onMissingId,
+    workspaceRoot,
   });
 
   if (assignmentFilters.length > 0 || partFilters.length > 0) {
@@ -853,7 +859,13 @@ export async function publish(
         }
         for (const dir of partAction.changedDirectories) {
           try {
-            const localDirPath = path.join(action.assignment.path, partAction.part.path, dir);
+            // State key stays workspace-relative; filesystem access resolves
+            // against the workspace root so cwd never changes semantics.
+            const dirKey = path.join(action.assignment.path, partAction.part.path, dir);
+            const localDirPath = path.resolve(workspaceRoot, dirKey);
+            // Config-supplied path: refuse reads outside the workspace
+            // (defense in depth alongside the detector and uploader checks).
+            await assertConfinedToWorkspace(workspaceRoot, localDirPath);
             const localFiles = await readLocalDirectory(
               localDirPath,
               ['.gitkeep', '**/.gitkeep', ...(config.publish_options?.exclude_patterns ?? [])]
@@ -863,12 +875,13 @@ export async function publish(
               workingConfig.vocareum.course_id,
               uploadAssignmentId,
               partId,
-              localDirPath, // Local path
+              localDirPath, // Local path (absolute)
               dir, // Directory type
               {
                 syncDeletes: options.syncDeletes,
                 excludePatterns: ['.gitkeep', '**/.gitkeep', ...(config.publish_options?.exclude_patterns ?? [])],
                 architecture: config.vocareum.architecture,
+                workspaceRoot,
               }
             );
 
@@ -888,8 +901,8 @@ export async function publish(
               }
             } else {
               // Only advance stored hash when this directory upload succeeded.
-              const key = path.join(action.assignment.path, partAction.part.path, dir);
-              result.contentState[key] = uploadRes.directoryHash;
+              // (dirKey is the workspace-relative state key, NOT the absolute fs path.)
+              result.contentState[dirKey] = uploadRes.directoryHash;
               partWasUpdated = true;
 
               for (const [relativePath, content] of Object.entries(localFiles)) {
@@ -995,7 +1008,8 @@ export async function publish(
     try {
       await commitChanges(
         `chore: update vocareum config [skip ci]`,
-        [configPath]
+        [path.resolve(workspaceRoot, configPath)],
+        workspaceRoot
       );
     } catch (error) {
       logger.warn(`Failed to auto-commit config changes: ${error instanceof Error ? error.message : String(error)}`);

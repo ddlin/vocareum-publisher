@@ -35,6 +35,17 @@ jobs:
           set -euo pipefail
           test -f action.yml
           node -e "const fs = require('fs'); const yaml = require('js-yaml'); if (yaml.load(fs.readFileSync('action.yml', 'utf8')).runs.using !== 'composite') process.exit(1)"
+      - name: Local CLI supports every flag the action passes
+        run: |
+          set -euo pipefail
+          npm run build
+          node dist/index.js push --help > push-help.txt
+          for flag in --config --root --non-interactive --dry-run --force-all --sync-deletes --verbose --assignment --part; do
+            if ! grep -q -- "${flag}" push-help.txt; then
+              echo "::error::Local CLI does not support '${flag}', but action.yml passes it."
+              exit 1
+            fi
+          done
       - name: Run the action's install step verbatim
         id: install-smoke
         run: |
@@ -52,6 +63,21 @@ jobs:
             GITHUB_ACTION_PATH="${GITHUB_WORKSPACE}" bash -euo pipefail -c "${SCRIPT}"
             echo "published=true" >> "${GITHUB_OUTPUT}"
           fi
+      - name: Installed CLI supports every flag the action passes
+        if: steps.install-smoke.outputs.published == 'true'
+        run: |
+          set -euo pipefail
+          # The composite action shells out with these flags. If the published
+          # CLI pinned by package.json predates one of them (e.g. --root), the
+          # action fails at flag parsing — and the expected-failure assertion
+          # below would mask that as success. Check flag support explicitly.
+          vocgit push --help > push-help.txt
+          for flag in --config --root --non-interactive --dry-run --force-all --sync-deletes --verbose --assignment --part; do
+            if ! grep -q -- "${flag}" push-help.txt; then
+              echo "::error::Published vocareum-publisher does not support '${flag}', but action.yml passes it. Publish the matching CLI version before tagging this action."
+              exit 1
+            fi
+          done
       - name: Resolve and execute the composite action
         if: steps.install-smoke.outputs.published == 'true'
         id: composite-smoke

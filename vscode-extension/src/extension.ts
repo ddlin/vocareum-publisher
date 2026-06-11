@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { VocGitTreeDataProvider } from './VocGitTreeDataProvider';
 import { VocGitActionsProvider } from './VocGitActionsProvider';
 import { buildVocGitCommand, extractAssignmentPath, extractOpenPath, extractVocareumLaunchIds, shellEscape } from './commandUtils';
+import { configureCliPath, configureStatusErrorHandler, invalidateSnapshotCache, StatusError } from './syncState';
 
 // Output channel for logging
 let outputChannel: vscode.OutputChannel;
@@ -157,12 +158,40 @@ async function getVocGitTerminal(
     return vocgitTerminal;
 }
 
+const STATUS_ERROR_MESSAGES: Record<StatusError['kind'], string> = {
+    'cli-not-found':
+        'vocgit CLI not found — sync status badges are unavailable. Install it with "npm install -g vocareum-publisher" or set the "vocgit.cliPath" setting.',
+    'cli-too-old':
+        'Your vocgit CLI does not support "status --json" — sync status badges are unavailable. Update with "npm install -g vocareum-publisher@latest" (requires 1.2.0 or newer).',
+    'bad-schema':
+        'vocgit produced a status report this extension does not understand. Update the VocGit Studio extension and the vocgit CLI to matching versions.',
+    'cli-failed':
+        'vocgit status failed — sync status badges may be stale. See the VocGit Studio output channel for details.',
+};
+
+const notifiedStatusErrorKinds = new Set<StatusError['kind']>();
+
+function handleStatusError(error: StatusError): void {
+    log(`vocgit status error (${error.kind}): ${error.detail ?? 'no detail'}`);
+    if (notifiedStatusErrorKinds.has(error.kind)) {
+        return;
+    }
+    notifiedStatusErrorKinds.add(error.kind);
+    void vscode.window.showWarningMessage(STATUS_ERROR_MESSAGES[error.kind]);
+}
+
 export function activate(context: vscode.ExtensionContext) {
     // Create output channel for debugging
     outputChannel = vscode.window.createOutputChannel('VocGit Studio');
     context.subscriptions.push(outputChannel);
 
     log('Extension activating...');
+
+    // Badges come from `vocgit status --json` — point syncState at the
+    // configured binary and surface fetch failures (once per kind).
+    configureCliPath(vscode.workspace.getConfiguration('vocgit').get<string>('cliPath'));
+    configureStatusErrorHandler(handleStatusError);
+    context.subscriptions.push(new vscode.Disposable(() => configureStatusErrorHandler(undefined)));
 
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     log(`Workspace folder: ${workspaceFolder || 'NONE'}`);
@@ -182,6 +211,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.registerTreeDataProvider('vocgit.yamlView', treeDataProvider);
 
     const refreshViews = () => {
+        invalidateSnapshotCache();
         treeDataProvider.refresh();
         actionsProvider.refresh();
     };
@@ -201,6 +231,18 @@ export function activate(context: vscode.ExtensionContext) {
     }));
 
     log('Views registered');
+
+    // A new CLI path means the cached snapshot may have come from a different
+    // binary — drop it and re-render so badges reflect the configured CLI.
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration((event) => {
+            if (event.affectsConfiguration('vocgit.cliPath')) {
+                configureCliPath(vscode.workspace.getConfiguration('vocgit').get<string>('cliPath'));
+                notifiedStatusErrorKinds.clear();
+                scheduleRefresh();
+            }
+        })
+    );
 
     // Watch for changes to vocareum.yaml to automatically refresh views
     const yamlWatcher = vscode.workspace.createFileSystemWatcher('**/vocareum.yaml');

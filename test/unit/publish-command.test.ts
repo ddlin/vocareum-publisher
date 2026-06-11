@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import * as path from 'path';
 import type { Config } from '../../src/types/config';
 import { publishCommand } from '../../src/commands/publish';
 import { UnknownFieldReporter } from '../../src/utils/unknown-field-reporter';
@@ -111,7 +112,9 @@ describe('publishCommand option wiring', () => {
       forceAll: true,
       onMissingId: 'abort',
       abortOnError: true,
-      configPath: 'custom.yaml',
+      // WorkspaceContext resolves the config path to an absolute path
+      configPath: path.resolve(process.cwd(), 'custom.yaml'),
+      workspaceRoot: process.cwd(),
     });
   });
 

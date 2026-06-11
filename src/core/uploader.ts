@@ -10,6 +10,7 @@ import type { UploadResult } from '../types/api';
 import { VocareumClient } from '../api/client';
 import { uploadContent, deleteFile, listFiles } from '../api/content';
 import { readDirectory as readLocalDirectory, calculateDirectoryHash } from '../utils/files';
+import { assertConfinedToWorkspace } from './local-scan';
 import { logger } from '../utils/logger';
 
 /**
@@ -33,6 +34,11 @@ export async function uploadDirectory(
   directoryType: DirectoryType,
   options: UploadOptions
 ): Promise<UploadResult> {
+  // localPath originates in vocareum.yaml — never read/upload outside the
+  // workspace (covers --force-all, which bypasses the change detector's check).
+  const workspaceRoot = options.workspaceRoot ?? process.cwd();
+  await assertConfinedToWorkspace(workspaceRoot, localPath);
+
   logger.debug(`Reading local directory: ${localPath}`);
 
   const files = await readLocalDirectory(localPath, options.excludePatterns);

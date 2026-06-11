@@ -4,49 +4,44 @@
  * Shows current local repository status for Vocareum sync.
  */
 
+import * as path from 'path';
 import { loadConfig } from '../core/config';
+import { scanLocalContent, latestHistoryEntry } from '../core/local-scan';
+import { resolveWorkspaceContext } from '../core/workspace';
 import { loadDotEnvIfPresent, isCI, getCIProvider, getAuthModeEnv, getOAuthClientId, getOAuthClientSecret } from '../utils/env';
 import { getCurrentBranch, getCommitSha, hasUncommittedChanges, isGitRepo } from '../utils/git';
 import { logger } from '../utils/logger';
-import type { PublishHistory } from '../types/config';
 
 export interface StatusCommandOptions {
   config?: string;
+  /** Explicit workspace root (required when --config is not directly inside cwd) */
+  root?: string;
   verbose?: boolean;
+  /** Emit a machine-readable JSON report on stdout (consumed by the VS Code extension). */
+  json?: boolean;
 }
+
+/**
+ * Version of the `status --json` schema. Bump when the shape changes so
+ * consumers (VS Code extension) can detect incompatible CLIs.
+ */
+const STATUS_JSON_SCHEMA_VERSION = 1;
 
 function hasNonEmptyId(value: string | null | undefined): boolean {
   return typeof value === 'string' && value.trim() !== '';
-}
-
-function getLastPushEntry(history: PublishHistory[] | undefined): PublishHistory | undefined {
-  if (history === undefined || history.length === 0) {
-    return undefined;
-  }
-
-  let latest = history[0];
-  let latestTime = Date.parse(latest.timestamp);
-
-  for (let i = 1; i < history.length; i += 1) {
-    const entry = history[i];
-    const entryTime = Date.parse(entry.timestamp);
-    if (!Number.isNaN(entryTime) && (Number.isNaN(latestTime) || entryTime > latestTime)) {
-      latest = entry;
-      latestTime = entryTime;
-    }
-  }
-
-  return latest;
 }
 
 /**
  * Execute the status command
  */
 export async function statusCommand(options: StatusCommandOptions): Promise<void> {
-  const configPath = options.config ?? 'vocareum.yaml';
+  const { configPath, workspaceRoot } = resolveWorkspaceContext({
+    config: options.config,
+    root: options.root,
+  });
 
   try {
-    loadDotEnvIfPresent();
+    loadDotEnvIfPresent(path.join(workspaceRoot, '.env'));
     const config = await loadConfig(configPath);
 
     const assignmentCount = config.assignments.length;
@@ -65,7 +60,9 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
     ];
     const templateCount = templates.length + legacyTemplateIds.length;
 
-    const lastPush = getLastPushEntry(config.publish_history);
+    // Same baseline the scanner and publisher use (publish_history[0]) so the
+    // report's last_push can never disagree with the scan it accompanies.
+    const lastPush = latestHistoryEntry(config);
     // Report credentials for the selected auth mode: token (v2) checks the API
     // key/token; oauth (v3) checks the client id + secret. Checking only the v2
     // key would report an OAuth-configured shell as "missing".
@@ -76,22 +73,53 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
     const credentialLabel = authMode === 'oauth' ? 'OAuth client credentials' : 'API key';
     const runtime = isCI() ? `CI (${getCIProvider() ?? 'unknown'})` : 'local';
 
-    const insideRepo = await isGitRepo();
+    const insideRepo = await isGitRepo(workspaceRoot);
     let branch = 'n/a';
     let commit = 'n/a';
     let dirty = false;
     if (insideRepo) {
       try {
-        branch = await getCurrentBranch();
+        branch = await getCurrentBranch(workspaceRoot);
       } catch {
         branch = 'unknown';
       }
       try {
-        commit = await getCommitSha();
+        commit = await getCommitSha(workspaceRoot);
       } catch {
         commit = 'none';
       }
-      dirty = await hasUncommittedChanges();
+      dirty = await hasUncommittedChanges(workspaceRoot);
+    }
+
+    if (options.json === true) {
+      const scan = await scanLocalContent(config, workspaceRoot);
+      const report = {
+        schema_version: STATUS_JSON_SCHEMA_VERSION,
+        // Statuses reflect CONTENT change detection only (the same engine push
+        // uses for uploads). Settings drift requires API calls and is NOT
+        // included: a 'synced' assignment may still get settings updates on push.
+        scope: 'content',
+        generated_at: new Date().toISOString(),
+        config_path: configPath,
+        course: {
+          org_id: config.vocareum.org_id,
+          course_id: config.vocareum.course_id,
+        },
+        auth: { mode: authMode, configured: credentialsConfigured },
+        runtime,
+        git: insideRepo ? { repo: true, branch, commit, dirty } : { repo: false },
+        last_push: lastPush === undefined ? null : {
+          timestamp: lastPush.timestamp,
+          status: lastPush.status ?? 'success',
+          published_by: lastPush.published_by,
+          commit_sha: lastPush.commit_sha,
+        },
+        assignments: scan.assignments,
+        summary: scan.summary,
+      };
+      // Pure JSON on stdout — consumers parse this; human output goes nowhere else.
+      process.stdout.write(JSON.stringify(report) + '\n');
+      return;
     }
 
     const gitStatus = insideRepo ? `repo on ${branch} @ ${commit}${dirty ? ' (dirty)' : ''}` : 'not a git repository';

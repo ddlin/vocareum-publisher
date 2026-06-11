@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-11
+
+### Added
+- `vocgit status --json`: versioned machine-readable report (schema_version 1) with
+  per-assignment/part/directory CONTENT sync status, computed with the same change
+  detection push uses. Offline — settings drift is not included. Consumed by the
+  VS Code extension for sidebar badges.
+- `--root <path>` option on `status`, `push`, `pull`, `validate`, and `fix`: the
+  workspace root that assignment/part paths resolve against.
+
+### Changed
+- **Workspace root resolution (migration note).** Commands now resolve a workspace
+  root explicitly instead of silently using the current directory:
+  - Running from the repository root (the config next to you): **no change**.
+    The VS Code extension is unaffected. The GitHub Action gained a `root`
+    input defaulting to `.` and always passes it, so Action users — including
+    those with a nested `config-file` — keep their previous path semantics.
+  - `vocgit --config ../repo/vocareum.yaml` from another directory now **fails**
+    with an actionable error until you add `--root ../repo`. Previously this
+    silently recorded wrong state (every directory hashed as empty) and, with
+    `--sync-deletes`, could wipe remote content.
+  - A config stored below the root (e.g. `configs/vocareum.yaml`) requires
+    `--root .` to preserve the previous cwd-relative path semantics.
+  - Git operations, `.env` loading, and auto-commit now run against the
+    workspace root rather than the process cwd.
+
+### Security
+- Workspace confinement: assignment/part paths from `vocareum.yaml` (and the
+  directories under them, including symlinks) can no longer cause reads,
+  uploads, writes, or deletions outside the workspace root. Enforced in the
+  validator/fixer, change detector, uploader, publisher, pull drift
+  detection/apply, and the status scanner; `status --json` reports escaping
+  paths as `error` statuses.
+  Syncing files outside the workspace was never supported and is contrary to
+  the Git-source-of-truth model.
+
 ## [1.1.1] - 2026-06-11
 
 ### Fixed

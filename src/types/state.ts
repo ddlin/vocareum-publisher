@@ -227,6 +227,8 @@ export interface PublishOperationOptions {
   onMissingId?: 'skip' | 'abort';
   abortOnError?: boolean;
   configPath?: string;
+  /** Absolute directory assignment/part paths resolve against (defaults to cwd) */
+  workspaceRoot?: string;
   assignment?: string;
   part?: string;
   forceAll?: boolean;
@@ -241,6 +243,8 @@ export interface UploadOptions {
   forceAll?: boolean;
   syncDeletes?: boolean;
   concurrency?: number;
+  /** Absolute confinement boundary for local reads (defaults to cwd) */
+  workspaceRoot?: string;
   /** Course workspace architecture — determines API path prefix for file listing */
   architecture?: 'elite' | 'container';
   onProgress?: (progress: UploadProgress) => void;

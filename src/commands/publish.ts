@@ -5,6 +5,8 @@
  */
 
 import { loadConfig, withConfigLock } from '../core/config';
+import { resolveWorkspaceContext, type WorkspaceContext } from '../core/workspace';
+import * as path from 'path';
 import { publish } from '../core/publisher';
 import { VocareumClient } from '../api/client';
 import { resolveAuthProvider } from '../api/auth/cli-auth-options';
@@ -15,6 +17,8 @@ import type { PublishOperationOptions } from '../types/state';
 
 export interface PublishCommandOptions extends PublishOperationOptions {
   config?: string;
+  /** Explicit workspace root (required when --config is not directly inside cwd) */
+  root?: string;
   dryRun?: boolean;
   verbose?: boolean;
   auth?: string;
@@ -26,20 +30,21 @@ export interface PublishCommandOptions extends PublishOperationOptions {
  * Execute the publish command
  */
 export async function publishCommand(options: PublishCommandOptions): Promise<void> {
-  const configPath = options.config ?? 'vocareum.yaml';
+  const ctx = resolveWorkspaceContext({ config: options.config, root: options.root });
   // Serialize runs against the same config: concurrent publishes can corrupt
   // vocareum.yaml (read-modify-write races) or create duplicate assignments.
-  await withConfigLock(configPath, () => publishCommandLocked(configPath, options));
+  await withConfigLock(ctx.configPath, () => publishCommandLocked(ctx, options));
 }
 
 async function publishCommandLocked(
-  configPath: string,
+  ctx: WorkspaceContext,
   options: PublishCommandOptions
 ): Promise<void> {
+  const { configPath, workspaceRoot } = ctx;
   const reporter = new UnknownFieldReporter(logger);
 
   try {
-    loadDotEnvIfPresent();
+    loadDotEnvIfPresent(path.join(workspaceRoot, '.env'));
     const config = await loadConfig(configPath);
     const client = new VocareumClient(resolveAuthProvider(options, config.vocareum.api_base_url));
 
@@ -62,6 +67,7 @@ async function publishCommandLocked(
       onMissingId: options.onMissingId ?? config.publish_options?.on_missing_id ?? 'skip',
       abortOnError: options.abortOnError ?? config.publish_options?.abort_on_error ?? false,
       configPath,
+      workspaceRoot,
       assignment: options.assignment,
       part: options.part,
       forceAll: options.forceAll ?? false,

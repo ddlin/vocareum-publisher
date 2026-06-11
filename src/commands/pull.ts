@@ -7,6 +7,8 @@
 
 import * as path from 'path';
 import { loadConfig, updateConfig, withConfigLock } from '../core/config';
+import { assertConfinedToWorkspace } from '../core/local-scan';
+import { resolveWorkspaceContext, type WorkspaceContext } from '../core/workspace';
 import { reconcile } from '../core/reconciler';
 import { VocareumClient } from '../api/client';
 import { resolveAuthProvider } from '../api/auth/cli-auth-options';
@@ -42,6 +44,8 @@ import {
 
 export interface PullOptions {
   config?: string;
+  /** Explicit workspace root (required when --config is not directly inside cwd) */
+  root?: string;
   nonInteractive?: boolean;
   /** Batch mode: apply sensible defaults without prompting (import orphans, pull drift, skip stale) */
   batch?: boolean;
@@ -567,7 +571,8 @@ async function detectSettingsDrift(
 async function detectContentDrift(
   config: { assignments: Assignment[]; vocareum: { course_id: string; excluded_assignments?: string[]; architecture?: 'elite' | 'container' } },
   client: VocareumClient,
-  skipAssignmentIds: Set<string>
+  skipAssignmentIds: Set<string>,
+  workspaceRoot: string
 ): Promise<AssignmentContentDrift[]> {
   const driftList: AssignmentContentDrift[] = [];
   const excludedIds = new Set(config.vocareum.excluded_assignments ?? []);
@@ -607,11 +612,17 @@ async function detectContentDrift(
           ? assignment.path
           : path.join(assignment.path, configPart.path);
 
+        // Config-supplied path: drift comparison reads (and batch mode later
+        // deletes/writes) under this base — never allow it to escape the
+        // workspace. Throws into the per-assignment catch (skip + warn).
+        await assertConfinedToWorkspace(workspaceRoot, localBasePath);
+        const localBaseAbs = path.resolve(workspaceRoot, localBasePath);
+
         // Compare remote files with local files
         for (const [remotePath, remoteContent] of Object.entries(remoteFiles)) {
           // Validate path to prevent traversal attacks from malicious remote paths
-          validatePath(localBasePath, remotePath);
-          const localPath = path.join(localBasePath, remotePath);
+          validatePath(localBaseAbs, remotePath);
+          const localPath = path.join(localBaseAbs, remotePath);
 
           if (await pathExists(localPath)) {
             // File exists locally - check if content differs
@@ -633,7 +644,7 @@ async function detectContentDrift(
         // Check for files that exist locally but not remotely (deleted on remote)
         const directories = downloadPlan.directories;
         for (const dir of directories) {
-          const localDirPath = path.join(localBasePath, dir);
+          const localDirPath = path.join(localBaseAbs, dir);
           if (!await pathExists(localDirPath)) { continue; }
 
           const fs = await import('fs/promises');
@@ -700,11 +711,15 @@ async function importAssignment(
   orphan: OrphanedEntity,
   localPath: string,
   verbose: boolean,
-  architecture?: 'elite' | 'container',
-  skipContent = false,
-  reporter?: UnknownFieldReporter
+  architecture: 'elite' | 'container' | undefined,
+  skipContent: boolean,
+  reporter: UnknownFieldReporter | undefined,
+  workspaceRoot: string
 ): Promise<ImportResult> {
   const assignmentId = orphan.id;
+  // localPath is the workspace-relative directory recorded in the config;
+  // all filesystem access resolves against the workspace root.
+  const localAbs = path.resolve(workspaceRoot, localPath);
 
   // Get full assignment details including settings
   const fullAssignment = await getAssignment(client, courseId, assignmentId);
@@ -737,7 +752,7 @@ async function importAssignment(
 
     // Prefer the part's customer-facing name; fall back to part{N} when missing/colliding
     const partPath = resolvePartPath(part.name, i, parts.length, takenPartPaths);
-    const partDir = partPath === '.' ? localPath : path.join(localPath, partPath);
+    const partDir = partPath === '.' ? localAbs : path.join(localAbs, partPath);
 
     // Prefer existing on-disk content when --skip-content is set and it's present
     let files: FileMap = {};
@@ -768,11 +783,11 @@ async function importAssignment(
 
     // Write files only when they came from the network — existing files are already in place
     if (fileCount > 0 && !usedExistingContent) {
-      await writeFilesToDirectory(localPath, partPath, files, verbose);
+      await writeFilesToDirectory(localAbs, partPath, files, verbose);
     }
 
     // Always create the full directory structure (including empty directories with .gitkeep)
-    await ensurePartDirectories(localPath, partPath, directories, verbose);
+    await ensurePartDirectories(localAbs, partPath, directories, verbose);
 
     // Create part config entry with settings
     const configPart: Part = {
@@ -815,14 +830,13 @@ async function importAssignment(
     const directories = configPart.directories ?? DEFAULT_PART_DIRECTORIES;
 
     for (const dir of directories) {
-      // Build the directory path and state key to match reconciler format
-      const dirPath = partPath === '.'
-        ? path.join(localPath, dir)
-        : path.join(localPath, partPath, dir);
-
+      // State key stays workspace-relative (must match reconciler format);
+      // hashing reads the absolute path under the workspace root.
       const stateKey = partPath === '.'
         ? path.join(localPath, dir)
         : path.join(localPath, partPath, dir);
+
+      const dirPath = path.resolve(workspaceRoot, stateKey);
 
       try {
         const hash = await calculateDirectoryHash(dirPath, excludePatterns);
@@ -952,13 +966,14 @@ async function writeFilesToDirectory(
  * Execute the pull command
  */
 export async function pullCommand(options: PullOptions): Promise<void> {
-  const configPath = options.config ?? 'vocareum.yaml';
+  const ctx = resolveWorkspaceContext({ config: options.config, root: options.root });
   // Serialize runs against the same config: concurrent pulls/publishes can
   // corrupt vocareum.yaml via interleaved read-modify-write cycles.
-  await withConfigLock(configPath, () => pullCommandLocked(configPath, options));
+  await withConfigLock(ctx.configPath, () => pullCommandLocked(ctx, options));
 }
 
-async function pullCommandLocked(configPath: string, options: PullOptions): Promise<void> {
+async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): Promise<void> {
+  const { configPath, workspaceRoot } = ctx;
   const batch = options.batch ?? false;
   const nonInteractive = !batch && (options.nonInteractive ?? isCI());
   const verbose = options.verbose ?? false;
@@ -966,7 +981,7 @@ async function pullCommandLocked(configPath: string, options: PullOptions): Prom
   const reporter = new UnknownFieldReporter(logger);
 
   try {
-    loadDotEnvIfPresent();
+    loadDotEnvIfPresent(path.join(workspaceRoot, '.env'));
     const config = await loadConfig(configPath);
 
     const client = new VocareumClient(resolveAuthProvider(options, config.vocareum.api_base_url));
@@ -974,14 +989,14 @@ async function pullCommandLocked(configPath: string, options: PullOptions): Prom
     logger.info('Scanning for assignment sync issues...');
 
     // Run reconciliation to find orphans and stale assignments
-    const plan = await reconcile(config, client);
+    const plan = await reconcile(config, client, undefined, { workspaceRoot });
 
     // Detect settings drift (skip stale assignments that are already identified as deleted)
     const staleAssignmentIds = new Set(plan.staleInConfig.map(s => s.assignment_id));
     const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds, reporter);
 
     // Detect content drift (files changed on Vocareum)
-    const contentDrift = await detectContentDrift(config, client, staleAssignmentIds);
+    const contentDrift = await detectContentDrift(config, client, staleAssignmentIds, workspaceRoot);
 
     const hasOrphans = plan.orphanedInVocareum.length > 0;
     const hasStale = plan.staleInConfig.length > 0;
@@ -1051,13 +1066,13 @@ async function pullCommandLocked(configPath: string, options: PullOptions): Prom
           // With --skip-content, prefer an existing (non-empty) sibling dir from a
           // prior failed pull over allocating a fresh `-N` suffix.
           const reuseName = skipContent
-            ? await findExistingImportTarget('.', defaultSlug)
+            ? await findExistingImportTarget(workspaceRoot, defaultSlug)
             : null;
-          const suggestedName = reuseName ?? await getUniqueDirectoryName('.', defaultSlug);
+          const suggestedName = reuseName ?? await getUniqueDirectoryName(workspaceRoot, defaultSlug);
 
           const finalDirName = batch || reuseName !== null
             ? suggestedName
-            : await getUniqueDirectoryName('.', (await prompt('Local directory name:', suggestedName)) || suggestedName);
+            : await getUniqueDirectoryName(workspaceRoot, (await prompt('Local directory name:', suggestedName)) || suggestedName);
 
           try {
             const { assignment, contentState } = await importAssignment(
@@ -1068,7 +1083,8 @@ async function pullCommandLocked(configPath: string, options: PullOptions): Prom
               verbose,
               config.vocareum.architecture,
               skipContent,
-              reporter
+              reporter,
+              workspaceRoot
             );
 
             newAssignments.push(assignment);
@@ -1308,13 +1324,23 @@ async function pullCommandLocked(configPath: string, options: PullOptions): Prom
               ? drift.assignmentPath
               : path.join(drift.assignmentPath, partDrift.partPath);
 
+            // Config-supplied path: this block writes and DELETES local files
+            // under it — refuse anything that escapes the workspace.
+            await assertConfinedToWorkspace(workspaceRoot, localBasePath);
+            const localBaseAbs = path.resolve(workspaceRoot, localBasePath);
+
             // Write the remote files
-            await writeFilesToDirectory(drift.assignmentPath, partDrift.partPath, partDrift.remoteFiles, verbose);
+            await writeFilesToDirectory(
+              path.resolve(workspaceRoot, drift.assignmentPath),
+              partDrift.partPath,
+              partDrift.remoteFiles,
+              verbose
+            );
 
             // Handle deleted files (files that exist locally but not remotely)
             for (const fileDiff of partDrift.fileDiffs) {
               if (fileDiff.status === 'deleted') {
-                const localFilePath = path.join(localBasePath, fileDiff.filePath);
+                const localFilePath = path.join(localBaseAbs, fileDiff.filePath);
                 try {
                   const fs = await import('fs/promises');
                   await fs.unlink(localFilePath);
@@ -1336,8 +1362,9 @@ async function pullCommandLocked(configPath: string, options: PullOptions): Prom
             }
 
             for (const dir of directories) {
-              const dirPath = path.join(localBasePath, dir);
+              // State key stays workspace-relative; hashing reads the absolute path.
               const stateKey = path.join(localBasePath, dir);
+              const dirPath = path.join(localBaseAbs, dir);
               try {
                 const hash = await calculateDirectoryHash(dirPath, excludePatterns);
                 importedContentState[stateKey] = hash;
@@ -1371,8 +1398,10 @@ async function pullCommandLocked(configPath: string, options: PullOptions): Prom
     // CRITICAL: Merge with previous content_state to preserve hashes for existing assignments
     let newPublishHistory: PublishHistory[] | undefined;
     if (Object.keys(importedContentState).length > 0) {
-      const commitSha = await getCommitSha().catch(() => 'unknown');
-      const gitUserName = await getGitUserName().catch(() => null);
+      // Git metadata must come from the workspace's repository, not whatever
+      // repository the process happens to be running in (--root from a foreign cwd).
+      const commitSha = await getCommitSha(workspaceRoot).catch(() => 'unknown');
+      const gitUserName = await getGitUserName(workspaceRoot).catch(() => null);
       const publishedBy = gitUserName ?? 'pull-command';
 
       // Merge previous content_state with newly imported state

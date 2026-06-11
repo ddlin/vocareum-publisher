@@ -8,6 +8,7 @@ import * as path from 'path';
 import type { Config } from '../types/config';
 import type { ValidationResult } from '../types/state';
 import { getDirectories, pathExists } from '../utils/files';
+import { directoriesForPart, isConfinedToWorkspace } from './local-scan';
 import { logger } from '../utils/logger';
 
 /**
@@ -29,6 +30,20 @@ export async function validateStructure(
 
   // 1. Check each YAML assignment has corresponding folder
   for (const assignment of config.assignments) {
+    // Confinement comes before existence: escaping paths (../, absolute,
+    // symlinks out of the workspace) must NEVER be reported as missing_folder,
+    // or `vocgit fix` would create directories outside the workspace.
+    if (!await isConfinedToWorkspace(basePath, assignment.path)) {
+      result.errors.push({
+        type: 'invalid_structure',
+        path: assignment.path,
+        message: `Assignment "${assignment.name}" path "${assignment.path}" escapes the workspace root`,
+        fix: 'Correct the path in vocareum.yaml — paths must stay inside the workspace'
+      });
+      result.valid = false;
+      continue;
+    }
+
     const assignmentPath = path.join(basePath, assignment.path);
 
     if (!await pathExists(assignmentPath)) {
@@ -44,6 +59,17 @@ export async function validateStructure(
 
     // Check each part folder
     for (const part of assignment.parts) {
+      if (!await isConfinedToWorkspace(basePath, path.join(assignment.path, part.path))) {
+        result.errors.push({
+          type: 'invalid_structure',
+          path: `${assignment.path}/${part.path}`,
+          message: `Part "${part.name ?? part.path}" path escapes the workspace root`,
+          fix: 'Correct the path in vocareum.yaml — paths must stay inside the workspace'
+        });
+        result.valid = false;
+        continue;
+      }
+
       const partPath = path.join(assignmentPath, part.path);
       if (!await pathExists(partPath)) {
         result.errors.push({
@@ -56,14 +82,28 @@ export async function validateStructure(
         continue;
       }
 
-      // Check required directories (if specified)
-      if (part.directories) {
-        for (const dir of part.directories) {
+      // Confinement applies to every directory push would inspect, including
+      // architecture/default directories that are not explicitly listed.
+      for (const dir of directoriesForPart(config, part)) {
+        const relativeDirPath = path.join(assignment.path, part.path, dir);
+        if (!await isConfinedToWorkspace(basePath, relativeDirPath)) {
+          result.errors.push({
+            type: 'invalid_structure',
+            path: relativeDirPath,
+            message: `Content directory "${dir}" path escapes the workspace root`,
+            fix: 'Replace the symlink or correct the path so it stays inside the workspace'
+          });
+          result.valid = false;
+          continue;
+        }
+
+        // Only explicitly configured directories are required to exist.
+        if (part.directories !== undefined) {
           const dirPath = path.join(partPath, dir);
           if (!await pathExists(dirPath)) {
             result.errors.push({
               type: 'invalid_structure',
-              path: `${assignment.path}/${part.path}/${dir}`,
+              path: relativeDirPath,
               message: `Required directory "${dir}" not found in part ${part.path}`,
               fix: `Create directory: mkdir -p ${assignment.path}/${part.path}/${dir}`
             });

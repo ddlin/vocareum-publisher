@@ -65,12 +65,12 @@ describe('uploadDirectory', () => {
     const result = await uploadDirectory(
       mockClient,
       'c1', 'a1', 'p1',
-      '/path/to/startercode',
+      'lab1/part1/startercode',
       'startercode',
       {}
     );
 
-    expect(mockReadDirectory).toHaveBeenCalledWith('/path/to/startercode', undefined);
+    expect(mockReadDirectory).toHaveBeenCalledWith('lab1/part1/startercode', undefined);
     expect(mockUploadContent).toHaveBeenCalledWith(
       mockClient, 'c1', 'a1', 'p1', 'startercode',
       { 'main.py': Buffer.from('print("hello")'), 'utils.py': Buffer.from('def util(): pass') }
@@ -91,13 +91,13 @@ describe('uploadDirectory', () => {
     await uploadDirectory(
       mockClient,
       'c1', 'a1', 'p1',
-      '/path/to/scripts',
+      'lab1/part1/scripts',
       'scripts',
       { excludePatterns: ['*.pyc', '__pycache__/**'] }
     );
 
-    expect(mockReadDirectory).toHaveBeenCalledWith('/path/to/scripts', ['*.pyc', '__pycache__/**']);
-    expect(mockCalculateDirectoryHash).toHaveBeenCalledWith('/path/to/scripts', ['*.pyc', '__pycache__/**']);
+    expect(mockReadDirectory).toHaveBeenCalledWith('lab1/part1/scripts', ['*.pyc', '__pycache__/**']);
+    expect(mockCalculateDirectoryHash).toHaveBeenCalledWith('lab1/part1/scripts', ['*.pyc', '__pycache__/**']);
   });
 
   it('should skip upload when directory is empty', async () => {
@@ -106,7 +106,7 @@ describe('uploadDirectory', () => {
     const result = await uploadDirectory(
       mockClient,
       'c1', 'a1', 'p1',
-      '/path/to/empty',
+      'lab1/part1/empty',
       'data',
       {}
     );
@@ -129,7 +129,7 @@ describe('uploadDirectory', () => {
     const result = await uploadDirectory(
       mockClient,
       'c1', 'a1', 'p1',
-      '/path/to/docs',
+      'lab1/part1/docs',
       'docs',
       {}
     );
@@ -151,7 +151,7 @@ describe('uploadDirectory', () => {
     const result = await uploadDirectory(
       mockClient,
       'c1', 'a1', 'p1',
-      '/path/to/startercode',
+      'lab1/part1/startercode',
       'startercode',
       {}
     );
@@ -181,7 +181,7 @@ describe('syncDirectory', () => {
     const result = await syncDirectory(
       mockClient,
       'c1', 'a1', 'p1',
-      '/path/to/startercode',
+      'lab1/part1/startercode',
       'startercode',
       { syncDeletes: false }
     );
@@ -216,7 +216,7 @@ describe('syncDirectory', () => {
     const result = await syncDirectory(
       mockClient,
       'c1', 'a1', 'p1',
-      '/path/to/startercode',
+      'lab1/part1/startercode',
       'startercode',
       { syncDeletes: true }
     );
@@ -244,7 +244,7 @@ describe('syncDirectory', () => {
     const result = await syncDirectory(
       mockClient,
       'c1', 'a1', 'p1',
-      '/path/to/scripts',
+      'lab1/part1/scripts',
       'scripts',
       { syncDeletes: true }
     );
@@ -276,7 +276,7 @@ describe('syncDirectory', () => {
     const result = await syncDirectory(
       mockClient,
       'c1', 'a1', 'p1',
-      '/path/to/startercode',
+      'lab1/part1/startercode',
       'startercode',
       { syncDeletes: true }
     );
@@ -298,7 +298,7 @@ describe('syncDirectory', () => {
     const result = await syncDirectory(
       mockClient,
       'c1', 'a1', 'p1',
-      '/path/to/docs',
+      'lab1/part1/docs',
       'docs',
       { syncDeletes: true }
     );
@@ -322,12 +322,36 @@ describe('syncDirectory', () => {
     const result = await syncDirectory(
       mockClient,
       'c1', 'a1', 'p1',
-      '/path/to/data',
+      'lab1/part1/data',
       'data',
       {}
     );
 
     expect(result.succeeded).toEqual(['a.py', 'b.py']);
     expect(result.directoryHash).toBe('sync-hash');
+  });
+});
+
+describe('workspace confinement', () => {
+  let mockClient: VocareumClient;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockClient = {} as VocareumClient;
+  });
+
+  it('uploadDirectory refuses local paths that escape the working directory', async () => {
+    await expect(
+      uploadDirectory(mockClient, 'c1', 'a1', 'p1', '../../outside/startercode', 'startercode', {})
+    ).rejects.toThrow(/escapes/);
+    expect(mockUploadContent).not.toHaveBeenCalled();
+    expect(mockReadDirectory).not.toHaveBeenCalled();
+  });
+
+  it('uploadDirectory refuses absolute local paths outside the working directory', async () => {
+    await expect(
+      uploadDirectory(mockClient, 'c1', 'a1', 'p1', '/etc/startercode', 'startercode', {})
+    ).rejects.toThrow(/escapes/);
+    expect(mockUploadContent).not.toHaveBeenCalled();
   });
 });
