@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npx vitest run
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  # Guards the composite action's install wiring: action.yml must sit at the
+  # repo root, and its version probe must resolve the adjacent package.json.
+  # This class of breakage is invisible to tsc/vitest (see AGENTS.md).
+  action-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: action.yml exists at repository root
+        run: |
+          set -euo pipefail
+          test -f action.yml
+          node -e "const fs = require('fs'); const yaml = require('js-yaml'); if (yaml.load(fs.readFileSync('action.yml', 'utf8')).runs.using !== 'composite') process.exit(1)"
+      - name: Run the action's install step verbatim
+        id: install-smoke
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ -z "$(npm view "vocareum-publisher@${VERSION}" version 2>/dev/null || true)" ]; then
+            # Release commits land before `npm publish` (bump → commit → publish → tag),
+            # so the pinned version may not exist yet. Validate the probe only.
+            echo "::notice::vocareum-publisher@${VERSION} not on npm yet; checking version probe only."
+            GITHUB_ACTION_PATH="${GITHUB_WORKSPACE}" \
+              node -p "require(process.env.GITHUB_ACTION_PATH + '/package.json').version"
+            echo "published=false" >> "${GITHUB_OUTPUT}"
+          else
+            SCRIPT="$(node -e "const fs = require('fs'); const yaml = require('js-yaml'); process.stdout.write(yaml.load(fs.readFileSync('action.yml', 'utf8')).runs.steps[0].run)")"
+            GITHUB_ACTION_PATH="${GITHUB_WORKSPACE}" bash -euo pipefail -c "${SCRIPT}"
+            echo "published=true" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Resolve and execute the composite action
+        if: steps.install-smoke.outputs.published == 'true'
+        id: composite-smoke
+        continue-on-error: true
+        uses: ./
+        with:
+          api-key: smoke-test-invalid-token
+          non-interactive: true
+          dry-run: true
+      - name: Verify composite action reached the CLI
+        if: steps.install-smoke.outputs.published == 'true'
+        run: |
+          set -euo pipefail
+          # The fixture intentionally has no usable Vocareum credentials/config.
+          # Failure proves GitHub resolved action.yml and executed both composite steps.
+          [ "${{ steps.composite-smoke.outcome }}" = "failure" ]

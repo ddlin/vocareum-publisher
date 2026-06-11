@@ -177,6 +177,245 @@ describe('VocareumClient 401 refresh-retry', () => {
       .rejects.toThrow(/VOCAREUM_OAUTH_CLIENT_ID/);
   });
 
+  it('retries an axios timeout (ECONNABORTED) then succeeds', async () => {
+    const provider = new FakeProvider();
+    const client = new VocareumClient(provider);
+    let calls = 0;
+    setAdapter(client, async (config: unknown) => {
+      calls += 1;
+      if (calls === 1) {
+        throw new AxiosError('timeout of 30000ms exceeded', 'ECONNABORTED', config as never, {}, undefined);
+      }
+      return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config };
+    });
+    const out = await client.request<{ ok: boolean }>({ method: 'GET', url: '/courses' }, { backoff: 1 });
+    expect(out).toEqual({ ok: true });
+    expect(calls).toBe(2);
+  });
+
+  it('does not retry an ambiguous timeout for a non-idempotent POST', async () => {
+    const provider = new FakeProvider();
+    const client = new VocareumClient(provider);
+    let calls = 0;
+    setAdapter(client, async (config: unknown) => {
+      calls += 1;
+      throw new AxiosError('timeout after server may have accepted request', 'ECONNABORTED',
+        config as never, {}, undefined);
+    });
+
+    await expect(
+      client.request({ method: 'POST', url: '/courses/c1/assignments', data: { method: 'copy' } }, { backoff: 1 })
+    ).rejects.toThrow(/timeout after server may have accepted request/);
+    expect(calls).toBe(1);
+  });
+
+  it('does not retry a 5xx response for a non-idempotent POST', async () => {
+    const provider = new FakeProvider();
+    const client = new VocareumClient(provider);
+    let calls = 0;
+    setAdapter(client, async (config: unknown) => {
+      calls += 1;
+      const response = { data: {}, status: 503, statusText: '', headers: {}, config };
+      throw new AxiosError('Service unavailable', 'ERR_BAD_RESPONSE',
+        config as never, {}, response as never);
+    });
+
+    await expect(
+      client.request({ method: 'POST', url: '/courses/c1/assignments', data: { method: 'copy' } }, { backoff: 1 })
+    ).rejects.toThrow(/Service unavailable/);
+    expect(calls).toBe(1);
+  });
+
+  it.each(['ECONNREFUSED', 'EAI_AGAIN', 'EPIPE', 'ERR_NETWORK'])(
+    'retries transient connection error %s then succeeds',
+    async (code) => {
+      const provider = new FakeProvider();
+      const client = new VocareumClient(provider);
+      let calls = 0;
+      setAdapter(client, async (config: unknown) => {
+        calls += 1;
+        if (calls === 1) {
+          throw new AxiosError('connection failure', code, config as never, {}, undefined);
+        }
+        return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config };
+      });
+      const out = await client.request<{ ok: boolean }>({ method: 'GET', url: '/courses' }, { backoff: 1 });
+      expect(out).toEqual({ ok: true });
+      expect(calls).toBe(2);
+    }
+  );
+
+  it('exposes Retry-After from a 429 response on the thrown RateLimitError', async () => {
+    const provider = new FakeProvider();
+    const client = new VocareumClient(provider);
+    setAdapter(client, async (config: unknown) => {
+      const response = {
+        data: {}, status: 429, statusText: '', headers: { 'retry-after': '7' }, config,
+      };
+      throw new AxiosError('Request failed with status code 429', 'ERR_BAD_RESPONSE',
+        config as never, {}, response as never);
+    });
+    await expect(
+      client.request({ method: 'GET', url: '/courses' }, { maxRetries: 1 })
+    ).rejects.toMatchObject({ name: 'RateLimitError', retryAfter: 7 });
+  });
+
+  it('waits the Retry-After duration (not the exponential backoff) before retrying a 429', async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = new FakeProvider();
+      const client = new VocareumClient(provider);
+      let calls = 0;
+      setAdapter(client, async (config: unknown) => {
+        calls += 1;
+        if (calls === 1) {
+          const response = {
+            data: {}, status: 429, statusText: '', headers: { 'retry-after': '3' }, config,
+          };
+          throw new AxiosError('Request failed with status code 429', 'ERR_BAD_RESPONSE',
+            config as never, {}, response as never);
+        }
+        return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config };
+      });
+
+      const pending = client.request<{ ok: boolean }>({ method: 'GET', url: '/courses' }, { backoff: 1000 });
+      const guarded = pending.catch(() => undefined); // avoid unhandled rejection noise
+
+      // After the 1s exponential backoff would have elapsed, we must still be waiting
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(calls).toBe(1);
+
+      // After the full Retry-After window, the retry fires and succeeds
+      await vi.advanceTimersByTimeAsync(2000);
+      const out = await pending;
+      expect(out).toEqual({ ok: true });
+      expect(calls).toBe(2);
+      await guarded;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('honors Retry-After on a retryable 503 response', async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = new FakeProvider();
+      const client = new VocareumClient(provider);
+      let calls = 0;
+      setAdapter(client, async (config: unknown) => {
+        calls += 1;
+        if (calls === 1) {
+          const response = {
+            data: {}, status: 503, statusText: '', headers: { 'retry-after': '4' }, config,
+          };
+          throw new AxiosError('Service unavailable', 'ERR_BAD_RESPONSE',
+            config as never, {}, response as never);
+        }
+        return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config };
+      });
+
+      const pending = client.request<{ ok: boolean }>({ method: 'GET', url: '/courses' }, { backoff: 1 });
+      await vi.advanceTimersByTimeAsync(3999);
+      expect(calls).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toEqual({ ok: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('honors an HTTP-date Retry-After value', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-11T00:00:00Z'));
+    try {
+      const provider = new FakeProvider();
+      const client = new VocareumClient(provider);
+      let calls = 0;
+      setAdapter(client, async (config: unknown) => {
+        calls += 1;
+        if (calls === 1) {
+          const response = {
+            data: {},
+            status: 503,
+            statusText: '',
+            headers: { 'retry-after': 'Thu, 11 Jun 2026 00:00:05 GMT' },
+            config,
+          };
+          throw new AxiosError('Service unavailable', 'ERR_BAD_RESPONSE',
+            config as never, {}, response as never);
+        }
+        return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config };
+      });
+
+      const pending = client.request<{ ok: boolean }>({ method: 'GET', url: '/courses' });
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(calls).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toEqual({ ok: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('honors Retry-After values longer than 60 seconds', async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = new FakeProvider();
+      const client = new VocareumClient(provider);
+      let calls = 0;
+      setAdapter(client, async (config: unknown) => {
+        calls += 1;
+        if (calls === 1) {
+          const response = {
+            data: {}, status: 429, statusText: '', headers: { 'retry-after': '120' }, config,
+          };
+          throw new AxiosError('Rate limited', 'ERR_BAD_RESPONSE',
+            config as never, {}, response as never);
+        }
+        return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config };
+      });
+
+      const pending = client.request<{ ok: boolean }>({ method: 'GET', url: '/courses' });
+      await vi.advanceTimersByTimeAsync(60_001);
+      expect(calls).toBe(1);
+      await vi.advanceTimersByTimeAsync(59_999);
+      await expect(pending).resolves.toEqual({ ok: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['1.5', '1e2', '-1', 'not-a-date'])(
+    'ignores invalid Retry-After value %s',
+    async (retryAfter) => {
+      vi.useFakeTimers();
+      try {
+        const provider = new FakeProvider();
+        const client = new VocareumClient(provider);
+        let calls = 0;
+        setAdapter(client, async (config: unknown) => {
+          calls += 1;
+          if (calls === 1) {
+            const response = {
+              data: {}, status: 429, statusText: '', headers: { 'retry-after': retryAfter }, config,
+            };
+            throw new AxiosError('Rate limited', 'ERR_BAD_RESPONSE',
+              config as never, {}, response as never);
+          }
+          return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config };
+        });
+
+        const pending = client.request<{ ok: boolean }>({ method: 'GET', url: '/courses' }, { backoff: 25 });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(calls).toBe(1);
+        await vi.advanceTimersByTimeAsync(25);
+        await expect(pending).resolves.toEqual({ ok: true });
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
+
   it('retries a transient network error (ECONNRESET) then succeeds', async () => {
     const provider = new FakeProvider();
     const client = new VocareumClient(provider);

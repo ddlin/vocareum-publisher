@@ -4,7 +4,7 @@
  * Main command to publish assignments to Vocareum.
  */
 
-import { loadConfig } from '../core/config';
+import { loadConfig, withConfigLock } from '../core/config';
 import { publish } from '../core/publisher';
 import { VocareumClient } from '../api/client';
 import { resolveAuthProvider } from '../api/auth/cli-auth-options';
@@ -27,6 +27,15 @@ export interface PublishCommandOptions extends PublishOperationOptions {
  */
 export async function publishCommand(options: PublishCommandOptions): Promise<void> {
   const configPath = options.config ?? 'vocareum.yaml';
+  // Serialize runs against the same config: concurrent publishes can corrupt
+  // vocareum.yaml (read-modify-write races) or create duplicate assignments.
+  await withConfigLock(configPath, () => publishCommandLocked(configPath, options));
+}
+
+async function publishCommandLocked(
+  configPath: string,
+  options: PublishCommandOptions
+): Promise<void> {
   const reporter = new UnknownFieldReporter(logger);
 
   try {

@@ -9,6 +9,7 @@ import type { AxiosRequestConfig } from 'axios';
 vi.mock('../../src/core/config', () => ({
     loadConfig: vi.fn(),
     updateConfig: vi.fn(),
+    withConfigLock: vi.fn((_path: string, fn: () => Promise<unknown>) => fn()),
 }));
 
 // Mock logger

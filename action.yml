@@ -9,6 +9,10 @@ branding:
 # version) and runs `vocgit push`. Inputs map to CLI flags / env vars. This
 # supports both v2 token auth (api-key) and v3 OAuth (auth + client-id/secret).
 # Requires Node.js (>=18) on the runner — GitHub-hosted runners include it.
+#
+# This file must live at the repository root: `uses: ddlin/vocareum-publisher@v1`
+# resolves action.yml at the root only, and the install step reads the adjacent
+# package.json to pin the npm install to the tagged release's version.
 
 inputs:
   config-file:
@@ -71,9 +75,14 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        if [ ! -f "${GITHUB_ACTION_PATH}/package.json" ]; then
+          echo "::error::package.json not found next to action.yml (${GITHUB_ACTION_PATH}); the action must be referenced from the repository root (uses: ddlin/vocareum-publisher@<tag>)."
+          exit 1
+        fi
         VERSION="$(node -p "require('${GITHUB_ACTION_PATH}/package.json').version")"
         echo "Installing vocareum-publisher@${VERSION}"
         npm install -g "vocareum-publisher@${VERSION}"
+        vocgit --version
     - name: Publish to Vocareum
       id: push
       shell: bash

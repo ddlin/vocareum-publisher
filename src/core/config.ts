@@ -7,6 +7,9 @@
 import { cosmiconfig } from 'cosmiconfig';
 import * as yaml from 'js-yaml';
 import { promises as fs } from 'fs';
+import * as path from 'path';
+import { randomUUID } from 'crypto';
+import { z } from 'zod';
 import { ConfigSchema, type Config, type ConfigUpdates, type Assignment } from '../types/config';
 import type { ValidationResult, ValidationError } from '../types/state';
 import { logger } from '../utils/logger';
@@ -55,14 +58,16 @@ export async function loadConfig(configPath: string): Promise<Config> {
       );
     }
 
-    const validation = validateConfig(result.config);
+    const parsed = ConfigSchema.safeParse(result.config);
 
-    if (!validation.valid) {
-      const errorMsg = validation.errors.map((e) => e.message).join('\n');
+    if (!parsed.success) {
+      const errorMsg = zodErrorsToValidationErrors(parsed.error).map((e) => e.message).join('\n');
       throw new ConfigError(`Invalid configuration:\n${errorMsg}`, 'INVALID_CONFIG');
     }
 
-    return result.config as Config;
+    // Return the parsed data (not the raw YAML object) so schema defaults,
+    // transforms (e.g. lowercase exam_mode → uppercase), and coercions apply.
+    return parsed.data;
   } catch (error: unknown) {
     if (error instanceof ConfigError) {
       throw error;
@@ -92,7 +97,18 @@ export function validateConfig(config: unknown): ValidationResult {
     };
   }
 
-  const errors: ValidationError[] = result.error.errors.map((err) => {
+  return {
+    valid: false,
+    errors: zodErrorsToValidationErrors(result.error),
+    warnings: [],
+  };
+}
+
+/**
+ * Convert Zod issues into ValidationError records with user-facing hints.
+ */
+function zodErrorsToValidationErrors(error: z.ZodError): ValidationError[] {
+  return error.errors.map((err) => {
     const path = err.path.join('.');
     let message = `${path}: ${err.message}`;
 
@@ -113,12 +129,6 @@ export function validateConfig(config: unknown): ValidationResult {
       message,
     };
   });
-
-  return {
-    valid: false,
-    errors,
-    warnings: [],
-  };
 }
 
 /**
@@ -237,8 +247,83 @@ export async function updateConfig(configPath: string, updates: ConfigUpdates): 
     noRefs: true,
   });
 
-  await fs.writeFile(configPath, yamlStr, 'utf8');
+  await atomicWriteFile(configPath, yamlStr);
   logger.debug(`Updated configuration at ${configPath}`);
+}
+
+/**
+ * Write a file atomically: write to a temp file in the same directory, then
+ * rename over the target. A crash mid-write can no longer truncate
+ * vocareum.yaml, which doubles as the publish-state store.
+ */
+async function atomicWriteFile(filePath: string, content: string): Promise<void> {
+  const tmpPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  const existingMode = await fs.stat(filePath)
+    .then((stat) => stat.mode & 0o777)
+    .catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') { return undefined; }
+      throw error;
+    });
+  const handle = await fs.open(tmpPath, 'wx', existingMode);
+  try {
+    await handle.writeFile(content, 'utf8');
+    await handle.sync();
+    await handle.close();
+    await fs.rename(tmpPath, filePath);
+    // Persist the directory entry where supported. Some platforms/filesystems
+    // reject directory fsync, but the rename has still completed atomically.
+    const directoryHandle = await fs.open(path.dirname(filePath), 'r').catch(() => undefined);
+    if (directoryHandle !== undefined) {
+      await directoryHandle.sync().catch(() => undefined);
+      await directoryHandle.close().catch(() => undefined);
+    }
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    await fs.unlink(tmpPath).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
+ * Run an operation while holding an exclusive lock next to the config file.
+ *
+ * Prevents two concurrent vocgit runs (e.g. overlapping CI jobs) from
+ * interleaving read-modify-write cycles on vocareum.yaml — which loses publish
+ * history — or both creating the same assignment. The lock is advisory: it
+ * only guards vocgit against itself.
+ */
+export async function withConfigLock<T>(configPath: string, fn: () => Promise<T>): Promise<T> {
+  const lockPath = `${configPath}.lock`;
+  const token = randomUUID();
+  const payload = JSON.stringify({
+    token,
+    pid: process.pid,
+    acquired_at: new Date().toISOString(),
+  });
+
+  try {
+    await fs.writeFile(lockPath, payload, { flag: 'wx' });
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') { throw error; }
+    throw new ConfigError(
+      `Configuration is locked by another vocgit run (${lockPath} exists).\n\n` +
+      'If no other vocgit process is running, delete the lock file and retry.\n' +
+      'For CI, serialize runs (e.g. a GitHub Actions concurrency group) to avoid\n' +
+      'concurrent publishes corrupting vocareum.yaml or creating duplicate assignments.',
+      'CONFIG_LOCKED'
+    );
+  }
+
+  try {
+    return await fn();
+  } finally {
+    // Never remove a replacement lock created by another process after manual
+    // recovery or external interference.
+    const currentPayload = await fs.readFile(lockPath, 'utf8').catch(() => undefined);
+    if (currentPayload === payload) {
+      await fs.unlink(lockPath).catch(() => undefined);
+    }
+  }
 }
 
 /**

@@ -280,7 +280,7 @@ export const PartSchema = z.object({
   sync_settings: z.boolean().optional(),
   directories: z.array(DirectoryTypeSchema).optional(),
   settings: PartSettingsSchema,
-});
+}).passthrough();
 
 export type Part = z.infer<typeof PartSchema>;
 
@@ -372,7 +372,7 @@ export const AssignmentSchema = z.object({
   sync_settings: z.boolean().optional(),
   settings: AssignmentSettingsSchema,
   parts: z.array(PartSchema),
-});
+}).passthrough();
 
 export type Assignment = z.infer<typeof AssignmentSchema>;
 
@@ -419,7 +419,7 @@ export const VocareumConfigSchema = z.object({
   course_settings: CourseSettingsConfigSchema,
   /** Assignment IDs to exclude from orphan detection (hidden from pull scans) */
   excluded_assignments: z.array(z.string()).optional().default([]),
-});
+}).passthrough();
 
 export type VocareumConfig = z.infer<typeof VocareumConfigSchema>;
 
@@ -538,7 +538,7 @@ export const ConfigSchema = z.object({
   assignments: z.array(AssignmentSchema),
   publish_options: PublishOptionsSchema,
   publish_history: z.array(PublishHistorySchema).optional().default([]),
-});
+}).passthrough();
 
 export type Config = z.infer<typeof ConfigSchema>;
 

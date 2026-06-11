@@ -365,7 +365,7 @@ jobs:
           non-interactive: true
 ```
 
-Supported action inputs (`action/action.yml`): `config-file`, `api-key`, `auth`, `client-id`, `client-secret`, `dry-run`, `non-interactive`, `assignment`, `part`, `force-all`, `sync-deletes`, `auto-commit` (ignored in CI), `verbose`. Output: `success`. Requires Node.js (GitHub-hosted runners include it). `api-key` is optional — omit it when using `auth: oauth`.
+Supported action inputs (`action.yml`): `config-file`, `api-key`, `auth`, `client-id`, `client-secret`, `dry-run`, `non-interactive`, `assignment`, `part`, `force-all`, `sync-deletes`, `auto-commit` (ignored in CI), `verbose`. Output: `success`. Requires Node.js (GitHub-hosted runners include it). `api-key` is optional — omit it when using `auth: oauth`.
 
 ## Directory Structure
 

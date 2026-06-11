@@ -36,6 +36,7 @@ const {
 vi.mock('../../src/core/config', () => ({
   loadConfig: loadConfigMock,
   updateConfig: updateConfigMock,
+  withConfigLock: vi.fn((_path: string, fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('../../src/core/reconciler', () => ({

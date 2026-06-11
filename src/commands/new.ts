@@ -8,7 +8,7 @@
 import * as path from 'path';
 import type { TemplateConfig } from '../types/config';
 import { DEFAULT_PART_DIRECTORIES } from '../types/config';
-import { loadConfig, updateConfig } from '../core/config';
+import { loadConfig, updateConfig, withConfigLock } from '../core/config';
 import { ensureDirectory, pathExists, writeFile } from '../utils/files';
 import { logger } from '../utils/logger';
 import { prompt, promptChoice, promptConfirm } from '../utils/prompts';
@@ -30,6 +30,10 @@ export async function newCommand(assignmentPath: string | undefined): Promise<vo
     return;
   }
 
+  await withConfigLock(configPath, () => newCommandLocked(configPath, assignmentPath));
+}
+
+async function newCommandLocked(configPath: string, assignmentPath: string | undefined): Promise<void> {
   const config = await loadConfig(configPath);
   const templateChoices = getTemplateChoices(config.vocareum);
 

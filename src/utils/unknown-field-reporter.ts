@@ -5,6 +5,9 @@
  * a try/finally at the command boundary. Lower layers only call record().
  */
 
+import { readFileSync } from 'fs';
+import * as path from 'path';
+
 export type UnknownFieldScope = 'assignment' | 'part'; // 'course' added in deferred phase
 
 export interface UnknownFieldRecord {
@@ -24,8 +27,8 @@ const ISSUE_URL = 'https://github.com/ddlin/vocareum-publisher/issues/new';
 
 function readPackageVersion(): string {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const pkg = require('../../package.json') as { version?: string };
+    const pkgPath = path.resolve(__dirname, '../../package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string };
     return pkg.version ?? 'unknown';
   } catch {
     return 'unknown';

@@ -203,7 +203,7 @@ export function buildPartSettingsPayload(
   // Spread _unknown_settings (NOT the wrapper key) into the top level,
   // filtering out any reserved keys to prevent user-supplied overrides.
   const filtered = filterUnknownSettingsForPayload(
-    partSettings?._unknown_settings as Record<string, unknown> | null | undefined,
+    partSettings?._unknown_settings,
     RESERVED_PART_KEYS,
     'part',
     partName
@@ -639,7 +639,7 @@ export async function publish(
 
           const unknownAsn = asnSettings?._unknown_settings;
           const filteredAsnUnknowns = filterUnknownSettingsForPayload(
-            unknownAsn as Record<string, unknown> | null | undefined,
+            unknownAsn,
             RESERVED_ASSIGNMENT_KEYS,
             'assignment',
             action.assignment.name

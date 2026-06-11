@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-06-11
+
+### Fixed
+- Return schema-parsed configuration data so defaults, transforms, and coercions do not cause false drift.
+- Fail closed when remote file listing or strict pull downloads fail.
+- Serialize config writers with ownership-checked locks and durable atomic writes.
+- Retry transient failures only for idempotent requests and honor valid `Retry-After` values.
+- Move the composite GitHub Action metadata to the repository root and add CI smoke coverage.
+
+### Security
+- Update production and development dependency locks to resolve reported npm audit vulnerabilities.
+
 ## [1.1.0] - 2026-06-01
 
 ### Added

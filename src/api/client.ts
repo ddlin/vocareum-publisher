@@ -49,7 +49,7 @@ export class AuthenticationError extends VocareumError {
  * Error for rate limiting
  */
 export class RateLimitError extends VocareumError {
-  constructor(retryAfter?: number) {
+  constructor(public retryAfter?: number) {
     super(
       `Rate limit exceeded${retryAfter !== undefined ? `. Retry after ${retryAfter} seconds` : ''}`,
       'RATE_LIMIT',
@@ -189,29 +189,86 @@ interface RetryOptions {
   backoff?: number;
 }
 
+const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set([
+  'GET',
+  'HEAD',
+  'OPTIONS',
+  'PUT',
+  'DELETE',
+]);
+
+/**
+ * Transient connection-level failures worth retrying. Note axios v1 reports
+ * its own request timeouts as ECONNABORTED (not ETIMEDOUT) by default.
+ */
+const RETRYABLE_NETWORK_CODES: ReadonlySet<string> = new Set([
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ECONNABORTED',
+  'ECONNREFUSED',
+  'EAI_AGAIN',
+  'ENOTFOUND',
+  'EPIPE',
+  'ERR_NETWORK',
+]);
+
 /**
  * Check if an error is retryable
  */
-function isRetryable(error: unknown): boolean {
+function isRetryable(error: unknown, method: string): boolean {
   if (error instanceof RateLimitError) {
     return true;
   }
   if (error instanceof VocareumError) {
     const status = error.statusCode;
     if (status !== undefined && status >= 500 && status < 600) {
-      return true;
+      return IDEMPOTENT_METHODS.has(method);
     }
   }
   if (error instanceof AxiosError) {
     const status = error.response?.status;
     if (status !== undefined && status >= 500 && status < 600) {
-      return true;
+      return IDEMPOTENT_METHODS.has(method);
     }
-    if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
+    if (
+      error.code !== undefined &&
+      RETRYABLE_NETWORK_CODES.has(error.code) &&
+      IDEMPOTENT_METHODS.has(method)
+    ) {
       return true;
     }
   }
   return false;
+}
+
+/**
+ * Parse a Retry-After header value (delta-seconds or HTTP-date) into seconds.
+ */
+function parseRetryAfter(value: unknown): number | undefined {
+  if (typeof value !== 'string' || value === '') { return undefined; }
+  if (/^\d+$/.test(value)) {
+    const seconds = Number(value);
+    return Number.isSafeInteger(seconds) ? seconds : undefined;
+  }
+  const httpDatePattern =
+    /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+  if (!httpDatePattern.test(value)) { return undefined; }
+  const dateMs = Date.parse(value);
+  if (!Number.isNaN(dateMs)) {
+    return Math.max(0, Math.ceil((dateMs - Date.now()) / 1000));
+  }
+  return undefined;
+}
+
+function retryAfterFromAxiosError(error: unknown): number | undefined {
+  if (!(error instanceof AxiosError)) { return undefined; }
+  const headers = error.response?.headers;
+  if (headers === undefined) { return undefined; }
+  const headerAccessor = headers as unknown as { get?: (name: string) => unknown };
+  const headerValue: unknown = typeof headerAccessor.get === 'function'
+    ? headerAccessor.get('retry-after')
+    : Object.entries(headers).find(([key]) => key.toLowerCase() === 'retry-after')?.[1];
+  return parseRetryAfter(headerValue);
 }
 
 /**
@@ -304,21 +361,26 @@ export class VocareumClient {
   private async attempt<T>(config: AxiosRequestConfig, options: RetryOptions = {}): Promise<T> {
     const maxRetries = options.maxRetries ?? 3;
     const backoff = options.backoff ?? 1000;
+    const method = (config.method ?? 'GET').toUpperCase();
 
     for (let a = 0; a < maxRetries; a++) {
       try {
         logger.debug('API request', sanitizeForLog(config));
         const response = await this.axios.request<T>(config);
-        logger.debug(`API response: ${response.status}`, { data: response.data });
+        logger.debug(`API response: ${response.status}`, sanitizeForLog({ data: response.data }));
         return response.data;
       } catch (error) {
         const wrapped = this.wrapError(error);
         if (isRawApiResponse401(error)) {
           (wrapped as VocareumError & ApiUnauthorizedFlag).isApiResponseUnauthorized = true;
         }
-        const retryable = isRetryable(wrapped) || isRetryable(error);
+        const retryable = isRetryable(wrapped, method) || isRetryable(error, method);
         if (a === maxRetries - 1 || !retryable) { throw wrapped; }
-        await sleep(backoff * Math.pow(2, a));
+        // A server-provided Retry-After takes precedence over exponential backoff.
+        const retryAfter = retryAfterFromAxiosError(error) ??
+          (wrapped instanceof RateLimitError ? wrapped.retryAfter : undefined);
+        const retryAfterMs = retryAfter !== undefined ? retryAfter * 1000 : undefined;
+        await sleep(retryAfterMs ?? backoff * Math.pow(2, a));
       }
     }
 
@@ -356,7 +418,9 @@ export class VocareumClient {
         case 404:
           return new NotFoundError(resourceType || 'Resource', 'unknown');
         case 429:
-          return new RateLimitError();
+          return new RateLimitError(
+            retryAfterFromAxiosError(error)
+          );
         default:
           return new APIError(message, status, data);
       }

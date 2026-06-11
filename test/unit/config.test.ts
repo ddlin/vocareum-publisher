@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { loadConfig, updateConfig } from '../../src/core/config';
+import { loadConfig, updateConfig, withConfigLock, ConfigError } from '../../src/core/config';
 import { AssignmentSettingsSchema, PartSettingsSchema } from '../../src/types/config';
 
 describe('updateConfig stale assignment actions', () => {
@@ -140,6 +140,202 @@ assignments:
     expect(loaded.assignments[0].parts[0].settings?.tags).toEqual({
       average_lab_time: 240,
     });
+  });
+});
+
+describe('atomic config writes and locking', () => {
+  let tempDir: string;
+  let configPath: string;
+
+  const baseYaml = `version: "1.0"
+vocareum:
+  org_id: "1"
+  course_id: "201303"
+assignments:
+  - assignment_id: "asn-1"
+    name: "Lab 1"
+    path: "lab1"
+    parts:
+      - part_id: "part-1"
+        path: "part1"
+`;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-config-lock-test-'));
+    configPath = path.join(tempDir, 'vocareum.yaml');
+    await fs.writeFile(configPath, baseYaml, 'utf8');
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('updateConfig leaves no temp file behind after a successful write', async () => {
+    await updateConfig(configPath, { excluded_assignments: ['x-1'] });
+
+    const entries = await fs.readdir(tempDir);
+    expect(entries).toEqual(['vocareum.yaml']);
+
+    const updated = await loadConfig(configPath);
+    expect(updated.vocareum.excluded_assignments).toContain('x-1');
+  });
+
+  it('withConfigLock runs the function and removes the lock afterwards', async () => {
+    const result = await withConfigLock(configPath, async () => 'done');
+
+    expect(result).toBe('done');
+    const entries = await fs.readdir(tempDir);
+    expect(entries).not.toContain('vocareum.yaml.lock');
+  });
+
+  it('withConfigLock removes the lock even when the function throws', async () => {
+    await expect(
+      withConfigLock(configPath, async () => {
+        throw new Error('boom');
+      })
+    ).rejects.toThrow('boom');
+
+    const entries = await fs.readdir(tempDir);
+    expect(entries).not.toContain('vocareum.yaml.lock');
+  });
+
+  it('withConfigLock fails fast when another run holds a fresh lock', async () => {
+    await fs.writeFile(`${configPath}.lock`, JSON.stringify({ pid: 99999 }), 'utf8');
+
+    await expect(withConfigLock(configPath, async () => 'x')).rejects.toThrow(ConfigError);
+    await expect(withConfigLock(configPath, async () => 'x')).rejects.toThrow(/another vocgit/i);
+  });
+
+  it('withConfigLock does not steal an old lock that may still belong to a live run', async () => {
+    const lockPath = `${configPath}.lock`;
+    await fs.writeFile(lockPath, JSON.stringify({ pid: 99999 }), 'utf8');
+    const past = new Date(Date.now() - 60 * 60 * 1000);
+    await fs.utimes(lockPath, past, past);
+
+    await expect(withConfigLock(configPath, async () => 'recovered')).rejects.toThrow(ConfigError);
+    await expect(fs.readFile(lockPath, 'utf8')).resolves.toContain('99999');
+  });
+
+  it('withConfigLock does not remove a replacement lock it does not own', async () => {
+    const lockPath = `${configPath}.lock`;
+    const replacement = JSON.stringify({ token: 'replacement-owner' });
+
+    await withConfigLock(configPath, async () => {
+      await fs.unlink(lockPath);
+      await fs.writeFile(lockPath, replacement, { flag: 'wx' });
+    });
+
+    await expect(fs.readFile(lockPath, 'utf8')).resolves.toBe(replacement);
+  });
+});
+
+describe('loadConfig returns schema-parsed data', () => {
+  let tempDir: string;
+  let configPath: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-config-parse-test-'));
+    configPath = path.join(tempDir, 'vocareum.yaml');
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('applies schema transforms (lowercase exam_mode normalized to uppercase)', async () => {
+    const yaml = `version: "1.0"
+vocareum:
+  org_id: "1"
+  course_id: "201303"
+assignments:
+  - assignment_id: "asn-1"
+    name: "Lab 1"
+    path: "lab1"
+    settings:
+      exam_mode: timed
+      grading_visibility: all
+    parts:
+      - part_id: "part-1"
+        path: "part1"
+`;
+    await fs.writeFile(configPath, yaml, 'utf8');
+
+    const loaded = await loadConfig(configPath);
+
+    expect(loaded.assignments[0].settings?.exam_mode).toBe('TIMED');
+    expect(loaded.assignments[0].settings?.grading_visibility).toBe('ALL');
+  });
+
+  it('applies schema defaults for omitted fields', async () => {
+    const yaml = `version: "1.0"
+vocareum:
+  org_id: "1"
+  course_id: "201303"
+assignments:
+  - assignment_id: "asn-1"
+    name: "Lab 1"
+    path: "lab1"
+    parts:
+      - part_id: "part-1"
+        path: "part1"
+`;
+    await fs.writeFile(configPath, yaml, 'utf8');
+
+    const loaded = await loadConfig(configPath);
+
+    expect(loaded.vocareum.api_base_url).toBe('https://api.vocareum.com');
+    expect(loaded.vocareum.excluded_assignments).toEqual([]);
+    expect(loaded.publish_history).toEqual([]);
+    expect(loaded.assignments[0].create_from_template).toBe(false);
+  });
+
+  it('coerces string databricks_maxusers to number', async () => {
+    const yaml = `version: "1.0"
+vocareum:
+  org_id: "1"
+  course_id: "201303"
+assignments:
+  - assignment_id: "asn-1"
+    name: "Lab 1"
+    path: "lab1"
+    parts:
+      - part_id: "part-1"
+        path: "part1"
+        settings:
+          databricks_maxusers: "25"
+`;
+    await fs.writeFile(configPath, yaml, 'utf8');
+
+    const loaded = await loadConfig(configPath);
+
+    expect(loaded.assignments[0].parts[0].settings?.databricks_maxusers).toBe(25);
+  });
+
+  it('preserves unknown keys so updateConfig does not strip user data', async () => {
+    const yaml = `version: "1.0"
+custom_top_level: keep-me
+vocareum:
+  org_id: "1"
+  course_id: "201303"
+  custom_vendor_field: vendor-value
+assignments:
+  - assignment_id: "asn-1"
+    name: "Lab 1"
+    path: "lab1"
+    custom_assignment_note: note
+    parts:
+      - part_id: "part-1"
+        path: "part1"
+        custom_part_note: pnote
+`;
+    await fs.writeFile(configPath, yaml, 'utf8');
+
+    const loaded = await loadConfig(configPath) as Record<string, unknown>;
+
+    expect(loaded.custom_top_level).toBe('keep-me');
+    expect((loaded.vocareum as Record<string, unknown>).custom_vendor_field).toBe('vendor-value');
+    expect((loaded.assignments as Record<string, unknown>[])[0].custom_assignment_note).toBe('note');
+    expect(((loaded.assignments as { parts: Record<string, unknown>[] }[])[0].parts)[0].custom_part_note).toBe('pnote');
   });
 });
 

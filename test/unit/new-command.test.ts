@@ -4,6 +4,7 @@ import { newCommand } from '../../src/commands/new';
 const {
   loadConfigMock,
   updateConfigMock,
+  withConfigLockMock,
   pathExistsMock,
   ensureDirectoryMock,
   writeFileMock,
@@ -18,6 +19,7 @@ const {
 } = vi.hoisted(() => ({
   loadConfigMock: vi.fn(),
   updateConfigMock: vi.fn(),
+  withConfigLockMock: vi.fn((_path: string, fn: () => Promise<unknown>) => fn()),
   pathExistsMock: vi.fn(),
   ensureDirectoryMock: vi.fn(),
   writeFileMock: vi.fn(),
@@ -34,6 +36,7 @@ const {
 vi.mock('../../src/core/config', () => ({
   loadConfig: loadConfigMock,
   updateConfig: updateConfigMock,
+  withConfigLock: withConfigLockMock,
 }));
 
 vi.mock('../../src/utils/files', () => ({
@@ -90,6 +93,7 @@ describe('newCommand template selection', () => {
   it('should prompt for template choice with names and show course for cross-course templates', async () => {
     await newCommand('lab-new');
 
+    expect(withConfigLockMock).toHaveBeenCalledWith('vocareum.yaml', expect.any(Function));
     // Templates in same course show just (id), templates in different course show (course:X, id:Y)
     expect(promptChoiceMock).toHaveBeenCalledWith(
       'Select template for this assignment:',

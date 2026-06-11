@@ -520,12 +520,22 @@ describe('listFiles', () => {
     ]);
   });
 
-  it('should return empty array on error (graceful fallback)', async () => {
+  it('should throw on transient network errors (no silent empty result)', async () => {
     requestMock.mockRejectedValueOnce(new Error('Network error'));
 
-    const result = await listFiles(mockClient, 'c1', 'a1', 'p1', 'data');
+    await expect(listFiles(mockClient, 'c1', 'a1', 'p1', 'data')).rejects.toThrow(
+      'Network error'
+    );
+  });
 
-    expect(result).toEqual([]);
+  it('should throw on 5xx server errors (no silent empty result)', async () => {
+    requestMock.mockRejectedValueOnce(
+      new VocareumError('Internal server error', 'API_ERROR', 500)
+    );
+
+    await expect(listFiles(mockClient, 'c1', 'a1', 'p1', 'data')).rejects.toThrow(
+      'Internal server error'
+    );
   });
 
   it('should return empty array on 400 "doesn\'t exist" error', async () => {
@@ -773,6 +783,27 @@ describe('downloadContent', () => {
 
     expect(result['startercode/good.py'].toString()).toBe('good content');
     expect(result).not.toHaveProperty('startercode/bad.py');
+  });
+
+  it('should throw on per-file failure in strict mode (drift detection must not see incomplete maps)', async () => {
+    requestMock.mockResolvedValueOnce({
+      files: [
+        { path: 'good.py', size: 10 },
+        { path: 'bad.py', size: 10 },
+      ],
+    });
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'startercode/good.py', download_url: 'https://s3.example.com/good.py' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.from('good content') });
+
+    // bad.py download_url request fails
+    requestMock.mockRejectedValueOnce(new Error('transient download failure'));
+
+    await expect(
+      downloadContent(mockClient, 'c1', 'a1', 'p1', undefined, undefined, { strict: true })
+    ).rejects.toThrow('transient download failure');
   });
 
   it('should call axios with correct options for S3 download', async () => {

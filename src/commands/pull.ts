@@ -6,7 +6,7 @@
  */
 
 import * as path from 'path';
-import { loadConfig, updateConfig } from '../core/config';
+import { loadConfig, updateConfig, withConfigLock } from '../core/config';
 import { reconcile } from '../core/reconciler';
 import { VocareumClient } from '../api/client';
 import { resolveAuthProvider } from '../api/auth/cli-auth-options';
@@ -281,7 +281,7 @@ export function valuesEqual(a: unknown, b: unknown): boolean {
     }
     if (Array.isArray(a) !== Array.isArray(b)) { return false; }
     const aKeys = Object.keys(a).sort();
-    const bKeys = Object.keys(b as object).sort();
+    const bKeys = Object.keys(b).sort();
     if (aKeys.length !== bKeys.length || !aKeys.every((k, i) => k === bKeys[i])) { return false; }
     return aKeys.every((k) => valuesEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
   }
@@ -294,8 +294,16 @@ export function valuesEqual(a: unknown, b: unknown): boolean {
 function formatValue(value: unknown): string {
   if (value === undefined) { return '(not set)'; }
   if (value === null) { return 'null'; }
-  if (typeof value === 'object') { return JSON.stringify(value); }
-  return String(value);
+  switch (typeof value) {
+    case 'object': return JSON.stringify(value);
+    case 'symbol': return value.toString();
+    case 'function': return `<function ${value.name || 'anonymous'}>`;
+    case 'string': return value;
+    case 'number':
+    case 'bigint':
+    case 'boolean': return value.toString();
+    default: return '(unsupported value)';
+  }
 }
 
 function hasObservedTopLevelSettings(
@@ -559,8 +567,7 @@ async function detectSettingsDrift(
 async function detectContentDrift(
   config: { assignments: Assignment[]; vocareum: { course_id: string; excluded_assignments?: string[]; architecture?: 'elite' | 'container' } },
   client: VocareumClient,
-  skipAssignmentIds: Set<string>,
-  verbose: boolean
+  skipAssignmentIds: Set<string>
 ): Promise<AssignmentContentDrift[]> {
   const driftList: AssignmentContentDrift[] = [];
   const excludedIds = new Set(config.vocareum.excluded_assignments ?? []);
@@ -582,14 +589,17 @@ async function detectContentDrift(
           configPart.directories
         );
 
-        // Download remote content for this part
+        // Download remote content for this part. Strict mode: a partial
+        // download must fail loudly — an incomplete map would make local files
+        // look remotely deleted, and --batch mode would delete them.
         const remoteFiles = await downloadContent(
           client,
           config.vocareum.course_id,
           assignment.assignment_id,
           configPart.part_id,
           downloadPlan.directories,
-          downloadPlan.architecture
+          downloadPlan.architecture,
+          { strict: true }
         );
 
         const fileDiffs: FileDiff[] = [];
@@ -667,9 +677,7 @@ async function detectContentDrift(
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      if (verbose) {
-        logger.warn(`Could not check content for "${assignment.name}": ${message}`);
-      }
+      logger.warn(`Skipping content drift check for "${assignment.name}": ${message}`);
     }
   }
 
@@ -945,6 +953,12 @@ async function writeFilesToDirectory(
  */
 export async function pullCommand(options: PullOptions): Promise<void> {
   const configPath = options.config ?? 'vocareum.yaml';
+  // Serialize runs against the same config: concurrent pulls/publishes can
+  // corrupt vocareum.yaml via interleaved read-modify-write cycles.
+  await withConfigLock(configPath, () => pullCommandLocked(configPath, options));
+}
+
+async function pullCommandLocked(configPath: string, options: PullOptions): Promise<void> {
   const batch = options.batch ?? false;
   const nonInteractive = !batch && (options.nonInteractive ?? isCI());
   const verbose = options.verbose ?? false;
@@ -967,7 +981,7 @@ export async function pullCommand(options: PullOptions): Promise<void> {
     const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds, reporter);
 
     // Detect content drift (files changed on Vocareum)
-    const contentDrift = await detectContentDrift(config, client, staleAssignmentIds, verbose);
+    const contentDrift = await detectContentDrift(config, client, staleAssignmentIds);
 
     const hasOrphans = plan.orphanedInVocareum.length > 0;
     const hasStale = plan.staleInConfig.length > 0;

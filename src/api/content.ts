@@ -395,7 +395,13 @@ export function downloadContent(
   assignmentId: string,
   partId: string,
   directories?: DirectoryType[],
-  architecture?: 'elite' | 'container'
+  architecture?: 'elite' | 'container',
+  options?: {
+    /** Throw on any per-file download failure instead of skipping the file.
+     *  Required by drift detection: a silently incomplete map makes files
+     *  look remotely deleted. */
+    strict?: boolean;
+  }
 ): Promise<FileMap> {
   return (async (): Promise<FileMap> => {
     // 'course' excluded — shared across all assignments, syncing causes infinite loops.
@@ -414,7 +420,8 @@ export function downloadContent(
         baseApiPath,
         '',
         0,
-        downloaded
+        downloaded,
+        options?.strict === true
       );
     }
 
@@ -439,7 +446,8 @@ async function downloadDirectoryTree(
   baseApiPath: string,
   relativePath: string,
   depth: number,
-  downloaded: FileMap
+  downloaded: FileMap,
+  strict: boolean
 ): Promise<void> {
   const apiDirPath = relativePath ? `${baseApiPath}/${relativePath}` : baseApiPath;
   const entries = await listFilesByApiPath(client, courseId, assignmentId, partId, apiDirPath);
@@ -465,7 +473,7 @@ async function downloadDirectoryTree(
         if (childEntries.length > 0) {
           await downloadDirectoryTree(
             client, courseId, assignmentId, partId,
-            directory, baseApiPath, entryRelPath, depth + 1, downloaded
+            directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict
           );
           continue;
         }
@@ -477,12 +485,15 @@ async function downloadDirectoryTree(
         if (depth < MAX_DOWNLOAD_DEPTH) {
           await downloadDirectoryTree(
             client, courseId, assignmentId, partId,
-            directory, baseApiPath, entryRelPath, depth + 1, downloaded
+            directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict
           );
         } else {
           logger.debug(`Max depth reached, skipping ${filemapKey}`);
         }
         continue;
+      }
+      if (strict) {
+        throw error;
       }
       logger.warn(
         `Failed to download ${filemapKey}: ${error instanceof Error ? error.message : 'Unknown'}`
@@ -558,14 +569,13 @@ async function listFilesByApiPath(
         return [];
       }
     }
-    if (isHttp400(error)) {
-      throw error;
-    }
-    // For transient/non-400 errors, log and return empty.
+    // Transient/non-400 errors must propagate: returning [] here would make an
+    // unreachable directory look empty, which pull interprets as remote
+    // deletions (and in --batch mode, deletes local files).
     logger.warn(
       `Failed to list files for part=${partId}, dir=${apiDirPath}: ${error instanceof Error ? error.message : 'Unknown'}`
     );
-    return [];
+    throw error;
   }
 }
 
