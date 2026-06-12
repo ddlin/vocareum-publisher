@@ -2,6 +2,30 @@
 
 A VS Code extension providing an integrated GUI for [Vocareum Publisher (vocgit)](https://github.com/ddlin/vocareum-publisher) - the CLI tool for publishing course content to Vocareum.
 
+## Installation
+
+The extension is currently distributed as a `.vsix` package (not yet on the
+Visual Studio Marketplace). Either obtain `vocgit-<version>.vsix` from the
+maintainers, or build it from this repository:
+
+```bash
+cd vscode-extension
+npm install
+npm run package        # produces vocgit-<version>.vsix
+```
+
+Then install it into VS Code:
+
+```bash
+code --install-extension vocgit-<version>.vsix
+```
+
+(Or in VS Code: Extensions view → `…` menu → **Install from VSIX…**)
+
+Because vsix installs do not auto-update, re-install a new vsix when you
+update the CLI — the sidebar badges work best with matching versions (see
+Requirements below).
+
 ## Prerequisites
 
 **You must install the vocgit CLI separately before using this extension:**
@@ -59,14 +83,18 @@ Or if using the GitHub Action workflow, vocgit is installed automatically in CI/
 
 | Setting | Description |
 |---------|-------------|
+| `vocgit.cliPath` | Path to the vocgit CLI binary. Leave empty to use `vocgit` from PATH. |
 | `vocgit.apiKey` | Deprecated fallback setting (use `VocGit: Set VOCAREUM_API_KEY`) |
 
 ## Requirements
 
 - VS Code 1.80.0 or higher
-- vocgit CLI installed and available in PATH
+- vocgit CLI installed and available in PATH (or set `vocgit.cliPath`)
+- **vocgit CLI 1.2.0 or newer for sidebar sync badges** — the extension runs
+  `vocgit status --json` so badges always reflect the content change detection
+  `vocgit push` uses. With an older CLI, commands still work but badges show
+  "unknown" and the extension prompts you to update.
 - A valid `vocareum.yaml` configuration file
-- Extension package version in this repo: `1.0.1`
 
 ## Links
 
