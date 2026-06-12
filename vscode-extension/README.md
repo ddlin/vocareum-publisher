@@ -5,8 +5,10 @@ A VS Code extension providing an integrated GUI for [Vocareum Publisher (vocgit)
 ## Installation
 
 The extension is currently distributed as a `.vsix` package (not yet on the
-Visual Studio Marketplace). Either obtain `vocgit-<version>.vsix` from the
-maintainers, or build it from this repository:
+Visual Studio Marketplace). Download `vocgit-<version>.vsix` from the
+[latest GitHub release](https://github.com/ddlin/vocareum-publisher/releases/latest)
+— every release carries the current extension build — or build it from this
+repository:
 
 ```bash
 cd vscode-extension
