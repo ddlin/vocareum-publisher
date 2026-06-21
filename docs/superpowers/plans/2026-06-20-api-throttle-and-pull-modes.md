@@ -32,8 +32,9 @@
 
 **Interfaces:**
 - Produces:
-  - `interface SchedulerOptions { maxConcurrency: number; minIntervalMs: number; jitter: boolean; now?: () => number; setTimeoutFn?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>; clearTimeoutFn?: (h: ReturnType<typeof setTimeout>) => void; random?: () => number; }`
+  - `interface SchedulerOptions { maxConcurrency: number; minIntervalMs: number; jitter: boolean; now?: () => number; setTimeoutFn?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>; random?: () => number; }`
   - `class RequestScheduler { constructor(opts: SchedulerOptions); schedule<T>(task: () => Promise<T>): Promise<T>; }`
+  - Note: no `clearTimeoutFn` — timers are one-shot and self-clearing (`pendingTimer` reset inside the callback), and this repo's `noUnusedLocals: true` would reject an unread injected field.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -164,7 +165,6 @@ export interface SchedulerOptions {
   jitter: boolean;
   now?: () => number;
   setTimeoutFn?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
-  clearTimeoutFn?: (handle: ReturnType<typeof setTimeout>) => void;
   random?: () => number;
 }
 
@@ -174,7 +174,6 @@ export class RequestScheduler {
   private readonly jitter: boolean;
   private readonly now: () => number;
   private readonly setTimeoutFn: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
-  private readonly clearTimeoutFn: (handle: ReturnType<typeof setTimeout>) => void;
   private readonly random: () => number;
 
   private readonly queue: Array<() => void> = [];
@@ -188,7 +187,6 @@ export class RequestScheduler {
     this.jitter = opts.jitter;
     this.now = opts.now ?? (() => Date.now());
     this.setTimeoutFn = opts.setTimeoutFn ?? ((fn, ms) => setTimeout(fn, ms));
-    this.clearTimeoutFn = opts.clearTimeoutFn ?? ((h) => clearTimeout(h));
     this.random = opts.random ?? (() => Math.random());
   }
 
@@ -631,10 +629,35 @@ In `attempt`, wrap the axios call (replace the existing `const response = await 
         const response = await this.scheduler.schedule(() => this.axios.request<T>(config));
 ```
 
+- [ ] **Step 3b: Neutralize the scheduler in existing timing-sensitive tests**
+
+The constructor now defaults to `DEFAULT_THROTTLE` (`minIntervalMs: 300`, `jitter: true`). Existing
+retry/Retry-After tests in `test/unit/client-auth.test.ts` construct `new VocareumClient(provider)`
+and advance fake timers by small amounts (e.g. `backoff: 25` advancing only 25ms; the invalid
+Retry-After `it.each` at ~line 408). With a 300ms default spacing the retry's second attempt would be
+held past those advances and the tests would hang/fail. Also `jitter: true` would make spacing
+nondeterministic.
+
+Define a no-op throttle constant near the top of the file (after the imports):
+
+```typescript
+const NO_THROTTLE = { maxConcurrency: 1, minIntervalMs: 0, jitter: false } as const;
+```
+
+Then pass it as the second arg to **every** `new VocareumClient(provider...)` construction in this
+file *except* the new "throttle scheduling" test from Step 1 (which sets its own throttle). This
+preserves the prior semantics (scheduler becomes a pass-through) for all existing tests:
+
+- `new VocareumClient(provider)` → `new VocareumClient(provider, NO_THROTTLE)`
+- `new VocareumClient(provider as AuthProvider)` → `new VocareumClient(provider as AuthProvider, NO_THROTTLE)`
+
+(Find/replace handles the common form; the two cast variants near the 401-refresh tests need the
+arg added by hand.)
+
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `npx vitest run test/unit/client-auth.test.ts`
-Expected: PASS (all existing tests + the new throttle test).
+Expected: PASS (all existing tests, now scheduler-neutral, + the new throttle test).
 
 - [ ] **Step 5: Commit**
 
@@ -650,37 +673,97 @@ git commit -m "feat: route every VocareumClient request through the scheduler"
 **Files:**
 - Modify: `src/commands/pull.ts:987`
 - Modify: `src/commands/publish.ts:49`
-- Test: `test/unit/throttle-wiring.test.ts` (new — guards the validation-before-request invariant)
+- Test: `test/unit/pull-command.test.ts` (add throttle mock + wiring test)
+- Test: `test/unit/publish-command.test.ts` (add throttle mock + wiring test)
 
 **Interfaces:**
 - Consumes: `resolveThrottle` (Task 3); `config.vocareum.throttle` (Task 2); `new VocareumClient(provider, throttle)` (Task 4).
-- Produces: both commands construct the client with a pre-validated throttle.
+- Produces: both commands resolve throttle (which validates env) BEFORE constructing/using the client.
 
-- [ ] **Step 1: Write the failing test**
+These are real command-level tests: they mock `resolveThrottle` to throw and assert the client constructor and the downstream worker (`reconcile`/`publish`) were never called — proving throttle resolution precedes any request.
 
-Create `test/unit/throttle-wiring.test.ts`. This asserts the ordering invariant at the unit level: `resolveThrottle` throws on a bad env var, and that throw is synchronous/before any client call.
+- [ ] **Step 1: Add the throttle mock to both command test files**
+
+In `test/unit/pull-command.test.ts`, add this `vi.mock` alongside the others (e.g. after the `../../src/api/content` mock at line ~65), then set a default no-op return at module scope (survives the file's `vi.clearAllMocks()`):
 
 ```typescript
-import { describe, it, expect } from 'vitest';
-import { resolveThrottle } from '../../src/api/throttle';
+vi.mock('../../src/api/throttle', () => ({
+  resolveThrottle: vi.fn(() => ({ maxConcurrency: 1, minIntervalMs: 0, jitter: false })),
+  DEFAULT_THROTTLE: { maxConcurrency: 1, minIntervalMs: 0, jitter: false },
+}));
+```
 
-describe('throttle validation happens before any request', () => {
-  it('a bad env var throws during resolution (so it precedes client construction/use)', () => {
-    // Commands call resolveThrottle(config.vocareum.throttle) before `new VocareumClient(...)`.
-    // If resolution throws, no client request can have been issued.
-    expect(() => resolveThrottle(undefined, { VOCAREUM_MAX_CONCURRENCY: '99' })).toThrow(/VOCAREUM_MAX_CONCURRENCY/);
+Add an import to obtain typed handles (top of file, with the other imports):
+
+```typescript
+import { resolveThrottle } from '../../src/api/throttle';
+import { VocareumClient } from '../../src/api/client';
+```
+
+Do the exact same `vi.mock('../../src/api/throttle', ...)` block and the `resolveThrottle`/`VocareumClient` imports in `test/unit/publish-command.test.ts`.
+
+- [ ] **Step 2: Write the failing wiring tests**
+
+Append to `test/unit/pull-command.test.ts` (new top-level `describe`):
+
+```typescript
+describe('pullCommand resolves throttle before using the client', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VOCAREUM_API_KEY = 'token';
+    isCIMock.mockReturnValue(false);
+    loadConfigMock.mockResolvedValue({
+      version: '1.0',
+      vocareum: { org_id: '1', course_id: 'c1', api_base_url: 'https://api.vocareum.com' },
+      assignments: [],
+      publish_options: {},
+      publish_history: [],
+    });
+    vi.mocked(resolveThrottle).mockReturnValue({ maxConcurrency: 1, minIntervalMs: 0, jitter: false });
+  });
+
+  it('does not construct the client or call reconcile when throttle resolution throws', async () => {
+    vi.mocked(resolveThrottle).mockImplementationOnce(() => { throw new Error('bad throttle env'); });
+    await expect(pullCommand({ nonInteractive: true })).rejects.toThrow('bad throttle env');
+    expect(vi.mocked(VocareumClient)).not.toHaveBeenCalled();
+    expect(reconcileMock).not.toHaveBeenCalled();
   });
 });
 ```
 
-(Document-level guarantee; the system-trace checkpoint in the spec covers the end-to-end path. The behavioral wiring is verified by the pull tests in Task 6 and by manual smoke.)
+Append to `test/unit/publish-command.test.ts` (new top-level `describe`):
 
-- [ ] **Step 2: Run test to verify it passes already**
+```typescript
+describe('publishCommand resolves throttle before using the client', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VOCAREUM_API_KEY = 'token';
+    isCIMock.mockReturnValue(false);
+    loadConfigMock.mockResolvedValue({
+      version: '1.0',
+      vocareum: { org_id: '1', course_id: 'c1', api_base_url: 'https://api.vocareum.com' },
+      assignments: [],
+      publish_options: {},
+      publish_history: [],
+    });
+    vi.mocked(resolveThrottle).mockReturnValue({ maxConcurrency: 1, minIntervalMs: 0, jitter: false });
+  });
 
-Run: `npx vitest run test/unit/throttle-wiring.test.ts`
-Expected: PASS (resolveThrottle already throws from Task 3). This test locks the contract; Steps 3 wires the call sites.
+  it('does not construct the client or call publish when throttle resolution throws', async () => {
+    vi.mocked(resolveThrottle).mockImplementationOnce(() => { throw new Error('bad throttle env'); });
+    await expect(publishCommand({ config: 'vocareum.yaml' })).rejects.toThrow('bad throttle env');
+    expect(vi.mocked(VocareumClient)).not.toHaveBeenCalled();
+    expect(publishMock).not.toHaveBeenCalled();
+  });
+});
+```
 
-- [ ] **Step 3: Wire both command call sites**
+- [ ] **Step 3: Run the wiring tests to verify they FAIL**
+
+Run: `npx vitest run test/unit/pull-command.test.ts test/unit/publish-command.test.ts -t "resolves throttle before"`
+Expected: FAIL — commands don't call `resolveThrottle` yet, so the `mockImplementationOnce` throw never fires; the client IS constructed and reconcile/publish ARE called, so `not.toHaveBeenCalled()` fails.
+
+- [ ] **Step 4: Wire both command call sites**
 
 In `src/commands/publish.ts`, add the import (alongside existing imports):
 
@@ -688,7 +771,7 @@ In `src/commands/publish.ts`, add the import (alongside existing imports):
 import { resolveThrottle } from '../api/throttle';
 ```
 
-Replace line 49:
+Replace line 49 (`const client = new VocareumClient(...)`):
 
 ```typescript
     const throttle = resolveThrottle(config.vocareum.throttle);
@@ -701,23 +784,23 @@ In `src/commands/pull.ts`, add the import (alongside existing imports):
 import { resolveThrottle } from '../api/throttle';
 ```
 
-Replace line 987:
+Replace line 987 (`const client = new VocareumClient(...)`):
 
 ```typescript
     const throttle = resolveThrottle(config.vocareum.throttle);
     const client = new VocareumClient(resolveAuthProvider(options, config.vocareum.api_base_url), throttle);
 ```
 
-- [ ] **Step 4: Verify the build and full suite**
+- [ ] **Step 5: Run the wiring tests + full suite**
 
-Run: `npm run typecheck && npx vitest run`
-Expected: typecheck clean; all tests pass.
+Run: `npx vitest run test/unit/pull-command.test.ts test/unit/publish-command.test.ts && npm run typecheck`
+Expected: PASS — throttle now resolved before the client; the throw short-circuits before construction. Typecheck clean.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/commands/pull.ts src/commands/publish.ts test/unit/throttle-wiring.test.ts
-git commit -m "feat: resolve and pass throttle settings into pull/publish clients"
+git add src/commands/pull.ts src/commands/publish.ts test/unit/pull-command.test.ts test/unit/publish-command.test.ts
+git commit -m "feat: resolve+validate throttle before constructing pull/publish clients"
 ```
 
 ---
@@ -977,15 +1060,83 @@ Add the three options to `pullCmd` (after the existing `--skip-content` option, 
 Run: `npx vitest run test/unit/pull-content-flags.test.ts && npm run typecheck`
 Expected: PASS (16 cases); typecheck clean.
 
-- [ ] **Step 6: Verify defaults manually (no content download on bare pull)**
+- [ ] **Step 6: Write `pullCommand`-level tests for the behavior change (mocked client)**
 
-Run: `npx vitest run` (full suite)
-Expected: all pass. Then read `src/commands/pull.ts` around the edited region to confirm `detectContentDrift` is unreachable when `options.content` is falsy (guarded by `if (options.content)`), satisfying the "zero content-drift requests on bare pull" guarantee.
+The pure-helper tests above don't prove the command actually gates the download. Add behavioral
+tests in `test/unit/pull-command.test.ts` that assert the mocked `downloadContent` (already mocked
+at line ~63) is or isn't called. Add the handle import at the top of the file:
 
-- [ ] **Step 7: Commit**
+```typescript
+import { downloadContent } from '../../src/api/content';
+```
+
+Append this `describe` (self-contained: `reconcile` returns no orphans/stale, `getAssignment`
+rejects so settings drift is empty, and `downloadContent` returns `{}` so content drift is empty —
+the command reaches "No sync issues found" without prompting; we assert only the call pattern):
+
+```typescript
+describe('pullCommand content-drift gating', () => {
+  const twoAssignmentConfig: Config = {
+    version: '1.0',
+    vocareum: { org_id: '1', course_id: 'c1', api_base_url: 'https://api.vocareum.com', excluded_assignments: [] },
+    assignments: [
+      { assignment_id: 'a-lab1', name: 'lab1', path: 'lab1', create_from_template: false, settings: {},
+        parts: [{ part_id: 'p1', path: 'part1', settings: {} }] },
+      { assignment_id: 'a-lab2', name: 'lab2', path: 'lab2', create_from_template: false, settings: {},
+        parts: [{ part_id: 'p2', path: 'part1', settings: {} }] },
+    ],
+    publish_options: { on_missing_id: 'skip', auto_commit: false, abort_on_error: false, sync_deletes: false, exclude_patterns: [] },
+    publish_history: [],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VOCAREUM_API_KEY = 'token';
+    isCIMock.mockReturnValue(false);
+    loadConfigMock.mockResolvedValue(twoAssignmentConfig);
+    updateConfigMock.mockResolvedValue(undefined);
+    getAssignmentMock.mockRejectedValue(new Error('skip settings drift'));
+    reconcileMock.mockResolvedValue({
+      config: twoAssignmentConfig, course: { type: 'skip' }, assignments: [],
+      summary: { coursesToUpdate: 0, assignmentsToCreate: 0, assignmentsToUpdate: 0, assignmentsWithDiscoveredIds: 0, assignmentsToSkip: 0, partsToCreate: 0, partsToUpdate: 0, estimatedApiCalls: 0 },
+      orphanedInVocareum: [], staleInConfig: [],
+    });
+    vi.mocked(downloadContent).mockResolvedValue({});
+  });
+
+  it('bare pull does NOT download content for drift', async () => {
+    await pullCommand({ nonInteractive: true });
+    expect(vi.mocked(downloadContent)).not.toHaveBeenCalled();
+  });
+
+  it('--content downloads content for all linked parts', async () => {
+    await pullCommand({ nonInteractive: true, content: true });
+    expect(vi.mocked(downloadContent)).toHaveBeenCalled();
+    const courseIds = vi.mocked(downloadContent).mock.calls.map((c) => c[2]); // assignmentId arg
+    expect(new Set(courseIds)).toEqual(new Set(['a-lab1', 'a-lab2']));
+  });
+
+  it('--content --assignment lab1 downloads only lab1 parts', async () => {
+    await pullCommand({ nonInteractive: true, content: true, assignment: ['lab1'] });
+    expect(vi.mocked(downloadContent)).toHaveBeenCalled();
+    const assignmentIds = vi.mocked(downloadContent).mock.calls.map((c) => c[2]);
+    expect(new Set(assignmentIds)).toEqual(new Set(['a-lab1']));
+  });
+});
+```
+
+(`downloadContent(client, courseId, assignmentId, partId, ...)` — assignmentId is the 3rd
+positional arg, index `[2]`. Confirmed against `src/api/content.ts:600`.)
+
+- [ ] **Step 7: Run the new command tests + full suite**
+
+Run: `npx vitest run test/unit/pull-command.test.ts test/unit/pull-content-flags.test.ts && npm run typecheck`
+Expected: PASS. The bare-pull test proves zero content-drift downloads; `--content` and scoping prove the gate and the filter.
+
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/commands/pull.ts src/index.ts test/unit/pull-content-flags.test.ts
+git add src/commands/pull.ts src/index.ts test/unit/pull-content-flags.test.ts test/unit/pull-command.test.ts
 git commit -m "feat: make pull content drift opt-in via --content with --assignment/--part scoping"
 ```
 
@@ -1085,8 +1236,9 @@ git commit -m "docs: document throttle config, opt-in pull content drift, CI con
 - Accurate jitter claim (start spacing only) → Task 1 `spacing()`; backoff sleep untouched. ✓
 - Throttle config block, strict, bounded, adversarial table → Task 2 (11 cases). ✓
 - Env resolution + precedence + hard errors → Task 3 (9 cases). ✓
-- Validation-before-request ordering → Task 5 + resolveThrottle throwing; commands resolve before client use. ✓
-- Pull `--content` opt-in, `--assignment` repeatable, `--part` requires single `--assignment`, error combos → Task 6 (16 cases). ✓
+- Validation-before-request ordering → Task 5 command-level wiring tests: `resolveThrottle` mocked to throw, asserting `VocareumClient` + `reconcile`/`publish` are never called. ✓
+- Existing client-auth retry/timer tests neutralized against the new default throttle → Task 5 Step 3b (`NO_THROTTLE`). ✓
+- Pull `--content` opt-in, `--assignment` repeatable, `--part` requires single `--assignment`, error combos → Task 6 pure-helper tests (16 cases) + `pullCommand`-level tests (Step 6) proving bare pull issues zero `downloadContent` calls, `--content` downloads all, scoping filters. ✓
 - Drift vs orphan-import separation; `--skip-content` unchanged → Task 6 (guard only wraps `detectContentDrift`; orphan import + `skipContent` untouched). ✓
 - Skip note output → Task 6 Step 3. ✓
 - Repeated-`--assignment` Commander collector → Task 6 Step 4. ✓
@@ -1094,4 +1246,4 @@ git commit -m "docs: document throttle config, opt-in pull content drift, CI con
 
 **Placeholder scan:** No TBD/TODO; every code step shows full code; every test step shows assertions. ✓
 
-**Type consistency:** `ResolvedThrottle` (Task 3) is structurally assignable to `SchedulerOptions` (Task 1) — client passes it directly (Task 4). `ThrottleConfig` (Task 2) consumed by `resolveThrottle` (Task 3). `validatePullContentFlags`/`scopeAssignmentsForContent` names match between Task 6 implementation, exports, and tests. `detectContentDrift` gains a trailing optional `partIds?: Set<string>` consistent between definition and call. Verified against source: `ValidationResult.valid` (`src/core/config.ts`); `Assignment.assignment_id`/`Part.part_id` are `string | null`, `Assignment.parts`/`name`/`path` present, `Part` has no `seqnum` (`src/types/config.ts`). ✓
+**Type consistency:** `ResolvedThrottle` (Task 3) is structurally assignable to `SchedulerOptions` (Task 1, no `clearTimeoutFn`) — client passes it directly (Task 4). `ThrottleConfig` (Task 2) consumed by `resolveThrottle` (Task 3). `validatePullContentFlags`/`scopeAssignmentsForContent` names match between Task 6 implementation, exports, and tests. `detectContentDrift` gains a trailing optional `partIds?: Set<string>` consistent between definition and call. Verified against source: `ValidationResult.valid` (`src/core/config.ts`); `Assignment.assignment_id`/`Part.part_id` are `string | null`, `Assignment.parts`/`name`/`path` present, `Part` has no `seqnum` (`src/types/config.ts`); `downloadContent` assignmentId arg at index `[2]` (`src/api/content.ts:600`); `tsconfig` `noUnusedLocals: true` honored (no unread fields). ✓
