@@ -256,7 +256,7 @@ The `pull` command helps you manage assignment sync issues:
 1. **Orphaned assignments** - exist in Vocareum but not in your local config
 2. **Stale assignments** - exist in your config but were deleted from Vocareum
 3. **Settings drift** - settings in Vocareum differ from your local config
-4. **Content drift** - files in Vocareum differ from your local files
+4. **Content drift** - files in Vocareum differ from your local files (**opt-in via `--content`**)
 
 This is useful when:
 - You've created assignments directly in the Vocareum UI
@@ -266,10 +266,20 @@ This is useful when:
 - Files were edited directly in Vocareum and you want to pull those changes
 
 ```bash
-vocgit pull                # Interactive mode
+vocgit pull                # Interactive mode (no content drift check)
 vocgit pull --verbose      # Show detailed output
 vocgit pull --non-interactive  # Skip all issues
 ```
+
+**Content drift detection is opt-in.** By default, `vocgit pull` does not download remote files to diff them. Add `--content` to enable it. You can scope the check with `--assignment <name|id>` (repeatable) and `--part <id>` (requires exactly one `--assignment`):
+
+```bash
+vocgit pull --content                            # check all assignments for content drift
+vocgit pull --content --assignment lab1          # scope to lab1 only
+vocgit pull --content --assignment lab1 --part part1  # scope to one part
+```
+
+`--skip-content` is a separate flag that controls orphan-import behavior only — it tells vocgit to skip downloading files for newly imported orphan assignments (useful to retry after a failed pull). It has no effect on content drift detection.
 
 **For orphaned assignments** (in Vocareum, not in config):
 - **Import**: Download content and add to your local repository
@@ -289,7 +299,7 @@ vocgit pull --non-interactive  # Skip all issues
 
 Set `publish_options.sync_settings: false` to skip course, assignment, and part settings sync while still syncing files. Assignments and parts can override this with their own `sync_settings` value; part settings take precedence over assignment settings, which take precedence over the global publish option. Disabled settings remain in `vocareum.yaml` but are ignored for drift detection and push updates.
 
-**For content drift** (files in Vocareum differ from local):
+**For content drift** (files in Vocareum differ from local — requires `--content`):
 - **Pull**: Download remote files (overwrites local files)
 - **Keep**: Keep local files (will overwrite Vocareum on next push)
 - **Skip**: Do nothing for now
@@ -344,6 +354,44 @@ Summary:
   Skipped:         0
 
 ℹ Updated vocareum.yaml
+```
+
+### Throttling the Vocareum API
+
+vocgit schedules all Vocareum API calls through a built-in request throttle to avoid hitting rate limits, especially when pulling or pushing many assignments. The throttle is configurable via a `vocareum.throttle` block in `vocareum.yaml`:
+
+```yaml
+vocareum:
+  org_id: "..."
+  course_id: "..."
+  throttle:
+    max_concurrency: 1
+    min_interval_ms: 300
+    jitter: true
+```
+
+| Field | Default | Range | Description |
+|-------|---------|-------|-------------|
+| `max_concurrency` | `1` | 1–5 | Maximum number of concurrent Vocareum API requests |
+| `min_interval_ms` | `300` | 0–60000 | Minimum milliseconds between request starts |
+| `jitter` | `true` | — | Add random jitter to the start spacing to avoid thundering herd |
+
+Requests are FIFO-scheduled: each request waits until both the concurrency slot and the minimum interval are satisfied before starting. Jitter applies to the start spacing only — it does not affect retry backoff.
+
+**Environment variable overrides** (take precedence over `vocareum.yaml`):
+
+| Variable | Overrides |
+|----------|-----------|
+| `VOCAREUM_MAX_CONCURRENCY` | `vocareum.throttle.max_concurrency` |
+| `VOCAREUM_MIN_REQUEST_INTERVAL_MS` | `vocareum.throttle.min_interval_ms` |
+| `VOCAREUM_THROTTLE_JITTER` | `vocareum.throttle.jitter` (`"true"` / `"false"`) |
+
+**CI note:** if you run vocgit from multiple GitHub Actions runners against the same course concurrently, use a `concurrency:` group to serialize them rather than raising `max_concurrency`:
+
+```yaml
+concurrency:
+  group: vocareum-publish-${{ github.repository }}
+  cancel-in-progress: false
 ```
 
 ## GitHub Action
@@ -615,6 +663,9 @@ Store credentials as repository secrets (`VOCAREUM_OAUTH_CLIENT_ID`, `VOCAREUM_O
 | `VOCAREUM_OAUTH_CLIENT_SECRET` | v3 OAuth client secret (required when `VOCAREUM_AUTH_MODE=oauth`) |
 | `VOCAREUM_API_V3_BASE_URL` | Override the v3 API base URL (default: `https://labs.vocareum.com/api/v3`) |
 | `VOCAREUM_OAUTH_TOKEN_URL` | Override the v3 token endpoint URL (default: `https://labs.vocareum.com/api/v3/oauth/token`) |
+| `VOCAREUM_MAX_CONCURRENCY` | Override `vocareum.throttle.max_concurrency` (1–5) |
+| `VOCAREUM_MIN_REQUEST_INTERVAL_MS` | Override `vocareum.throttle.min_interval_ms` (0–60000 ms) |
+| `VOCAREUM_THROTTLE_JITTER` | Override `vocareum.throttle.jitter` (`true` / `false`) |
 | `VOCAREUM_LOG_LEVEL` | Log level: ERROR, WARN, INFO, DEBUG, TRACE |
 
 ## License

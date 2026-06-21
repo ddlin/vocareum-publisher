@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Behavior changes
+- `vocgit pull` no longer downloads remote content by default. Content-drift
+  detection is now opt-in via `--content`, optionally scoped with
+  `--assignment <name|id>` (repeatable) and `--part <id>` (requires exactly one
+  `--assignment`). Orphan-import behavior and `--skip-content` are unchanged.
+
+### Added
+- Proactive request throttle for the Vocareum API client: `vocareum.throttle`
+  config block (`max_concurrency` 1..5, default 1; `min_interval_ms` 0..60000,
+  default 300; `jitter`, default true) plus env overrides
+  `VOCAREUM_MAX_CONCURRENCY`, `VOCAREUM_MIN_REQUEST_INTERVAL_MS`,
+  `VOCAREUM_THROTTLE_JITTER`. Requests are FIFO-scheduled with a concurrency cap
+  and jittered minimum spacing.
+
 ## [1.2.0] - 2026-06-11
 
 ### Added

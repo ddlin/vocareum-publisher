@@ -613,7 +613,7 @@ export function scopeAssignmentsForContent(
   }
   // validatePullContentFlags guarantees exactly one assignment here.
   const target = selected[0];
-  const validPartIds = new Set((target.parts ?? []).map((p) => p.part_id).filter((id): id is string => id != null));
+  const validPartIds = new Set((target.parts ?? []).map((p) => p.part_id).filter((id): id is string => id !== null && id !== undefined));
   for (const p of partSelectors) {
     if (!validPartIds.has(p)) {
       const valid = [...validPartIds].join(', ');
@@ -657,7 +657,7 @@ async function detectContentDrift(
 
       for (const configPart of assignment.parts) {
         if (!configPart.part_id) { continue; }
-        if (partIds !== undefined && (configPart.part_id == null || !partIds.has(configPart.part_id))) {
+        if (partIds !== undefined && (configPart.part_id === null || configPart.part_id === undefined || !partIds.has(configPart.part_id))) {
           continue;
         }
 
