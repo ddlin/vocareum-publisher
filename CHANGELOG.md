@@ -5,13 +5,13 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.0] - 2026-06-20
 
 ### Behavior changes
 - `vocgit pull` no longer downloads remote content by default. Content-drift
   detection is now opt-in via `--content`, optionally scoped with
-  `--assignment <name|id>` (repeatable) and `--part <id>` (requires exactly one
-  `--assignment`). Orphan-import behavior and `--skip-content` are unchanged.
+  `--assignment <name|id>` (repeatable) and `--part <part_id>` (requires exactly
+  one `--assignment`). Orphan-import behavior and `--skip-content` are unchanged.
 
 ### Added
 - Proactive request throttle for the Vocareum API client: `vocareum.throttle`
