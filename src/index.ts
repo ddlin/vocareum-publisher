@@ -178,6 +178,8 @@ Examples:
     }
   });
 
+const collectFlag = (value: string, acc: string[]): string[] => { acc.push(value); return acc; };
+
 // Pull command - handle orphaned assignments
 const pullCmd = program
   .command('pull')
@@ -187,6 +189,9 @@ const pullCmd = program
   .option('--non-interactive', 'Skip all prompts (no changes made)')
   .option('--batch', 'Apply sensible defaults without prompting (import orphans, pull drift, skip stale)')
   .option('--skip-content', 'Reuse existing local content for orphan imports instead of re-downloading (recovers from failed pulls)')
+  .option('--content', 'Detect content drift (downloads remote files to diff them; off by default)')
+  .option('--assignment <name|id>', 'Limit --content drift to assignment(s); repeatable', collectFlag, [])
+  .option('--part <id>', 'Limit --content drift to part(s); requires exactly one --assignment', collectFlag, [])
   .option('--verbose', 'Show detailed output including file lists');
 addAuthOptions(pullCmd);
 pullCmd
