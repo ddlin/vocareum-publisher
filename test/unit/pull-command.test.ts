@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Config } from '../../src/types/config';
 import { pullCommand } from '../../src/commands/pull';
 import { UnknownFieldReporter } from '../../src/utils/unknown-field-reporter';
+import { resolveThrottle } from '../../src/api/throttle';
+import { VocareumClient } from '../../src/api/client';
+import { downloadContent } from '../../src/api/content';
 
 const {
   loadConfigMock,
@@ -62,6 +65,11 @@ vi.mock('../../src/api/parts', () => ({
 
 vi.mock('../../src/api/content', () => ({
   downloadContent: vi.fn(),
+}));
+
+vi.mock('../../src/api/throttle', () => ({
+  resolveThrottle: vi.fn(() => ({ maxConcurrency: 1, minIntervalMs: 0, jitter: false })),
+  DEFAULT_THROTTLE: { maxConcurrency: 1, minIntervalMs: 0, jitter: false },
 }));
 
 vi.mock('../../src/utils/settings', () => ({
@@ -458,5 +466,77 @@ describe('pullCommand — reporter lifecycle', () => {
     expect(mapAssignmentSettingsMock).toHaveBeenCalled();
     const secondArg = mapAssignmentSettingsMock.mock.calls[0][1];
     expect(secondArg).toBeInstanceOf(UnknownFieldReporter);
+  });
+});
+
+describe('pullCommand resolves throttle before using the client', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VOCAREUM_API_KEY = 'token';
+    isCIMock.mockReturnValue(false);
+    loadConfigMock.mockResolvedValue({
+      version: '1.0',
+      vocareum: { org_id: '1', course_id: 'c1', api_base_url: 'https://api.vocareum.com' },
+      assignments: [],
+      publish_options: {},
+      publish_history: [],
+    });
+    vi.mocked(resolveThrottle).mockReturnValue({ maxConcurrency: 1, minIntervalMs: 0, jitter: false });
+  });
+
+  it('does not construct the client or call reconcile when throttle resolution throws', async () => {
+    vi.mocked(resolveThrottle).mockImplementationOnce(() => { throw new Error('bad throttle env'); });
+    await expect(pullCommand({ nonInteractive: true })).rejects.toThrow('bad throttle env');
+    expect(vi.mocked(VocareumClient)).not.toHaveBeenCalled();
+    expect(reconcileMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('pullCommand content-drift gating', () => {
+  const twoAssignmentConfig: Config = {
+    version: '1.0',
+    vocareum: { org_id: '1', course_id: 'c1', api_base_url: 'https://api.vocareum.com', excluded_assignments: [] },
+    assignments: [
+      { assignment_id: 'a-lab1', name: 'lab1', path: 'lab1', create_from_template: false, settings: {},
+        parts: [{ part_id: 'p1', path: 'part1', settings: {} }] },
+      { assignment_id: 'a-lab2', name: 'lab2', path: 'lab2', create_from_template: false, settings: {},
+        parts: [{ part_id: 'p2', path: 'part1', settings: {} }] },
+    ],
+    publish_options: { on_missing_id: 'skip', auto_commit: false, abort_on_error: false, sync_deletes: false, exclude_patterns: [] },
+    publish_history: [],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VOCAREUM_API_KEY = 'token';
+    isCIMock.mockReturnValue(false);
+    loadConfigMock.mockResolvedValue(twoAssignmentConfig);
+    updateConfigMock.mockResolvedValue(undefined);
+    getAssignmentMock.mockRejectedValue(new Error('skip settings drift'));
+    reconcileMock.mockResolvedValue({
+      config: twoAssignmentConfig, course: { type: 'skip' }, assignments: [],
+      summary: { coursesToUpdate: 0, assignmentsToCreate: 0, assignmentsToUpdate: 0, assignmentsWithDiscoveredIds: 0, assignmentsToSkip: 0, partsToCreate: 0, partsToUpdate: 0, estimatedApiCalls: 0 },
+      orphanedInVocareum: [], staleInConfig: [],
+    });
+    vi.mocked(downloadContent).mockResolvedValue({});
+  });
+
+  it('bare pull does NOT download content for drift', async () => {
+    await pullCommand({ nonInteractive: true });
+    expect(vi.mocked(downloadContent)).not.toHaveBeenCalled();
+  });
+
+  it('--content downloads content for all linked parts', async () => {
+    await pullCommand({ nonInteractive: true, content: true });
+    expect(vi.mocked(downloadContent)).toHaveBeenCalled();
+    const courseIds = vi.mocked(downloadContent).mock.calls.map((c) => c[2]); // assignmentId arg
+    expect(new Set(courseIds)).toEqual(new Set(['a-lab1', 'a-lab2']));
+  });
+
+  it('--content --assignment lab1 downloads only lab1 parts', async () => {
+    await pullCommand({ nonInteractive: true, content: true, assignment: ['lab1'] });
+    expect(vi.mocked(downloadContent)).toHaveBeenCalled();
+    const assignmentIds = vi.mocked(downloadContent).mock.calls.map((c) => c[2]);
+    expect(new Set(assignmentIds)).toEqual(new Set(['a-lab1']));
   });
 });

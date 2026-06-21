@@ -10,6 +10,7 @@ import * as path from 'path';
 import { publish } from '../core/publisher';
 import { VocareumClient } from '../api/client';
 import { resolveAuthProvider } from '../api/auth/cli-auth-options';
+import { resolveThrottle } from '../api/throttle';
 import { logger } from '../utils/logger';
 import { loadDotEnvIfPresent, isCI } from '../utils/env';
 import { UnknownFieldReporter } from '../utils/unknown-field-reporter';
@@ -46,7 +47,8 @@ async function publishCommandLocked(
   try {
     loadDotEnvIfPresent(path.join(workspaceRoot, '.env'));
     const config = await loadConfig(configPath);
-    const client = new VocareumClient(resolveAuthProvider(options, config.vocareum.api_base_url));
+    const throttle = resolveThrottle(config.vocareum.throttle);
+    const client = new VocareumClient(resolveAuthProvider(options, config.vocareum.api_base_url), throttle);
 
     const requestedAutoCommit = options.autoCommit ?? config.publish_options?.auto_commit ?? false;
     const autoCommit = isCI() ? false : requestedAutoCommit;

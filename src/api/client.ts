@@ -9,6 +9,8 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosError } from 'axios';
 import { logger } from '../utils/logger';
 import type { AuthProvider } from './auth/auth-provider';
+import { RequestScheduler } from './scheduler';
+import { DEFAULT_THROTTLE, type ResolvedThrottle } from './throttle';
 
 /**
  * Base error class for Vocareum API errors
@@ -311,16 +313,17 @@ export function sanitizeForLog(value: unknown, seen: WeakSet<object> = new WeakS
 export class VocareumClient {
   private axios: AxiosInstance;
   private authProvider: AuthProvider;
+  private scheduler: RequestScheduler;
 
-  constructor(authProvider: AuthProvider) {
+  constructor(authProvider: AuthProvider, throttle: ResolvedThrottle = DEFAULT_THROTTLE) {
     assertAllowedBaseUrl(authProvider.apiBaseUrl);
     this.authProvider = authProvider;
+    this.scheduler = new RequestScheduler(throttle);
     this.axios = axios.create({
       baseURL: authProvider.apiBaseUrl,
       timeout: 30000,
       headers: { 'Content-Type': 'application/json' },
     });
-    // Inject the auth header per request (async: OAuth may exchange/cache a token).
     this.axios.interceptors.request.use(async (config) => {
       config.headers.set('Authorization', await this.authProvider.getAuthorizationHeader());
       return config;
@@ -366,7 +369,7 @@ export class VocareumClient {
     for (let a = 0; a < maxRetries; a++) {
       try {
         logger.debug('API request', sanitizeForLog(config));
-        const response = await this.axios.request<T>(config);
+        const response = await this.scheduler.schedule(() => this.axios.request<T>(config));
         logger.debug(`API response: ${response.status}`, sanitizeForLog({ data: response.data }));
         return response.data;
       } catch (error) {

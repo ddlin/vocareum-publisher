@@ -12,6 +12,7 @@ import { resolveWorkspaceContext, type WorkspaceContext } from '../core/workspac
 import { reconcile } from '../core/reconciler';
 import { VocareumClient } from '../api/client';
 import { resolveAuthProvider } from '../api/auth/cli-auth-options';
+import { resolveThrottle } from '../api/throttle';
 import { getAssignment } from '../api/assignments';
 import { listParts, getPart } from '../api/parts';
 import { downloadContent } from '../api/content';
@@ -55,6 +56,12 @@ export interface PullOptions {
    * directory already has content on disk (e.g. after a prior failed pull).
    */
   skipContent?: boolean;
+  /** Opt in to content-drift detection (downloads remote files to diff them). */
+  content?: boolean;
+  /** Limit --content drift to these assignment name(s) or id(s). Repeatable. */
+  assignment?: string[];
+  /** Limit --content drift to these part id(s); requires exactly one --assignment. */
+  part?: string[];
   auth?: string;
   clientId?: string;
   clientSecret?: string;
@@ -556,6 +563,67 @@ async function detectSettingsDrift(
 }
 
 /**
+ * Validate the --content / --assignment / --part flag combination. Throws with
+ * a user-facing message on any invalid combination. Pure: no config needed.
+ */
+export function validatePullContentFlags(opts: {
+  content?: boolean;
+  assignment?: string[];
+  part?: string[];
+}): void {
+  const assignmentSel = opts.assignment ?? [];
+  const partSel = opts.part ?? [];
+  if (!opts.content && (assignmentSel.length > 0 || partSel.length > 0)) {
+    throw new Error('--assignment/--part only apply with --content. Add --content or remove the selectors.');
+  }
+  if (partSel.length > 0 && assignmentSel.length === 0) {
+    throw new Error('--part requires --assignment (part selectors are not unique across a course).');
+  }
+  if (partSel.length > 0 && assignmentSel.length > 1) {
+    throw new Error('--part requires exactly one --assignment (part selectors are not unique across assignments).');
+  }
+}
+
+/**
+ * Narrow the assignment list (and optionally part ids) for scoped content
+ * drift. Matches assignment selectors against name OR assignment_id, and part
+ * selectors against part_id within the single selected assignment. Throws on
+ * any unmatched selector. With no selectors, returns all assignments and no
+ * part filter.
+ */
+export function scopeAssignmentsForContent(
+  assignments: Assignment[],
+  assignmentSelectors: string[],
+  partSelectors: string[],
+): { assignments: Assignment[]; partIds: Set<string> | undefined } {
+  if (assignmentSelectors.length === 0) {
+    return { assignments, partIds: undefined };
+  }
+  const selected: Assignment[] = [];
+  for (const sel of assignmentSelectors) {
+    const match = assignments.find((a) => a.name === sel || a.assignment_id === sel);
+    if (!match) {
+      const valid = assignments.map((a) => `${a.name} (${a.assignment_id ?? 'no id'})`).join(', ');
+      throw new Error(`Unknown --assignment "${sel}". Valid choices: ${valid || '(none)'}.`);
+    }
+    if (!selected.includes(match)) { selected.push(match); }
+  }
+  if (partSelectors.length === 0) {
+    return { assignments: selected, partIds: undefined };
+  }
+  // validatePullContentFlags guarantees exactly one assignment here.
+  const target = selected[0];
+  const validPartIds = new Set((target.parts ?? []).map((p) => p.part_id).filter((id): id is string => id !== null && id !== undefined));
+  for (const p of partSelectors) {
+    if (!validPartIds.has(p)) {
+      const valid = [...validPartIds].join(', ');
+      throw new Error(`Unknown --part "${p}" in assignment "${target.name}". Valid parts: ${valid || '(none)'}.`);
+    }
+  }
+  return { assignments: selected, partIds: new Set(partSelectors) };
+}
+
+/**
  * Detect content drift between local files and Vocareum
  *
  * Compares local files against remote files and identifies:
@@ -566,13 +634,15 @@ async function detectSettingsDrift(
  * @param config - Configuration with assignments
  * @param client - Vocareum API client
  * @param skipAssignmentIds - Assignment IDs to skip (stale or excluded)
- * @param verbose - Enable verbose logging
+ * @param workspaceRoot - Workspace root path
+ * @param partIds - Optional set of part IDs to limit drift detection to
  */
 async function detectContentDrift(
   config: { assignments: Assignment[]; vocareum: { course_id: string; excluded_assignments?: string[]; architecture?: 'elite' | 'container' } },
   client: VocareumClient,
   skipAssignmentIds: Set<string>,
-  workspaceRoot: string
+  workspaceRoot: string,
+  partIds?: Set<string>,
 ): Promise<AssignmentContentDrift[]> {
   const driftList: AssignmentContentDrift[] = [];
   const excludedIds = new Set(config.vocareum.excluded_assignments ?? []);
@@ -587,6 +657,9 @@ async function detectContentDrift(
 
       for (const configPart of assignment.parts) {
         if (!configPart.part_id) { continue; }
+        if (partIds !== undefined && (configPart.part_id === null || configPart.part_id === undefined || !partIds.has(configPart.part_id))) {
+          continue;
+        }
 
         const downloadPlan = getDownloadPlan(
           config.vocareum.architecture,
@@ -984,7 +1057,10 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
     loadDotEnvIfPresent(path.join(workspaceRoot, '.env'));
     const config = await loadConfig(configPath);
 
-    const client = new VocareumClient(resolveAuthProvider(options, config.vocareum.api_base_url));
+    validatePullContentFlags(options);
+
+    const throttle = resolveThrottle(config.vocareum.throttle);
+    const client = new VocareumClient(resolveAuthProvider(options, config.vocareum.api_base_url), throttle);
 
     logger.info('Scanning for assignment sync issues...');
 
@@ -995,8 +1071,27 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
     const staleAssignmentIds = new Set(plan.staleInConfig.map(s => s.assignment_id));
     const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds, reporter);
 
-    // Detect content drift (files changed on Vocareum)
-    const contentDrift = await detectContentDrift(config, client, staleAssignmentIds, workspaceRoot);
+    // Content drift is opt-in (it downloads remote files). Orphan import below
+    // is unaffected and still governed by --skip-content.
+    let contentDrift: AssignmentContentDrift[] = [];
+    if (options.content) {
+      const scoped = scopeAssignmentsForContent(
+        config.assignments,
+        options.assignment ?? [],
+        options.part ?? [],
+      );
+      contentDrift = await detectContentDrift(
+        { ...config, assignments: scoped.assignments },
+        client,
+        staleAssignmentIds,
+        workspaceRoot,
+        scoped.partIds,
+      );
+    }
+
+    if (!options.content) {
+      logger.info('Content drift not checked. Run `vocgit pull --content` to compare file contents (downloads remote files).');
+    }
 
     const hasOrphans = plan.orphanedInVocareum.length > 0;
     const hasStale = plan.staleInConfig.length > 0;

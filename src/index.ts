@@ -178,6 +178,8 @@ Examples:
     }
   });
 
+const collectFlag = (value: string, acc: string[]): string[] => { acc.push(value); return acc; };
+
 // Pull command - handle orphaned assignments
 const pullCmd = program
   .command('pull')
@@ -187,6 +189,9 @@ const pullCmd = program
   .option('--non-interactive', 'Skip all prompts (no changes made)')
   .option('--batch', 'Apply sensible defaults without prompting (import orphans, pull drift, skip stale)')
   .option('--skip-content', 'Reuse existing local content for orphan imports instead of re-downloading (recovers from failed pulls)')
+  .option('--content', 'Detect content drift (downloads remote files to diff them; off by default)')
+  .option('--assignment <name|id>', 'Limit --content drift to assignment(s); repeatable', collectFlag, [])
+  .option('--part <part_id>', 'Limit --content drift to part(s) by part_id; requires exactly one --assignment', collectFlag, [])
   .option('--verbose', 'Show detailed output including file lists');
 addAuthOptions(pullCmd);
 pullCmd
@@ -211,9 +216,15 @@ Description:
        → Keep (keep local, will overwrite Vocareum on publish)
        → Skip (do nothing)
 
+    4. Content drift - Files in Vocareum differ from your local files
+       Opt-in via --content (off by default; downloads remote files to diff).
+       Scope with --assignment <name|id> (repeatable) and --part <part_id>
+       (requires exactly one --assignment).
+
   Modes:
-    --batch           Import orphans, pull settings/content drift, skip stale.
-                      No prompts. Ideal for bulk onboarding or CI sync.
+    --batch           Import orphans, pull settings drift, skip stale. No
+                      prompts. Add --content to also pull content drift.
+                      Ideal for bulk onboarding or CI sync.
     --non-interactive  Report issues only, make no changes.
 
   This is useful when:
@@ -222,11 +233,15 @@ Description:
     - Another team member made changes
 
 Examples:
-  $ vocgit pull               # Interactive sync
-  $ vocgit pull --batch       # Import all, pull all drift, no prompts
+  $ vocgit pull               # Interactive sync (no content drift check)
+  $ vocgit pull --batch       # Import orphans, pull settings drift, no prompts
   $ vocgit pull --verbose     # Show file details during import
   $ vocgit pull --non-interactive  # Report issues only
   $ vocgit pull --batch --skip-content  # Retry after failed pull; reuse existing local files
+  $ vocgit pull --content     # also check content drift (downloads remote files)
+  $ vocgit pull --batch --content   # batch sync including content drift
+  $ vocgit pull --content --assignment lab1        # scope content drift to lab1
+  $ vocgit pull --content --assignment lab1 --part <part_id>   # scope to one part
 `)
   .action(async (options: PullOptions) => {
     try {
