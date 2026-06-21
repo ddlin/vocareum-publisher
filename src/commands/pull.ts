@@ -19,7 +19,8 @@ import { downloadContent } from '../api/content';
 import { logger } from '../utils/logger';
 import { loadDotEnvIfPresent, isCI } from '../utils/env';
 import { prompt, promptChoice } from '../utils/prompts';
-import { pathExists, ensureDirectory, writeFile, calculateDirectoryHash, validatePath, readDirectory } from '../utils/files';
+import { pathExists, ensureDirectory, writeFile, writeFileUnderBase, calculateDirectoryHash, validatePath, readDirectory } from '../utils/files';
+import { isPathConfinedToBase } from '../utils/path-security';
 import { getCommitSha, getGitUserName } from '../utils/git';
 import type { PublishHistory } from '../types/config';
 import { mapAssignmentSettings, mapPartSettings } from '../utils/settings';
@@ -696,6 +697,9 @@ async function detectContentDrift(
           // Validate path to prevent traversal attacks from malicious remote paths
           validatePath(localBaseAbs, remotePath);
           const localPath = path.join(localBaseAbs, remotePath);
+          if (!await isPathConfinedToBase(localBaseAbs, localPath)) {
+            throw new Error(`Refusing to read "${remotePath}": path escapes the local part directory through a symlink`);
+          }
 
           if (await pathExists(localPath)) {
             // File exists locally - check if content differs
@@ -1017,15 +1021,13 @@ async function writeFilesToDirectory(
     // Validate path to prevent traversal attacks from malicious remote paths
     validatePath(basePath, relativePath);
 
-    // File path format from downloadContent: "{dirType}/{filePath}"
-    // We want: "{assignmentPath}/{partPath}/{dirType}/{filePath}"
-    const targetPath = path.join(basePath, relativePath);
-
-    await ensureDirectory(path.dirname(targetPath));
-    await writeFile(targetPath, content);
+    // File path format from downloadContent: "{dirType}/{filePath}".
+    // Write relative to basePath with realpath confinement so remote filenames
+    // cannot escape through symlinked parent directories or final symlinks.
+    await writeFileUnderBase(basePath, relativePath, content);
 
     // Track created directories for logging
-    const dirPath = path.dirname(targetPath);
+    const dirPath = path.dirname(path.join(basePath, relativePath));
     if (!createdDirs.has(dirPath)) {
       createdDirs.add(dirPath);
       if (verbose) {

@@ -15,6 +15,7 @@ import {
   validatePath,
   ensureDirectory,
   writeFile,
+  writeFileUnderBase,
   readFile,
   readFileBuffer,
   copyFile,
@@ -137,6 +138,17 @@ describe('File System Utilities', () => {
 
       expect(Object.keys(files)).toHaveLength(1);
       expect(files['main.py']).toBeDefined();
+    });
+
+    it('should handle adversarial-looking glob patterns without regex backtracking', async () => {
+      const longName = `${'a'.repeat(180)}b.txt`;
+      await fs.writeFile(path.join(tempDir, longName), 'content');
+      await fs.writeFile(path.join(tempDir, 'keep.txt'), 'keep');
+
+      const files = await readDirectory(tempDir, ['**a**b**']);
+
+      expect(files[longName]).toBeUndefined();
+      expect(files['keep.txt']).toBeDefined();
     });
   });
 
@@ -272,6 +284,60 @@ describe('File System Utilities', () => {
       const filePath = path.join(tempDir, 'new', 'nested', 'file.txt');
       await writeFile(filePath, 'content');
       expect(await pathExists(filePath)).toBe(true);
+    });
+  });
+
+  describe('writeFileUnderBase', () => {
+    it('should write normal nested files below the base', async () => {
+      await writeFileUnderBase(tempDir, path.join('startercode', 'main.py'), 'print(1)');
+
+      await expect(fs.readFile(path.join(tempDir, 'startercode', 'main.py'), 'utf8'))
+        .resolves.toBe('print(1)');
+    });
+
+    it('should reject lexical path traversal', async () => {
+      await expect(writeFileUnderBase(tempDir, '../escape.txt', 'bad'))
+        .rejects.toMatchObject({ code: 'PATH_TRAVERSAL' });
+    });
+
+    it('should reject parent directory symlinks escaping the base', async () => {
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-outside-'));
+      try {
+        await fs.symlink(outside, path.join(tempDir, 'startercode'));
+
+        await expect(writeFileUnderBase(tempDir, path.join('startercode', 'evil.txt'), 'bad'))
+          .rejects.toMatchObject({ code: 'PATH_TRAVERSAL' });
+      } finally {
+        await fs.rm(outside, { recursive: true, force: true });
+      }
+    });
+
+    it('should not create directories through an escaping parent symlink before rejecting', async () => {
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-outside-'));
+      try {
+        await fs.symlink(outside, path.join(tempDir, 'startercode'));
+
+        await expect(writeFileUnderBase(tempDir, path.join('startercode', 'nested', 'evil.txt'), 'bad'))
+          .rejects.toMatchObject({ code: 'PATH_TRAVERSAL' });
+        expect(await pathExists(path.join(outside, 'nested'))).toBe(false);
+      } finally {
+        await fs.rm(outside, { recursive: true, force: true });
+      }
+    });
+
+    it('should reject final file symlinks escaping the base', async () => {
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-outside-'));
+      try {
+        await fs.mkdir(path.join(tempDir, 'startercode'));
+        await fs.writeFile(path.join(outside, 'target.txt'), 'original');
+        await fs.symlink(path.join(outside, 'target.txt'), path.join(tempDir, 'startercode', 'target.txt'));
+
+        await expect(writeFileUnderBase(tempDir, path.join('startercode', 'target.txt'), 'bad'))
+          .rejects.toMatchObject({ code: 'PATH_TRAVERSAL' });
+        await expect(fs.readFile(path.join(outside, 'target.txt'), 'utf8')).resolves.toBe('original');
+      } finally {
+        await fs.rm(outside, { recursive: true, force: true });
+      }
     });
   });
 

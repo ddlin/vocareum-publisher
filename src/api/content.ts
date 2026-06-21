@@ -28,12 +28,56 @@ interface TransactionResponse {
 const PART_UPDATE_POLL_MAX_ATTEMPTS = 30;
 const PART_UPDATE_POLL_DELAY_MS = 1000;
 
+export interface DownloadContentLimits {
+  maxFiles: number;
+  maxFileBytes: number;
+  maxTotalBytes: number;
+}
+
+export const DEFAULT_DOWNLOAD_CONTENT_LIMITS: DownloadContentLimits = {
+  maxFiles: 5000,
+  maxFileBytes: 100 * 1024 * 1024,
+  maxTotalBytes: 500 * 1024 * 1024,
+};
+
+export class DownloadLimitError extends APIError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DownloadLimitError';
+  }
+}
+
+interface DownloadBudget {
+  limits: DownloadContentLimits;
+  files: number;
+  bytes: number;
+}
+
+function resolveDownloadLimits(limits?: Partial<DownloadContentLimits>): DownloadContentLimits {
+  return {
+    maxFiles: limits?.maxFiles ?? DEFAULT_DOWNLOAD_CONTENT_LIMITS.maxFiles,
+    maxFileBytes: limits?.maxFileBytes ?? DEFAULT_DOWNLOAD_CONTENT_LIMITS.maxFileBytes,
+    maxTotalBytes: limits?.maxTotalBytes ?? DEFAULT_DOWNLOAD_CONTENT_LIMITS.maxTotalBytes,
+  };
+}
+
 function isHttp400(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) {
     return false;
   }
   const maybe = error as { statusCode?: number; response?: { status?: number } };
   return maybe.statusCode === 400 || maybe.response?.status === 400;
+}
+
+function isAxiosBodyLimitError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) { return false; }
+  const maybe = error as { isAxiosError?: boolean; message?: string };
+  if (maybe.isAxiosError !== true && !axios.isAxiosError(error)) { return false; }
+  const message = (maybe.message ?? '').toLowerCase();
+  return message.includes('maxcontentlength') ||
+    message.includes('maxbodylength') ||
+    message.includes('content length') ||
+    message.includes('body length');
 }
 
 interface ParsedFileEntry {
@@ -146,7 +190,8 @@ async function fetchFileContent(
   assignmentId: string,
   partId: string,
   directory: DirectoryType,
-  filePath: string
+  filePath: string,
+  limits: DownloadContentLimits
 ): Promise<string | Buffer> {
   const url = `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
   const fullPath = `${directory}/${filePath}`;
@@ -179,6 +224,8 @@ async function fetchFileContent(
     const downloadResponse = await axios.get(downloadUrl, {
       responseType: 'arraybuffer',
       timeout: 30000,
+      maxContentLength: limits.maxFileBytes,
+      maxBodyLength: limits.maxFileBytes,
     });
     return Buffer.from(downloadResponse.data);
   } catch (error) {
@@ -186,6 +233,11 @@ async function fetchFileContent(
     // prefix (the API happily gives us a signed URL, but there's no object).
     if (isAxios404(error)) {
       throw new NotAFileError(fullPath);
+    }
+    if (isAxiosBodyLimitError(error)) {
+      throw new DownloadLimitError(
+        `Download limit exceeded: ${fullPath} exceeds ${limits.maxFileBytes} bytes`
+      );
     }
     throw error;
   }
@@ -401,6 +453,8 @@ export function downloadContent(
      *  Required by drift detection: a silently incomplete map makes files
      *  look remotely deleted. */
     strict?: boolean;
+    /** Defensive resource limits for remote content downloads. */
+    limits?: Partial<DownloadContentLimits>;
   }
 ): Promise<FileMap> {
   return (async (): Promise<FileMap> => {
@@ -408,6 +462,11 @@ export function downloadContent(
     // When no directories specified, try all non-course directories (union of both architectures).
     const dirs: DirectoryType[] = directories ?? DEFAULT_PART_DIRECTORIES;
     const downloaded: FileMap = {};
+    const budget: DownloadBudget = {
+      limits: resolveDownloadLimits(options?.limits),
+      files: 0,
+      bytes: 0,
+    };
 
     for (const directory of dirs) {
       const baseApiPath = toApiDirPath(directory, architecture);
@@ -421,7 +480,8 @@ export function downloadContent(
         '',
         0,
         downloaded,
-        options?.strict === true
+        options?.strict === true,
+        budget
       );
     }
 
@@ -447,7 +507,8 @@ async function downloadDirectoryTree(
   relativePath: string,
   depth: number,
   downloaded: FileMap,
-  strict: boolean
+  strict: boolean,
+  budget: DownloadBudget
 ): Promise<void> {
   const apiDirPath = relativePath ? `${baseApiPath}/${relativePath}` : baseApiPath;
   const entries = await listFilesByApiPath(client, courseId, assignmentId, partId, apiDirPath);
@@ -457,8 +518,9 @@ async function downloadDirectoryTree(
     const filemapKey = `${directory}/${entryRelPath}`;
 
     try {
+      assertListedFileWithinBudget(filemapKey, entry, budget);
       const content = await fetchFileContent(
-        client, courseId, assignmentId, partId, directory, entryRelPath
+        client, courseId, assignmentId, partId, directory, entryRelPath, budget.limits
       );
 
       // Some Vocareum workspaces expose directory placeholders as zero-byte
@@ -473,19 +535,23 @@ async function downloadDirectoryTree(
         if (childEntries.length > 0) {
           await downloadDirectoryTree(
             client, courseId, assignmentId, partId,
-            directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict
+            directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict, budget
           );
           continue;
         }
       }
 
+      accountDownloadedFile(filemapKey, content, budget);
       downloaded[filemapKey] = content;
     } catch (error) {
+      if (error instanceof DownloadLimitError) {
+        throw error;
+      }
       if (error instanceof NotAFileError) {
         if (depth < MAX_DOWNLOAD_DEPTH) {
           await downloadDirectoryTree(
             client, courseId, assignmentId, partId,
-            directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict
+            directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict, budget
           );
         } else {
           logger.debug(`Max depth reached, skipping ${filemapKey}`);
@@ -500,6 +566,48 @@ async function downloadDirectoryTree(
       );
     }
   }
+}
+
+function assertListedFileWithinBudget(
+  filemapKey: string,
+  entry: FileInfo,
+  budget: DownloadBudget
+): void {
+  budget.files += 1;
+  if (budget.files > budget.limits.maxFiles) {
+    throw new DownloadLimitError(
+      `Download limit exceeded: more than ${budget.limits.maxFiles} files while downloading ${filemapKey}`
+    );
+  }
+  // Many Vocareum listings are string-only and report size=0; this check is
+  // an early rejection when size metadata exists. Actual bytes are enforced by
+  // axios and accountDownloadedFile below.
+  if (entry.size > budget.limits.maxFileBytes) {
+    throw new DownloadLimitError(
+      `Download limit exceeded: ${filemapKey} is listed as ${entry.size} bytes ` +
+      `(max ${budget.limits.maxFileBytes})`
+    );
+  }
+}
+
+function accountDownloadedFile(
+  filemapKey: string,
+  content: string | Buffer,
+  budget: DownloadBudget
+): void {
+  const bytes = Buffer.isBuffer(content) ? content.length : Buffer.byteLength(content);
+  if (bytes > budget.limits.maxFileBytes) {
+    throw new DownloadLimitError(
+      `Download limit exceeded: ${filemapKey} is ${bytes} bytes (max ${budget.limits.maxFileBytes})`
+    );
+  }
+  if (budget.bytes + bytes > budget.limits.maxTotalBytes) {
+    throw new DownloadLimitError(
+      `Download limit exceeded: ${budget.bytes + bytes} total bytes ` +
+      `(max ${budget.limits.maxTotalBytes})`
+    );
+  }
+  budget.bytes += bytes;
 }
 
 /**

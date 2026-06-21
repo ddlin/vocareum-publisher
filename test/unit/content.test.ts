@@ -11,6 +11,8 @@ import {
   listFiles,
   deleteFile,
   downloadContent,
+  DownloadLimitError,
+  DEFAULT_DOWNLOAD_CONTENT_LIMITS,
 } from '../../src/api/content';
 import { VocareumClient, VocareumError } from '../../src/api/client';
 import axios from 'axios';
@@ -823,7 +825,98 @@ describe('downloadContent', () => {
     expect(mockedAxios.get).toHaveBeenCalledWith('https://s3.example.com/signed-url', {
       responseType: 'arraybuffer',
       timeout: 30000,
+      maxContentLength: DEFAULT_DOWNLOAD_CONTENT_LIMITS.maxFileBytes,
+      maxBodyLength: DEFAULT_DOWNLOAD_CONTENT_LIMITS.maxFileBytes,
     });
+  });
+
+  it('should reject files whose listed size exceeds the per-file limit before S3 fetch', async () => {
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'huge.bin', size: 6 }] });
+
+    await expect(
+      downloadContent(mockClient, 'c1', 'a1', 'p1', ['startercode'], undefined, {
+        limits: { maxFileBytes: 5 },
+      })
+    ).rejects.toThrow(DownloadLimitError);
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
+  it('should reject files whose actual fetched size exceeds the per-file limit', async () => {
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'huge.bin', size: 1 }] });
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'startercode/huge.bin', download_url: 'https://s3.example.com/huge.bin' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.from('123456') });
+
+    await expect(
+      downloadContent(mockClient, 'c1', 'a1', 'p1', ['startercode'], undefined, {
+        limits: { maxFileBytes: 5 },
+      })
+    ).rejects.toThrow(DownloadLimitError);
+  });
+
+  it('should convert axios maxContentLength failures into DownloadLimitError', async () => {
+    requestMock.mockResolvedValueOnce({ files: ['huge.bin'] });
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'startercode/huge.bin', download_url: 'https://s3.example.com/huge.bin' }],
+    });
+    mockedAxios.get.mockRejectedValueOnce(Object.assign(
+      new Error('maxContentLength size of 5 exceeded'),
+      { isAxiosError: true }
+    ));
+
+    await expect(
+      downloadContent(mockClient, 'c1', 'a1', 'p1', ['startercode'], undefined, {
+        limits: { maxFileBytes: 5 },
+      })
+    ).rejects.toThrow(DownloadLimitError);
+  });
+
+  it('should reject downloads that exceed the file count limit', async () => {
+    requestMock.mockResolvedValueOnce({
+      files: [
+        { path: 'one.txt', size: 1 },
+        { path: 'two.txt', size: 1 },
+      ],
+    });
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'startercode/one.txt', download_url: 'https://s3.example.com/one.txt' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.from('1') });
+
+    await expect(
+      downloadContent(mockClient, 'c1', 'a1', 'p1', ['startercode'], undefined, {
+        limits: { maxFiles: 1 },
+      })
+    ).rejects.toThrow(DownloadLimitError);
+  });
+
+  it('should reject downloads that exceed the cumulative byte limit', async () => {
+    requestMock.mockResolvedValueOnce({
+      files: [
+        { path: 'one.txt', size: 4 },
+        { path: 'two.txt', size: 4 },
+      ],
+    });
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'startercode/one.txt', download_url: 'https://s3.example.com/one.txt' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.from('1234') });
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'startercode/two.txt', download_url: 'https://s3.example.com/two.txt' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.from('5678') });
+
+    await expect(
+      downloadContent(mockClient, 'c1', 'a1', 'p1', ['startercode'], undefined, {
+        limits: { maxTotalBytes: 5 },
+      })
+    ).rejects.toThrow(DownloadLimitError);
   });
 });
 
@@ -940,6 +1033,23 @@ describe('downloadContent recursive directory handling', () => {
 
     expect(result).not.toHaveProperty('scripts/python');
     expect(result['scripts/python/dbacademy.py'].toString()).toBe('nested py');
+  });
+
+  it('should count zero-byte placeholder fetches against maxFiles', async () => {
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'python', size: 0 }] });
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      files: [{ filename: 'scripts/python', download_url: 'https://s3.example.com/python-placeholder' }],
+    });
+    mockedAxios.get.mockResolvedValueOnce({ data: Buffer.alloc(0) });
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'dbacademy.py', size: 10 }] });
+    requestMock.mockResolvedValueOnce({ files: [{ path: 'dbacademy.py', size: 10 }] });
+
+    await expect(
+      downloadContent(mockClient, 'c1', 'a1', 'p1', ['scripts'], undefined, {
+        limits: { maxFiles: 1 },
+      })
+    ).rejects.toThrow(DownloadLimitError);
   });
 
   it('should keep a real zero-byte file when it is not listable as a directory', async () => {

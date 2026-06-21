@@ -282,6 +282,11 @@ vocgit pull --content --assignment lab1 --part <part_id>  # scope to one part by
 
 `--skip-content` is a separate flag that controls orphan-import behavior only — it tells vocgit to skip downloading files for newly imported orphan assignments (useful to retry after a failed pull). It has no effect on content drift detection.
 
+Remote content downloads fail closed if a pull would exceed built-in safety
+limits: 5,000 files, 100 MiB for any single file, or 500 MiB total for one
+`downloadContent` pass. These limits protect local machines and CI runners from
+unexpectedly large or malformed remote file listings.
+
 **For orphaned assignments** (in Vocareum, not in config):
 - **Import**: Download content and add to your local repository
 - **Exclude**: Hide from future scans (add to `excluded_assignments`)

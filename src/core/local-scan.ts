@@ -16,6 +16,7 @@
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import { calculateDirectoryHash } from '../utils/files';
+import { isPathConfinedToBase } from '../utils/path-security';
 import {
   ELITE_DIRECTORIES,
   CONTAINER_DIRECTORIES,
@@ -184,22 +185,7 @@ export async function scanLocalContent(config: Config, baseDir: string = '.'): P
  *   (catches symlinks pointing out of the workspace)
  */
 export async function isConfinedToWorkspace(baseDir: string, relPath: string): Promise<boolean> {
-  const baseAbs = path.resolve(baseDir);
-  const targetAbs = path.resolve(baseDir, relPath);
-
-  if (targetAbs !== baseAbs && !targetAbs.startsWith(baseAbs + path.sep)) {
-    return false;
-  }
-
-  let baseReal: string;
-  try {
-    baseReal = await fs.realpath(baseAbs);
-  } catch {
-    return false; // workspace itself unreadable — treat as not confined
-  }
-
-  const targetReal = await deepestExistingRealpath(targetAbs);
-  return targetReal === baseReal || targetReal.startsWith(baseReal + path.sep);
+  return isPathConfinedToBase(baseDir, path.resolve(baseDir, relPath));
 }
 
 /**
@@ -212,23 +198,6 @@ export async function assertConfinedToWorkspace(baseDir: string, relPath: string
     throw new Error(
       `Refusing to access "${relPath}": path escapes the workspace (check vocareum.yaml assignment/part paths and symlinks)`
     );
-  }
-}
-
-/** Realpath of the target, or of its deepest existing ancestor when the leaf
- *  does not exist yet (intermediate symlinks must still be resolved). */
-async function deepestExistingRealpath(targetAbs: string): Promise<string> {
-  let current = targetAbs;
-  for (;;) {
-    try {
-      return await fs.realpath(current);
-    } catch {
-      const parent = path.dirname(current);
-      if (parent === current) {
-        return current; // filesystem root
-      }
-      current = parent;
-    }
   }
 }
 

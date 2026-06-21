@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { promises as fs } from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import type { Config } from '../../src/types/config';
 import { pullCommand } from '../../src/commands/pull';
 import { UnknownFieldReporter } from '../../src/utils/unknown-field-reporter';
@@ -538,5 +541,30 @@ describe('pullCommand content-drift gating', () => {
     expect(vi.mocked(downloadContent)).toHaveBeenCalled();
     const assignmentIds = vi.mocked(downloadContent).mock.calls.map((c) => c[2]);
     expect(new Set(assignmentIds)).toEqual(new Set(['a-lab1']));
+  });
+
+  it('does not read local drift-comparison files through symlinks escaping the part directory', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-pull-read-'));
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-pull-outside-'));
+    try {
+      await fs.mkdir(path.join(workspace, 'lab1', 'part1'), { recursive: true });
+      await fs.writeFile(path.join(outside, 'secret.txt'), 'outside');
+      await fs.symlink(outside, path.join(workspace, 'lab1', 'part1', 'startercode'));
+      vi.mocked(downloadContent).mockResolvedValue({
+        'startercode/secret.txt': Buffer.from('remote'),
+      });
+
+      await pullCommand({
+        nonInteractive: true,
+        content: true,
+        assignment: ['lab1'],
+        root: workspace,
+      });
+
+      expect(loggerWarnMock).toHaveBeenCalledWith(expect.stringContaining('Refusing to read "startercode/secret.txt"'));
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+      await fs.rm(outside, { recursive: true, force: true });
+    }
   });
 });

@@ -5,6 +5,26 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-06-20
+
+### Security
+- Hardened pull/download handling: remote file writes now reject symlink escapes
+  (lexical + realpath confinement, `O_NOFOLLOW` where supported), content-drift
+  reads reject symlinked paths that escape the part directory, remote content
+  downloads enforce file-count and per-file/cumulative byte limits (oversize
+  responses abort instead of being silently skipped), directory hashing streams
+  file contents instead of buffering whole trees, and exclude-pattern matching
+  no longer builds dynamic regexes (closes a ReDoS vector on attacker-supplied
+  `exclude_patterns`).
+
+### Behavior changes
+- Windows hashing now normalizes path separators before applying exclude
+  patterns. This correctly excludes nested `.gitkeep` files on Windows; Windows
+  repositories with content hashes computed by older vocgit versions may see a
+  one-time resync as hashes self-heal.
+- Exclude pattern matching now treats `**` as zero or more path segments, so a
+  custom pattern such as `**/x` also matches a top-level `x`.
+
 ## [1.3.0] - 2026-06-20
 
 ### Behavior changes
