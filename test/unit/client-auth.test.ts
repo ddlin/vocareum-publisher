@@ -5,6 +5,8 @@ import { normalizeApiBaseUrl, assertAllowedBaseUrl, VocareumClient, sanitizeForL
 import { OAuthTokenExchangeError } from '../../src/api/auth/oauth-provider';
 import type { AuthProvider } from '../../src/api/auth/auth-provider';
 
+const NO_THROTTLE = { maxConcurrency: 1, minIntervalMs: 0, jitter: false } as const;
+
 class FakeProvider implements AuthProvider {
   readonly apiBaseUrl = 'https://api.vocareum.com/api/v2';
   header = 'Token fake';
@@ -58,7 +60,7 @@ describe('assertAllowedBaseUrl', () => {
 describe('VocareumClient header injection', () => {
   it('asks the provider for the Authorization header on each request', async () => {
     const provider = new FakeProvider();
-    const client = new VocareumClient(provider);
+    const client = new VocareumClient(provider, NO_THROTTLE);
     const spy = vi.spyOn(provider, 'getAuthorizationHeader');
     let capturedConfig: unknown;
     (client as unknown as { axios: { defaults: Record<string, unknown> } }).axios.defaults.adapter =
@@ -111,7 +113,7 @@ function setAdapter(client: VocareumClient, adapter: unknown) {
 describe('VocareumClient 401 refresh-retry', () => {
   it('refreshes once and retries once on an API 401, then succeeds', async () => {
     const provider = new FakeProvider();
-    const client = new VocareumClient(provider);
+    const client = new VocareumClient(provider, NO_THROTTLE);
     setAdapter(client, mockAdapter([{ status: 401 }, { status: 200, data: { ok: true } }]));
     const out = await client.request<{ ok: boolean }>({ method: 'GET', url: '/courses' });
     expect(out).toEqual({ ok: true });
@@ -120,7 +122,7 @@ describe('VocareumClient 401 refresh-retry', () => {
 
   it('does not retry past one refresh; a second 401 throws', async () => {
     const provider = new FakeProvider();
-    const client = new VocareumClient(provider);
+    const client = new VocareumClient(provider, NO_THROTTLE);
     setAdapter(client, mockAdapter([{ status: 401 }, { status: 401 }]));
     await expect(client.request({ method: 'GET', url: '/courses' })).rejects.toThrow();
     expect(provider.refreshed).toBe(1);
@@ -129,14 +131,14 @@ describe('VocareumClient 401 refresh-retry', () => {
   it('does not attempt refresh when the provider has no refreshAfterUnauthorized', async () => {
     const provider = new FakeProvider();
     (provider as Partial<FakeProvider>).refreshAfterUnauthorized = undefined;
-    const client = new VocareumClient(provider as AuthProvider);
+    const client = new VocareumClient(provider as AuthProvider, NO_THROTTLE);
     setAdapter(client, mockAdapter([{ status: 401 }]));
     await expect(client.request({ method: 'GET', url: '/courses' })).rejects.toThrow();
   });
 
   it('normal retry (500 then 200) still works and is independent of the 401 path', async () => {
     const provider = new FakeProvider();
-    const client = new VocareumClient(provider);
+    const client = new VocareumClient(provider, NO_THROTTLE);
     setAdapter(client, mockAdapter([{ status: 500 }, { status: 200, data: { ok: true } }]));
     const out = await client.request<{ ok: boolean }>({ method: 'GET', url: '/courses' }, { backoff: 1 });
     expect(out).toEqual({ ok: true });
@@ -146,7 +148,7 @@ describe('VocareumClient 401 refresh-retry', () => {
   it('an auth-acquisition failure (interceptor throws) does NOT trigger the 401 refresh path', async () => {
     const provider = new FakeProvider();
     provider.getAuthorizationHeader = async () => { throw new Error('token exchange failed'); };
-    const client = new VocareumClient(provider);
+    const client = new VocareumClient(provider, NO_THROTTLE);
     setAdapter(client, mockAdapter([{ status: 200, data: { ok: true } }]));
     await expect(client.request({ method: 'GET', url: '/courses' })).rejects.toThrow(/token exchange failed/);
     expect(provider.refreshed).toBe(0);
@@ -160,7 +162,7 @@ describe('VocareumClient 401 refresh-retry', () => {
     provider.getAuthorizationHeader = async () => {
       throw new OAuthTokenExchangeError('OAuth token exchange failed (HTTP 401).');
     };
-    const client = new VocareumClient(provider);
+    const client = new VocareumClient(provider, NO_THROTTLE);
     setAdapter(client, mockAdapter([{ status: 200, data: { ok: true } }]));
     await expect(client.request({ method: 'GET', url: '/courses' })).rejects.toBeInstanceOf(OAuthTokenExchangeError);
     expect(provider.refreshed).toBe(0);
@@ -171,7 +173,7 @@ describe('VocareumClient 401 refresh-retry', () => {
     (provider as { unauthorizedHint?: string }).unauthorizedHint =
       'OAuth authentication failed. Verify VOCAREUM_OAUTH_CLIENT_ID / VOCAREUM_OAUTH_CLIENT_SECRET.';
     (provider as Partial<FakeProvider>).refreshAfterUnauthorized = undefined; // 401 terminal
-    const client = new VocareumClient(provider as AuthProvider);
+    const client = new VocareumClient(provider as AuthProvider, NO_THROTTLE);
     setAdapter(client, mockAdapter([{ status: 401 }]));
     await expect(client.request({ method: 'GET', url: '/courses' }))
       .rejects.toThrow(/VOCAREUM_OAUTH_CLIENT_ID/);
@@ -179,7 +181,7 @@ describe('VocareumClient 401 refresh-retry', () => {
 
   it('retries an axios timeout (ECONNABORTED) then succeeds', async () => {
     const provider = new FakeProvider();
-    const client = new VocareumClient(provider);
+    const client = new VocareumClient(provider, NO_THROTTLE);
     let calls = 0;
     setAdapter(client, async (config: unknown) => {
       calls += 1;
@@ -195,7 +197,7 @@ describe('VocareumClient 401 refresh-retry', () => {
 
   it('does not retry an ambiguous timeout for a non-idempotent POST', async () => {
     const provider = new FakeProvider();
-    const client = new VocareumClient(provider);
+    const client = new VocareumClient(provider, NO_THROTTLE);
     let calls = 0;
     setAdapter(client, async (config: unknown) => {
       calls += 1;
@@ -211,7 +213,7 @@ describe('VocareumClient 401 refresh-retry', () => {
 
   it('does not retry a 5xx response for a non-idempotent POST', async () => {
     const provider = new FakeProvider();
-    const client = new VocareumClient(provider);
+    const client = new VocareumClient(provider, NO_THROTTLE);
     let calls = 0;
     setAdapter(client, async (config: unknown) => {
       calls += 1;
@@ -230,7 +232,7 @@ describe('VocareumClient 401 refresh-retry', () => {
     'retries transient connection error %s then succeeds',
     async (code) => {
       const provider = new FakeProvider();
-      const client = new VocareumClient(provider);
+      const client = new VocareumClient(provider, NO_THROTTLE);
       let calls = 0;
       setAdapter(client, async (config: unknown) => {
         calls += 1;
@@ -247,7 +249,7 @@ describe('VocareumClient 401 refresh-retry', () => {
 
   it('exposes Retry-After from a 429 response on the thrown RateLimitError', async () => {
     const provider = new FakeProvider();
-    const client = new VocareumClient(provider);
+    const client = new VocareumClient(provider, NO_THROTTLE);
     setAdapter(client, async (config: unknown) => {
       const response = {
         data: {}, status: 429, statusText: '', headers: { 'retry-after': '7' }, config,
@@ -264,7 +266,7 @@ describe('VocareumClient 401 refresh-retry', () => {
     vi.useFakeTimers();
     try {
       const provider = new FakeProvider();
-      const client = new VocareumClient(provider);
+      const client = new VocareumClient(provider, NO_THROTTLE);
       let calls = 0;
       setAdapter(client, async (config: unknown) => {
         calls += 1;
@@ -300,7 +302,7 @@ describe('VocareumClient 401 refresh-retry', () => {
     vi.useFakeTimers();
     try {
       const provider = new FakeProvider();
-      const client = new VocareumClient(provider);
+      const client = new VocareumClient(provider, NO_THROTTLE);
       let calls = 0;
       setAdapter(client, async (config: unknown) => {
         calls += 1;
@@ -329,7 +331,7 @@ describe('VocareumClient 401 refresh-retry', () => {
     vi.setSystemTime(new Date('2026-06-11T00:00:00Z'));
     try {
       const provider = new FakeProvider();
-      const client = new VocareumClient(provider);
+      const client = new VocareumClient(provider, NO_THROTTLE);
       let calls = 0;
       setAdapter(client, async (config: unknown) => {
         calls += 1;
@@ -361,7 +363,7 @@ describe('VocareumClient 401 refresh-retry', () => {
     vi.useFakeTimers();
     try {
       const provider = new FakeProvider();
-      const client = new VocareumClient(provider);
+      const client = new VocareumClient(provider, NO_THROTTLE);
       let calls = 0;
       setAdapter(client, async (config: unknown) => {
         calls += 1;
@@ -391,7 +393,7 @@ describe('VocareumClient 401 refresh-retry', () => {
       vi.useFakeTimers();
       try {
         const provider = new FakeProvider();
-        const client = new VocareumClient(provider);
+        const client = new VocareumClient(provider, NO_THROTTLE);
         let calls = 0;
         setAdapter(client, async (config: unknown) => {
           calls += 1;
@@ -418,7 +420,7 @@ describe('VocareumClient 401 refresh-retry', () => {
 
   it('retries a transient network error (ECONNRESET) then succeeds', async () => {
     const provider = new FakeProvider();
-    const client = new VocareumClient(provider);
+    const client = new VocareumClient(provider, NO_THROTTLE);
     let calls = 0;
     setAdapter(client, async (config: unknown) => {
       calls += 1;
@@ -430,5 +432,34 @@ describe('VocareumClient 401 refresh-retry', () => {
     const out = await client.request<{ ok: boolean }>({ method: 'GET', url: '/courses' }, { backoff: 1 });
     expect(out).toEqual({ ok: true });
     expect(calls).toBe(2);
+  });
+});
+
+describe('VocareumClient throttle scheduling', () => {
+  it('spaces requests by minIntervalMs through the scheduler', async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = new FakeProvider();
+      const client = new VocareumClient(provider, { maxConcurrency: 1, minIntervalMs: 1000, jitter: false });
+      let calls = 0;
+      setAdapter(client, async (config: unknown) => {
+        calls += 1;
+        return { data: {}, status: 200, statusText: 'OK', headers: {}, config };
+      });
+      const all = Promise.all([
+        client.request({ method: 'GET', url: '/a' }),
+        client.request({ method: 'GET', url: '/b' }),
+        client.request({ method: 'GET', url: '/c' }),
+      ]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toBe(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(calls).toBe(2);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(calls).toBe(3);
+      await all;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
