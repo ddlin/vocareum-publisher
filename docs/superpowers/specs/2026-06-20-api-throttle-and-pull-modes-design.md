@@ -82,10 +82,15 @@ values `> 1`, the scheduler must be a **real queue with active-count tracking pl
 spacing** — not just a serial chain — so the implementation matches the advertised API. The
 queue:
 
-1. On `acquire()`, if `activeCount < maxConcurrency` **and** `now >= nextAllowedStart`, start
-   immediately; otherwise enqueue.
-2. Each start stamps `nextAllowedStart = now + minIntervalMs ± jitter`.
-3. On `release()`, decrement `activeCount` and pump the queue.
+1. On `acquire()`: **if `queue.length > 0`, always enqueue** (never jump the line), then run the
+   pump. Only when the queue is empty may a fresh arrival start inline — and even then only if
+   `activeCount < maxConcurrency` **and** `now >= nextAllowedStart`; otherwise it enqueues. This
+   makes the scheduler strictly **FIFO**: a newer `acquire()` that happens to satisfy the spacing
+   condition cannot leapfrog an older request still waiting on its timer.
+2. The pump always starts work **from the head** of the queue, applying the same
+   `activeCount`/`nextAllowedStart` gates; it stops at the first head item that isn't eligible.
+3. Each start stamps `nextAllowedStart = now + minIntervalMs ± jitter`.
+4. On `release()`, decrement `activeCount` and pump the queue.
 
 **Time-based pump (required).** `release()` is not the only thing that can unblock the queue: an
 item can be blocked *solely* by `nextAllowedStart` while `activeCount == 0` (nothing in flight to
@@ -215,6 +220,9 @@ pullCmd.option('--part <id>', 'Limit --content drift to part(s); requires --assi
   apply with `--content`."
 - `--part` **without** `--assignment` → error: "`--part` requires `--assignment` (part
   selectors are not unique across a course)."
+- `--part` **with more than one** `--assignment` → error: "`--part` requires exactly one
+  `--assignment` (part selectors are not unique across assignments)." (No Cartesian/broadcast
+  behavior — part IDs are not globally unique, so we refuse the ambiguous case rather than guess.)
 - `--assignment <x>` where `x` matches no linked assignment → error listing valid choices.
 - `--part <p>` where `p` is not under the selected assignment → error listing valid parts.
 
@@ -248,6 +256,9 @@ Recommend at least a minor bump with the note; final version semantics decided a
   on another `release()`. Assert the injected `setTimeout` was scheduled for `nextAllowedStart - now`
   and that exactly one pending-pump timer exists (no overlapping timers).
 - Jitter stays within ±40% bounds (injected RNG at 0.0 and 1.0 extremes).
+- **FIFO order:** with `maxConcurrency=1`, enqueue A then B; while A's spacing timer is pending,
+  a later `acquire()` for B (even one arriving after `nextAllowedStart`) must **not** start before
+  A. Assert start order is A → B regardless of arrival timing relative to the interval.
 - **Jitter varies wire time:** two acquisitions fed *different* RNG samples produce *different*
   `nextAllowedStart` stamps. (This is the unit-provable claim; CI-runner de-synchronization is the
   expected real-world *effect* of this, not something a deterministic test asserts.)
@@ -267,6 +278,7 @@ Each row in the adversarial-input table is a named test (yaml-level and env-leve
   Commander last-value-wins trap); drift covers `lab1` and `lab2` only.
 - `--assignment` without `--content` → error.
 - `--part` without `--assignment` → error.
+- `--content --assignment lab1 --assignment lab2 --part p1` (part with >1 assignment) → error.
 - unknown `--assignment`/`--part` value → error with valid choices.
 - **Orphan import unchanged:** with an orphan present, `pull --batch` still downloads import content;
   `pull --batch --skip-content` still reuses local content — neither is affected by `--content`'s
@@ -282,17 +294,33 @@ Each row in the adversarial-input table is a named test (yaml-level and env-leve
 - "User imports an orphan with `--batch`" → import content still downloads (drift opt-in does not regress import).
 - "User typos `throttle: { max_concurrency: 99 }`" → run fails fast with a bounds error, no requests sent.
 
+### Validation-before-request ordering (required invariant)
+
+For the "no requests sent" guarantees to hold, **throttle resolution + validation must complete
+before any `VocareumClient` request is issued, in every command.** Concretely: config load (which
+runs `ThrottleConfigSchema`) and env-var parsing happen at command startup, and the resolved/
+validated throttle settings are passed into the `VocareumClient` constructor. An invalid YAML
+`throttle` block or out-of-range env var therefore throws during startup — before the client makes
+its first call. The client constructor must receive already-validated settings (it does not re-read
+env or accept raw/unvalidated values). This ordering is the same place `assertAllowedBaseUrl`
+already runs ([client.ts:316](../../../src/api/client.ts)), so validation co-locates with existing
+construction-time checks.
+
 ### System-trace checkpoint (per AGENTS.md §3)
-After implementation, a separate review traces: (a) config YAML → schema → resolved scheduler
-settings → actual spacing on the wire; (b) `pull` flag parsing → which parts `downloadContent` is
-(not) called for.
+After implementation, a separate review traces: (a) config YAML → schema → env resolution →
+`VocareumClient` construction → actual spacing on the wire, **confirming no client request precedes
+throttle validation**; (b) `pull` flag parsing → which parts content-drift `downloadContent` is
+(not) called for, and that orphan import is unaffected.
 
 ---
 
 ## Files touched (anticipated)
 
-- `src/api/scheduler.ts` (new) — `RequestScheduler` (queue, spacing, jitter, injected clock/RNG).
-- `src/api/client.ts` — instantiate scheduler from resolved throttle settings; gate `attempt()`.
+- `src/api/scheduler.ts` (new) — `RequestScheduler` (FIFO queue, spacing, jitter, injected clock/timer/RNG).
+- `src/api/client.ts` — accept **already-validated** throttle settings; instantiate scheduler; gate
+  `attempt()`. Constructor does not read env or accept raw values (validation happens upstream).
+- **Command entrypoints** (`src/index.ts` and any command that builds a `VocareumClient`) — ensure
+  throttle is resolved + validated at startup and passed into the client, before any request.
 - `src/types/config.ts` — `ThrottleConfigSchema` under `VocareumConfigSchema`.
 - `src/utils/env.ts` — parse/validate the three env overrides.
 - `src/commands/pull.ts` — `--content`/`--assignment`/`--part` flags, default skips content drift,
