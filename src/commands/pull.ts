@@ -12,6 +12,7 @@ import { resolveWorkspaceContext, type WorkspaceContext } from '../core/workspac
 import { reconcile } from '../core/reconciler';
 import { VocareumClient } from '../api/client';
 import { resolveAuthProvider } from '../api/auth/cli-auth-options';
+import { resolveThrottle } from '../api/throttle';
 import { getAssignment } from '../api/assignments';
 import { listParts, getPart } from '../api/parts';
 import { downloadContent } from '../api/content';
@@ -984,7 +985,8 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
     loadDotEnvIfPresent(path.join(workspaceRoot, '.env'));
     const config = await loadConfig(configPath);
 
-    const client = new VocareumClient(resolveAuthProvider(options, config.vocareum.api_base_url));
+    const throttle = resolveThrottle(config.vocareum.throttle);
+    const client = new VocareumClient(resolveAuthProvider(options, config.vocareum.api_base_url), throttle);
 
     logger.info('Scanning for assignment sync issues...');
 

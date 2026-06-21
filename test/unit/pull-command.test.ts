@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Config } from '../../src/types/config';
 import { pullCommand } from '../../src/commands/pull';
 import { UnknownFieldReporter } from '../../src/utils/unknown-field-reporter';
+import { resolveThrottle } from '../../src/api/throttle';
+import { VocareumClient } from '../../src/api/client';
 
 const {
   loadConfigMock,
@@ -62,6 +64,11 @@ vi.mock('../../src/api/parts', () => ({
 
 vi.mock('../../src/api/content', () => ({
   downloadContent: vi.fn(),
+}));
+
+vi.mock('../../src/api/throttle', () => ({
+  resolveThrottle: vi.fn(() => ({ maxConcurrency: 1, minIntervalMs: 0, jitter: false })),
+  DEFAULT_THROTTLE: { maxConcurrency: 1, minIntervalMs: 0, jitter: false },
 }));
 
 vi.mock('../../src/utils/settings', () => ({
@@ -458,5 +465,28 @@ describe('pullCommand — reporter lifecycle', () => {
     expect(mapAssignmentSettingsMock).toHaveBeenCalled();
     const secondArg = mapAssignmentSettingsMock.mock.calls[0][1];
     expect(secondArg).toBeInstanceOf(UnknownFieldReporter);
+  });
+});
+
+describe('pullCommand resolves throttle before using the client', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VOCAREUM_API_KEY = 'token';
+    isCIMock.mockReturnValue(false);
+    loadConfigMock.mockResolvedValue({
+      version: '1.0',
+      vocareum: { org_id: '1', course_id: 'c1', api_base_url: 'https://api.vocareum.com' },
+      assignments: [],
+      publish_options: {},
+      publish_history: [],
+    });
+    vi.mocked(resolveThrottle).mockReturnValue({ maxConcurrency: 1, minIntervalMs: 0, jitter: false });
+  });
+
+  it('does not construct the client or call reconcile when throttle resolution throws', async () => {
+    vi.mocked(resolveThrottle).mockImplementationOnce(() => { throw new Error('bad throttle env'); });
+    await expect(pullCommand({ nonInteractive: true })).rejects.toThrow('bad throttle env');
+    expect(vi.mocked(VocareumClient)).not.toHaveBeenCalled();
+    expect(reconcileMock).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,8 @@ import * as path from 'path';
 import type { Config } from '../../src/types/config';
 import { publishCommand } from '../../src/commands/publish';
 import { UnknownFieldReporter } from '../../src/utils/unknown-field-reporter';
+import { resolveThrottle } from '../../src/api/throttle';
+import { VocareumClient } from '../../src/api/client';
 
 const {
   loadConfigMock,
@@ -42,6 +44,11 @@ vi.mock('../../src/api/client', async (importOriginal) => {
     VocareumClient: vi.fn().mockImplementation(() => ({ request: vi.fn() })),
   };
 });
+
+vi.mock('../../src/api/throttle', () => ({
+  resolveThrottle: vi.fn(() => ({ maxConcurrency: 1, minIntervalMs: 0, jitter: false })),
+  DEFAULT_THROTTLE: { maxConcurrency: 1, minIntervalMs: 0, jitter: false },
+}));
 
 vi.mock('../../src/utils/env', () => ({
   loadDotEnvIfPresent: loadDotEnvIfPresentMock,
@@ -168,5 +175,28 @@ describe('publishCommand — reporter lifecycle', () => {
 
     expect(printSpy).toHaveBeenCalledTimes(1);
     printSpy.mockRestore();
+  });
+});
+
+describe('publishCommand resolves throttle before using the client', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VOCAREUM_API_KEY = 'token';
+    isCIMock.mockReturnValue(false);
+    loadConfigMock.mockResolvedValue({
+      version: '1.0',
+      vocareum: { org_id: '1', course_id: 'c1', api_base_url: 'https://api.vocareum.com' },
+      assignments: [],
+      publish_options: {},
+      publish_history: [],
+    });
+    vi.mocked(resolveThrottle).mockReturnValue({ maxConcurrency: 1, minIntervalMs: 0, jitter: false });
+  });
+
+  it('does not construct the client or call publish when throttle resolution throws', async () => {
+    vi.mocked(resolveThrottle).mockImplementationOnce(() => { throw new Error('bad throttle env'); });
+    await expect(publishCommand({ config: 'vocareum.yaml' })).rejects.toThrow('bad throttle env');
+    expect(vi.mocked(VocareumClient)).not.toHaveBeenCalled();
+    expect(publishMock).not.toHaveBeenCalled();
   });
 });
