@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { loadConfig, updateConfig, withConfigLock, ConfigError } from '../../src/core/config';
+import { loadConfig, updateConfig, withConfigLock, ConfigError, validateConfig } from '../../src/core/config';
 import { AssignmentSettingsSchema, PartSettingsSchema } from '../../src/types/config';
 
 describe('updateConfig stale assignment actions', () => {
@@ -394,5 +394,62 @@ describe('_observed_settings preservation in Zod schemas', () => {
     expect(parsed?._observed_settings).toEqual({
       deadlinedate: '2026-12-31T23:59:00Z',
     });
+  });
+});
+
+describe('throttle config validation', () => {
+  const base = {
+    version: '1.0',
+    vocareum: { org_id: 'o1', course_id: 'c1' },
+    assignments: [],
+  };
+  const withThrottle = (throttle: unknown) => ({
+    ...base,
+    vocareum: { ...base.vocareum, throttle },
+  });
+
+  it('accepts a valid throttle block', () => {
+    const r = validateConfig(withThrottle({ max_concurrency: 2, min_interval_ms: 500, jitter: false }));
+    expect(r.valid).toBe(true);
+  });
+
+  it('accepts absent throttle (uses defaults later)', () => {
+    expect(validateConfig(base).valid).toBe(true);
+  });
+
+  it('rejects a string number for max_concurrency', () => {
+    expect(validateConfig(withThrottle({ max_concurrency: '2' })).valid).toBe(false);
+  });
+
+  it('rejects negative min_interval_ms', () => {
+    expect(validateConfig(withThrottle({ min_interval_ms: -100 })).valid).toBe(false);
+  });
+
+  it('rejects max_concurrency above 5', () => {
+    expect(validateConfig(withThrottle({ max_concurrency: 10000 })).valid).toBe(false);
+  });
+
+  it('rejects non-integer max_concurrency', () => {
+    expect(validateConfig(withThrottle({ max_concurrency: 1.5 })).valid).toBe(false);
+  });
+
+  it('rejects min_interval_ms above 60000', () => {
+    expect(validateConfig(withThrottle({ min_interval_ms: 60001 })).valid).toBe(false);
+  });
+
+  it('rejects wrong type for jitter', () => {
+    expect(validateConfig(withThrottle({ jitter: 'yes' })).valid).toBe(false);
+  });
+
+  it('rejects unknown keys inside throttle (strict)', () => {
+    expect(validateConfig(withThrottle({ maxConcurrency: 1 })).valid).toBe(false);
+  });
+
+  it('rejects an array for throttle', () => {
+    expect(validateConfig(withThrottle([])).valid).toBe(false);
+  });
+
+  it('rejects throttle nested in itself', () => {
+    expect(validateConfig(withThrottle({ throttle: { max_concurrency: 1 } })).valid).toBe(false);
   });
 });

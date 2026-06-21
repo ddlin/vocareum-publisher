@@ -400,6 +400,21 @@ export const TemplateConfigSchema = z.object({
 export type TemplateConfig = z.infer<typeof TemplateConfigSchema>;
 
 /**
+ * Proactive client throttle. Tightly bounded; `.strict()` so a typo'd key
+ * (e.g. camelCase) is rejected rather than silently ignored.
+ */
+export const ThrottleConfigSchema = z
+  .object({
+    max_concurrency: z.number().int().min(1).max(5).optional(),
+    min_interval_ms: z.number().int().min(0).max(60000).optional(),
+    jitter: z.boolean().optional(),
+  })
+  .strict()
+  .optional();
+
+export type ThrottleConfig = z.infer<typeof ThrottleConfigSchema>;
+
+/**
  * Vocareum connection configuration
  * CRITICAL: All IDs are strings
  */
@@ -419,6 +434,8 @@ export const VocareumConfigSchema = z.object({
   course_settings: CourseSettingsConfigSchema,
   /** Assignment IDs to exclude from orphan detection (hidden from pull scans) */
   excluded_assignments: z.array(z.string()).optional().default([]),
+  /** Proactive request throttle for the Vocareum API client. */
+  throttle: ThrottleConfigSchema,
 }).passthrough();
 
 export type VocareumConfig = z.infer<typeof VocareumConfigSchema>;
