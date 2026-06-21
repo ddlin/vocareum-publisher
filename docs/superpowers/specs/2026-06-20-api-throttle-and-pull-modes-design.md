@@ -82,13 +82,21 @@ values `> 1`, the scheduler must be a **real queue with active-count tracking pl
 spacing** — not just a serial chain — so the implementation matches the advertised API. The
 queue:
 
-1. On `acquire()`, if `activeCount < maxConcurrency` **and** at least `nextAllowedStart` time has
-   passed, start immediately; otherwise enqueue.
+1. On `acquire()`, if `activeCount < maxConcurrency` **and** `now >= nextAllowedStart`, start
+   immediately; otherwise enqueue.
 2. Each start stamps `nextAllowedStart = now + minIntervalMs ± jitter`.
 3. On `release()`, decrement `activeCount` and pump the queue.
 
-A clock is injected (defaulting to `Date.now`/`setTimeout`) so spacing is testable without real
-waits.
+**Time-based pump (required).** `release()` is not the only thing that can unblock the queue: an
+item can be blocked *solely* by `nextAllowedStart` while `activeCount == 0` (nothing in flight to
+release). The pump must therefore handle this case: when the head of the queue is eligible by
+concurrency but not yet by spacing, schedule a one-shot timer for `nextAllowedStart - now` (via the
+injected `setTimeout`) that re-runs the pump. Guard against scheduling multiple overlapping timers
+(track a single pending-pump handle). Without this, a queued request can sit forever after the
+spacing delay if no other request completes.
+
+A clock and timer are injected (defaulting to `Date.now`/`setTimeout`/`clearTimeout`) so spacing is
+testable without real waits.
 
 ### Accurate claim about retry jitter
 
@@ -158,14 +166,48 @@ hard error, not a silent clamp, so misconfiguration is visible.
 
 ## Part 2 — Pull content drift becomes opt-in
 
+### What `--content` does and does NOT govern
+
+`pull` has **two independent** content-download paths today. This spec changes only the first:
+
+1. **Content-drift detection** (the new `--content` gate) — the phase that downloads remote files
+   of linked parts purely to *compare* them against local files
+   ([pull.ts:580](../../../src/commands/pull.ts), [pull.ts:991](../../../src/commands/pull.ts)).
+   This is what becomes opt-in.
+2. **Orphan import** — when a remote-only assignment is *imported* into the repo, its content is
+   downloaded as part of materializing it locally ([pull.ts:757](../../../src/commands/pull.ts),
+   [pull.ts:1041](../../../src/commands/pull.ts); `--batch` auto-imports). This is governed by the
+   **existing** `--skip-content` flag ([index.ts:188-189](../../../src/index.ts)) and is
+   **unchanged** by this spec.
+
+**Tightened contract:** *Content drift detection is opt-in via `--content`. Orphan-import content
+behavior is unchanged and remains governed solely by the existing `--skip-content` flag.* `--content`
+and `--skip-content` are orthogonal: `--content` turns the drift phase on; `--skip-content` tells the
+import phase to reuse local content. Neither flag's meaning changes the other.
+
 ### Flags & behavior
 
 | Command | Behavior |
 |---|---|
-| `vocgit pull` | reconcile + settings drift only. No content downloaded. Prints a one-line note that content drift was skipped and how to enable it. |
-| `vocgit pull --content` | additionally downloads + diffs file content for all linked parts (today's full behavior). |
-| `vocgit pull --content --assignment <name\|id>` | scope content drift to the named assignment(s). Repeatable. |
-| `vocgit pull --content --assignment <name\|id> --part <id>` | scope further to specific part(s) within that assignment. |
+| `vocgit pull` | reconcile + settings drift + orphan/stale handling (as today), but **no content-drift download**. Prints a one-line note that content drift was skipped and how to enable it. |
+| `vocgit pull --content` | additionally runs content-drift detection (downloads + diffs file content) for all linked parts — today's drift behavior. |
+| `vocgit pull --content --assignment <name\|id>` | scope content-drift detection to the named assignment(s). Repeatable. |
+| `vocgit pull --content --assignment <name\|id> --part <id>` | scope drift further to specific part(s) within that assignment. |
+| `vocgit pull --skip-content` (± `--batch`) | unchanged: affects orphan **import**, not drift. Composes with `--content` independently. |
+
+### Flag parsing (Commander)
+
+`--assignment` must collect **repeated** occurrences into an array. Commander does **not** do this by
+default — a plain `.option('--assignment <x>')` keeps only the last value. Use a collector:
+
+```ts
+const collect = (val: string, acc: string[]): string[] => { acc.push(val); return acc; };
+pullCmd.option('--content', 'Detect content drift (downloads remote files to diff)');
+pullCmd.option('--assignment <name|id>', 'Limit --content drift to assignment(s); repeatable', collect, []);
+pullCmd.option('--part <id>', 'Limit --content drift to part(s); requires --assignment', collect, []);
+```
+
+`--part` also collects (array), and is only meaningful with a single `--assignment` (see validation).
 
 ### Flag-combination validation (errors, not silent no-ops)
 
@@ -201,7 +243,14 @@ Recommend at least a minor bump with the note; final version semantics decided a
 - N sequential requests with `minIntervalMs=M`, `maxConcurrency=1` take ≥ `(N-1)·M` (injected clock).
 - `maxConcurrency=3` allows 3 concurrent in-flight, queues the 4th, and still spaces starts.
 - `minIntervalMs=0` disables spacing (no added delay).
+- **Time-based pump:** a single request enqueued while blocked *only* by spacing (`activeCount==0`)
+  still fires once the injected timer advances past `nextAllowedStart` — i.e. it does **not** depend
+  on another `release()`. Assert the injected `setTimeout` was scheduled for `nextAllowedStart - now`
+  and that exactly one pending-pump timer exists (no overlapping timers).
 - Jitter stays within ±40% bounds (injected RNG at 0.0 and 1.0 extremes).
+- **Jitter varies wire time:** two acquisitions fed *different* RNG samples produce *different*
+  `nextAllowedStart` stamps. (This is the unit-provable claim; CI-runner de-synchronization is the
+  expected real-world *effect* of this, not something a deterministic test asserts.)
 - Slot released on both success and thrown error (a failed request doesn't deadlock the queue).
 - Scheduler wraps retries: a 429→retry sequence passes the gate twice.
 
@@ -209,19 +258,28 @@ Recommend at least a minor bump with the note; final version semantics decided a
 Each row in the adversarial-input table is a named test (yaml-level and env-level).
 
 ### Pull (integration-ish, mocked client)
-- `vocgit pull` issues **zero** `downloadContent`/file-download requests; still runs reconcile +
-  settings drift.
-- `vocgit pull --content` restores full content download.
-- `--content --assignment lab1` downloads only `lab1`'s parts.
-- `--content --assignment lab1 --part part1` downloads only that part.
+- `vocgit pull` issues **zero** content-drift `downloadContent` requests; still runs reconcile +
+  settings drift + orphan/stale handling.
+- `vocgit pull --content` restores full content-drift download.
+- `--content --assignment lab1` drift-downloads only `lab1`'s parts.
+- `--content --assignment lab1 --part part1` drift-downloads only that part.
+- **Repeated `--assignment lab1 --assignment lab2`** collects **both** selectors (guards against the
+  Commander last-value-wins trap); drift covers `lab1` and `lab2` only.
 - `--assignment` without `--content` → error.
 - `--part` without `--assignment` → error.
 - unknown `--assignment`/`--part` value → error with valid choices.
+- **Orphan import unchanged:** with an orphan present, `pull --batch` still downloads import content;
+  `pull --batch --skip-content` still reuses local content — neither is affected by `--content`'s
+  presence or absence (run the matrix: `{--content}×{--skip-content}` leaves import behavior keyed
+  only on `--skip-content`).
 
 ### Scenario contract (per AGENTS.md §4)
-- "User runs a quick `pull` on a 500-file course" → no file requests fired; finishes after metadata calls only.
+- "User runs a quick `pull` on a 500-file course" → no content-drift requests fired; finishes after metadata + orphan/stale calls only.
 - "User adds `throttle.min_interval_ms: 1000` and runs `--content`" → consecutive requests are ≥1s apart.
-- "Two CI runners get 429 at the same instant" → their retries hit the wire at jittered, non-identical times.
+- "Two CI runners get 429 at the same instant" → de-synchronization is the *expected effect* of
+  request-start jitter; not asserted by a deterministic test. The unit test instead proves different
+  jitter samples yield different start times (above).
+- "User imports an orphan with `--batch`" → import content still downloads (drift opt-in does not regress import).
 - "User typos `throttle: { max_concurrency: 99 }`" → run fails fast with a bounds error, no requests sent.
 
 ### System-trace checkpoint (per AGENTS.md §3)
