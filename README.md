@@ -271,12 +271,13 @@ vocgit pull --verbose      # Show detailed output
 vocgit pull --non-interactive  # Skip all issues
 ```
 
-**Content drift detection is opt-in.** By default, `vocgit pull` does not download remote files to diff them. Add `--content` to enable it. You can scope the check with `--assignment <name|id>` (repeatable) and `--part <id>` (requires exactly one `--assignment`):
+**Content drift detection is opt-in.** By default, `vocgit pull` (and `vocgit pull --batch`) does not download remote files to diff them — direct file edits in the Vocareum UI are NOT reconciled unless you ask for them. Add `--content` to enable the check. You can scope it with `--assignment <name|id>` (repeatable) and `--part <part_id>` (a part's `part_id`, not its directory name; requires exactly one `--assignment`):
 
 ```bash
-vocgit pull --content                            # check all assignments for content drift
-vocgit pull --content --assignment lab1          # scope to lab1 only
-vocgit pull --content --assignment lab1 --part part1  # scope to one part
+vocgit pull --content                                  # check all assignments for content drift
+vocgit pull --batch --content                          # batch sync including content drift
+vocgit pull --content --assignment lab1                # scope to lab1 only
+vocgit pull --content --assignment lab1 --part <part_id>  # scope to one part by its part_id
 ```
 
 `--skip-content` is a separate flag that controls orphan-import behavior only — it tells vocgit to skip downloading files for newly imported orphan assignments (useful to retry after a failed pull). It has no effect on content drift detection.
@@ -304,10 +305,10 @@ Set `publish_options.sync_settings: false` to skip course, assignment, and part 
 - **Keep**: Keep local files (will overwrite Vocareum on next push)
 - **Skip**: Do nothing for now
 
-Example workflow:
+Example workflow (with `--content` to include content drift):
 
 ```
-$ vocgit pull
+$ vocgit pull --content
 
 ℹ Scanning for assignment sync issues...
 ℹ Found 1 orphaned assignment(s) in Vocareum.

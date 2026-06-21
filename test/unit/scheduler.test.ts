@@ -53,15 +53,22 @@ describe('RequestScheduler', () => {
     const s = new RequestScheduler({ maxConcurrency: 3, minIntervalMs: 0, jitter: false });
     let started = 0;
     const release: Array<() => void> = [];
-    for (let i = 0; i < 5; i++) {
-      void s.schedule(() => new Promise<void>((res) => { started++; release.push(res); }));
-    }
+    const pending = Array.from({ length: 5 }, () =>
+      s.schedule(() => new Promise<void>((res) => { started++; release.push(res); })),
+    );
     await vi.advanceTimersByTimeAsync(0);
     expect(started).toBe(3);
     release[0]();
     await vi.advanceTimersByTimeAsync(0);
     expect(started).toBe(4);
-    release.forEach((r) => r());
+    // Drain every task, including ones that only start as slots free, so no
+    // queued work is left unresolved when the test ends.
+    for (let i = 0; i < 5; i++) {
+      release[i]?.();
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    await Promise.all(pending);
+    expect(started).toBe(5);
   });
 
   it('applies jitter at the low edge (random=0 -> -40%)', async () => {
