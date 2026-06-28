@@ -7,7 +7,7 @@ vi.mock('../../src/utils/logger', () => {
 });
 vi.mock('../../src/utils/env', () => ({ loadDotEnvIfPresent: vi.fn(), isCI: () => false, getAuthModeEnv: () => undefined, getOAuthClientId: () => undefined, getOAuthClientSecret: () => undefined, getCIProvider: () => undefined }));
 import { statusCommand } from '../../src/commands/status';
-const norm = (ls: string[]) => ls.join('\n').replace(/\b[0-9a-f]{7,40}\b/g, '<sha>').replace(/\d{4}-\d{2}-\d{2}T[\d:.Z+-]+/g, '<ts>');
+const norm = (ls: string[]) => ls.join('\n').replace(new RegExp(process.cwd().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '<cwd>').replace(/\b[0-9a-f]{7,40}\b/g, '<sha>').replace(/\d{4}-\d{2}-\d{2}T[\d:.Z+-]+/g, '<ts>');
 const FIX = { config: 'test/fixtures/sample-course/vocareum.yaml', root: 'test/fixtures/sample-course' };
 
 describe('golden: status', () => {

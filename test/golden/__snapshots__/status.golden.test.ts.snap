@@ -8,7 +8,7 @@ Readiness
 - Runtime: local
 
 Workspace
-- Config: /Users/davidlin/Development/vocgit/test/fixtures/sample-course/vocareum.yaml
+- Config: <cwd>/test/fixtures/sample-course/vocareum.yaml
 - Org/Course: 12345/67890
 - Git: repo on feat/stage1a-service-layer @ <sha> (dirty)
 
