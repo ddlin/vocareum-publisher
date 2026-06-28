@@ -1,0 +1,8 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`golden: validate > (a) clean: sample-course passes and output is stable 1`] = `
+"Validating configuration...
+Configuration is valid.
+Validating file structure...
+File structure is valid."
+`;
