@@ -207,9 +207,9 @@ describe('golden: status', () => {
 
 ### Task 5: `EventSink` with metadata forwarding
 
-**Files:** Create `src/core/services/event-sink.ts`; Test `test/unit/event-sink.test.ts`.
+**Files:** Create `src/core/services/event-sink.ts` (pure: interface + `CollectingEventSink`, NO `logger` import) and `src/utils/logger-event-sink.ts` (`LoggerEventSink`, the rendering adapter — lives OUTSIDE `services/` so it may import `logger` without tripping the Task 16 guard); Test `test/unit/event-sink.test.ts`.
 
-**Interfaces:** Produces `ServiceEvent { level; code?; message?; data?: unknown }`, `EventSink`, `LoggerEventSink` (renders via `logger`, **forwarding `data` to `error`/`warn`/`debug` as the `meta` arg** — P1 #8), `CollectingEventSink` (buffers `events`, `flushTo(sink)`).
+**Interfaces:** Produces in `src/core/services/event-sink.ts`: `ServiceEvent { level; code?; message?; data?: unknown }`, `EventSink`, `CollectingEventSink` (buffers `events`, `flushTo(sink)`). Produces in `src/utils/logger-event-sink.ts`: `LoggerEventSink` (renders via `logger`, **forwarding `data` to `error`/`warn`/`debug` as the `meta` arg** — P1 #8). Imports of `LoggerEventSink` elsewhere (CLI wrappers, core-module defaults in Tasks 13/14) come from `src/utils/logger-event-sink`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -226,7 +226,8 @@ vi.mock('../../src/utils/logger', () => ({ logger: {
   plain: (m: string) => calls.push(['plain', m, undefined]),
   newline: () => calls.push(['newline', '', undefined]),
 } }));
-import { LoggerEventSink, CollectingEventSink } from '../../src/core/services/event-sink';
+import { CollectingEventSink } from '../../src/core/services/event-sink';
+import { LoggerEventSink } from '../../src/utils/logger-event-sink';
 
 describe('event sinks', () => {
   it('forwards data as meta for error/warn/debug (P1 #8)', () => {
@@ -246,7 +247,7 @@ describe('event sinks', () => {
 
 - [ ] **Step 2: Run to verify it fails.**
 
-- [ ] **Step 3: Implement** — `LoggerEventSink.emit` maps level→method; for `error`/`warn`/`debug` pass `e.data` as the second arg; `info`/`success`/`plain` pass message only; `newline` calls `logger.newline()`.
+- [ ] **Step 3: Implement** — in `services/event-sink.ts` define `ServiceEvent`, `EventSink`, `CollectingEventSink` (no `logger` import). In `utils/logger-event-sink.ts` define `LoggerEventSink implements EventSink` (import the interface from `../core/services/event-sink`): `emit` maps level→method; for `error`/`warn`/`debug` pass `e.data` as the second arg; `info`/`success`/`plain` pass message only; `newline` calls `logger.newline()`.
 
 - [ ] **Step 4: Run to verify it passes.**
 
