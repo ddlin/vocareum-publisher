@@ -37,6 +37,7 @@ import { statusCommand, StatusCommandOptions } from './commands/status';
 import { ValidateOptions } from './commands/validate';
 import { FixOptions } from './commands/fix';
 import { logger } from './utils/logger';
+import { CommandFailureError } from './utils/command-failure';
 
 // Init command - initialize a new course repository
 program
@@ -63,8 +64,9 @@ Examples:
     try {
       await initCommand(options);
     } catch (error) {
-      logger.error(`Init failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      process.exit(1);
+      const msg = `Init failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      logger.error(msg);
+      throw new CommandFailureError(msg);
     }
   });
 
@@ -98,8 +100,9 @@ Examples:
     try {
       await newCommand(assignmentPath);
     } catch (error) {
-      logger.error(`New assignment failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      process.exit(1);
+      const msg = `New assignment failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      logger.error(msg);
+      throw new CommandFailureError(msg);
     }
   });
 
@@ -139,8 +142,9 @@ Examples:
     try {
       await validateCommand(options);
     } catch (error) {
-      logger.error(`Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      process.exit(1);
+      const msg = `Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      logger.error(msg);
+      throw new CommandFailureError(msg);
     }
   });
 
@@ -173,8 +177,9 @@ Examples:
     try {
       await fixCommand(options);
     } catch (error) {
-      logger.error(`Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      process.exit(1);
+      const msg = `Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      logger.error(msg);
+      throw new CommandFailureError(msg);
     }
   });
 
@@ -247,8 +252,9 @@ Examples:
     try {
       await pullCommand(options);
     } catch (error) {
-      logger.error(`Pull failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      process.exit(1);
+      const msg = `Pull failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      logger.error(msg);
+      throw new CommandFailureError(msg);
     }
   });
 
@@ -287,8 +293,9 @@ Examples:
     try {
       await statusCommand(options);
     } catch (error) {
-      logger.error(`Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      process.exit(1);
+      const msg = `Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      logger.error(msg);
+      throw new CommandFailureError(msg);
     }
   });
 
@@ -351,9 +358,17 @@ Examples:
       await publishCommand(options);
     } catch (error) {
       // logger.error handled in publishCommand mostly, but top level catch safety
-      logger.error(`Unhandled error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      process.exit(1);
+      const msg = `Unhandled error: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      logger.error(msg);
+      throw new CommandFailureError(msg);
     }
   });
 
-program.parse();
+program.parseAsync().catch((error) => {
+  if (error instanceof CommandFailureError) {
+    process.exitCode = error.exitCode;   // command already rendered its error
+  } else {
+    logger.error(error instanceof Error ? error.message : 'Unknown error');
+    process.exitCode = 1;
+  }
+});
