@@ -31,7 +31,11 @@ export interface AssignmentIntent {
   settingsPayload?: Record<string, unknown>;
   parts: PartIntent[];
 }
-export interface PushIntent { assignments: AssignmentIntent[]; }
+export interface PushIntent {
+  assignments: AssignmentIntent[];
+  /** Canonical course-settings payload that executePush will send (populated when coursesToUpdate > 0). */
+  courseSettings?: Record<string, unknown>;
+}
 
 export interface RemoteAssumption {
   assignmentPath: string;

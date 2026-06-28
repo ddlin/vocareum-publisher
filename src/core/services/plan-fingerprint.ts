@@ -67,8 +67,13 @@ export function semanticFingerprint(intent: PushIntent): string {
     })),
   };
 
+  // Include courseSettings so a course-settings change shifts the fingerprint.
+  const withCourse = intent.courseSettings !== undefined
+    ? { ...canonicalIntentStructure, courseSettings: intent.courseSettings }
+    : canonicalIntentStructure;
+
   // Recursively canonicalize all object keys
-  const canonicalized = canonicalizeValue(canonicalIntentStructure);
+  const canonicalized = canonicalizeValue(withCourse);
 
   // Stringify and hash
   const canonicalJson = JSON.stringify(canonicalized);

@@ -22,7 +22,8 @@ import type {
 import type { HistorySettingChange, HistoryFileChange, AssignmentSettings } from '../../types/config';
 import type { PublishResult } from '../../types/state';
 import { reconcile, displayPlan } from '../reconciler';
-import { assertConfinedToWorkspace } from '../local-scan';
+import { assertConfinedToWorkspace, publishExcludePatterns } from '../local-scan';
+import { calculateDirectoryHash } from '../../utils/files';
 import { copyAssignment, getAssignment, updateAssignment } from '../../api/assignments';
 import { updateCourse } from '../../api/courses';
 import { getPart, updatePart } from '../../api/parts';
@@ -179,22 +180,86 @@ export async function planPush(
     // non-fatal; leave empty
   }
 
-  // Build PushIntent from the reconciliation plan
+  // Effective exclude patterns — same set the reconciler/uploader use so hashes
+  // computed here agree with the hashes recorded after execution.
+  const effectiveExcludePatterns = publishExcludePatterns(workingConfig);
+
+  // Build PushIntent from the reconciliation plan.
+  //
+  // Intent + _reconPlan both derive from the same immutable reconPlan snapshot
+  // produced in this planPush call.  executePush drives off _reconPlan directly
+  // (same mutation set), while the intent is the complete, faithful projection
+  // of that snapshot for fingerprinting, audit, and Stage-1b confirmation.
   const intentAssignments: AssignmentIntent[] = [];
+  // Accumulate local directory hashes for preconditions (same values as intent contentHashes).
+  const preconditionContentHashes: Record<string, string> = {};
+
   for (const action of reconPlan.assignments) {
     if (action.type === 'error' || action.type === 'skip') { continue; }
+
+    // Build assignment-level settings payload (mirrors executePush ~line 506-534).
+    let assignmentSettingsPayload: Record<string, unknown> | undefined;
+    if (action.type === 'update' && action.assignmentMetadataChanged === true) {
+      const asnSettings = action.assignment.settings;
+      const knownPayload: Record<string, unknown> = { name: action.assignment.name };
+      if (asnSettings) {
+        const asnKeys = [
+          'nosubmit', 'publish', 'publish_grades', 'auto_submit', 'grading_on_submit',
+          'noworkarea', 'exam_mode', 'exam_duration', 'num_attempts', 'show_end_exam_button',
+          'lti_on', 'anonymous_grading', 'grading_visibility', 'live_code_comments',
+        ] as const;
+        for (const key of asnKeys) {
+          const v = asnSettings[key];
+          if (v !== undefined && v !== null) { knownPayload[key] = v; }
+        }
+        const filteredUnknowns = filterUnknownSettingsForPayload(
+          asnSettings._unknown_settings,
+          RESERVED_ASSIGNMENT_KEYS,
+          'assignment',
+          action.assignment.name,
+        );
+        if (Object.keys(filteredUnknowns).length > 0) {
+          Object.assign(knownPayload, filteredUnknowns);
+        }
+      }
+      assignmentSettingsPayload = knownPayload;
+    }
 
     const parts: PartIntent[] = [];
     for (const partAction of action.parts) {
       if (partAction.type === 'skip') { continue; }
+
+      // Per-directory content hashes — real values using the same exclude
+      // patterns the uploader will use, so plan-hash == post-upload hash.
       const contentHashes: Record<string, string> = {};
       for (const dir of partAction.changedDirectories ?? []) {
-        contentHashes[dir] = '';
+        const dirKey = path.join(action.assignment.path, partAction.part.path, dir);
+        const localDirPath = path.resolve(workspaceRoot, dirKey);
+        let hash = '';
+        try {
+          hash = await calculateDirectoryHash(localDirPath, effectiveExcludePatterns);
+        } catch {
+          // If the directory is unreadable, leave empty — execution will fail too.
+        }
+        contentHashes[dir] = hash;
+        preconditionContentHashes[dirKey] = hash;
       }
+
+      // Part-level settings payload (mirrors executePush ~line 660).
+      let partSettingsPayload: Record<string, unknown> | undefined;
+      if (partAction.metadataChanged === true && action.willCreate !== true) {
+        partSettingsPayload = buildPartSettingsPayload(
+          partAction.part.name ?? partAction.part.path,
+          partAction.part.settings,
+          'full',
+        );
+      }
+
       parts.push({
         partId: partAction.part.part_id ?? null,
         path: partAction.part.path,
         contentHashes,
+        ...(partSettingsPayload !== undefined ? { settingsPayload: partSettingsPayload } : {}),
       });
     }
 
@@ -203,11 +268,29 @@ export async function planPush(
       assignmentId: action.assignment.assignment_id ?? null,
       templateAssignmentId: action.templateId,
       action: action.type === 'create' ? 'create' : 'update',
+      ...(assignmentSettingsPayload !== undefined ? { settingsPayload: assignmentSettingsPayload } : {}),
       parts,
     });
   }
 
-  const intent: PushIntent = { assignments: intentAssignments };
+  // Course-settings intent: encode what executePush will send so a change in
+  // course settings shifts the fingerprint.
+  let courseSettingsPayload: Record<string, unknown> | undefined;
+  if (
+    reconPlan.course.type === 'update' &&
+    workingConfig.vocareum.course_settings &&
+    reconPlan.summary.coursesToUpdate > 0
+  ) {
+    courseSettingsPayload = {
+      name: workingConfig.vocareum.course_settings.name,
+      description: workingConfig.vocareum.course_settings.description,
+    };
+  }
+
+  const intent: PushIntent = {
+    assignments: intentAssignments,
+    ...(courseSettingsPayload !== undefined ? { courseSettings: courseSettingsPayload } : {}),
+  };
 
   // Preconditions
   const assignmentIds = reconPlan.assignments
@@ -229,7 +312,9 @@ export async function planPush(
 
   const preconditions: PushPreconditions = {
     configDigest,
-    contentHashes: {},
+    // Local directory hashes the plan was computed from — same real values
+    // recorded in intent.contentHashes so preconditions match the intent.
+    contentHashes: preconditionContentHashes,
     assignmentIds,
     partIds,
     remoteAssumptions,
@@ -710,9 +795,12 @@ export async function executePush(
             const dirKey = path.join(action.assignment.path, partAction.part.path, dir);
             const localDirPath = path.resolve(workspaceRoot, dirKey);
             await assertConfinedToWorkspace(workspaceRoot, localDirPath);
+            // Use the effective (working) config exclude patterns so org-level
+            // patterns added via hierarchy apply to both hashing and upload.
+            const effectiveExcludePatterns = publishExcludePatterns(workingConfig);
             const localFiles = await readLocalDirectory(
               localDirPath,
-              ['.gitkeep', '**/.gitkeep', ...(ctx.persistedConfig.publish_options?.exclude_patterns ?? [])],
+              effectiveExcludePatterns,
             );
             const uploadRes = await syncDirectory(
               ctx.client,
@@ -723,7 +811,7 @@ export async function executePush(
               dir,
               {
                 syncDeletes: req.syncDeletes,
-                excludePatterns: ['.gitkeep', '**/.gitkeep', ...(ctx.persistedConfig.publish_options?.exclude_patterns ?? [])],
+                excludePatterns: effectiveExcludePatterns,
                 architecture: ctx.persistedConfig.vocareum.architecture,
                 workspaceRoot,
               },
