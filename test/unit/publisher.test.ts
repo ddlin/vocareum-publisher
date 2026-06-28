@@ -65,6 +65,7 @@ vi.mock('../../src/core/uploader', () => ({
 
 vi.mock('../../src/core/config', () => ({
   updateConfig: updateConfigMock,
+  withConfigLock: vi.fn((_path: string, fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('../../src/utils/git', () => ({

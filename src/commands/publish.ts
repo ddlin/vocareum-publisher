@@ -7,7 +7,6 @@
 import { loadConfig, withConfigLock } from '../core/config';
 import { resolveWorkspaceContext, type WorkspaceContext } from '../core/workspace';
 import * as path from 'path';
-import { publish } from '../core/publisher';
 import { VocareumClient } from '../api/client';
 import { resolveAuthProvider } from '../api/auth/cli-auth-options';
 import { resolveThrottle } from '../api/throttle';
@@ -15,6 +14,11 @@ import { logger } from '../utils/logger';
 import { loadDotEnvIfPresent, isCI } from '../utils/env';
 import { UnknownFieldReporter } from '../utils/unknown-field-reporter';
 import type { PublishOperationOptions } from '../types/state';
+import { planPush, executePush } from '../core/services/push-service';
+import { withSession } from '../core/session';
+import { LoggerEventSink } from '../utils/logger-event-sink';
+import { InteractivePrompter, NonInteractivePrompter } from '../core/services/context';
+import { promptConfirm } from '../utils/prompts';
 
 export interface PublishCommandOptions extends PublishOperationOptions {
   config?: string;
@@ -56,11 +60,10 @@ async function publishCommandLocked(
       logger.warn('Auto-commit is disabled in CI/CD environments.');
     }
 
-    // Merge options with config defaults
     // In CI, always run non-interactive
     const nonInteractive = options.nonInteractive ?? isCI();
 
-    const publishOptions: PublishOperationOptions = {
+    const req = {
       dryRun: options.dryRun ?? false,
       verbose: options.verbose ?? false,
       nonInteractive,
@@ -68,19 +71,53 @@ async function publishCommandLocked(
       syncDeletes: options.syncDeletes ?? config.publish_options?.sync_deletes ?? false,
       onMissingId: options.onMissingId ?? config.publish_options?.on_missing_id ?? 'skip',
       abortOnError: options.abortOnError ?? config.publish_options?.abort_on_error ?? false,
-      configPath,
-      workspaceRoot,
       assignment: options.assignment,
       part: options.part,
       forceAll: options.forceAll ?? false,
     };
 
+    const pushCtx = {
+      persistedConfig: config,
+      effectiveConfig: config,
+      configPath,
+      workspaceRoot,
+      events: new LoggerEventSink(),
+      prompter: nonInteractive ? new NonInteractivePrompter() : new InteractivePrompter(),
+      client,
+    };
+
     logger.info(`Starting push for course ${config.vocareum.course_id}...`);
-    if (publishOptions.dryRun === true) {
+    if (req.dryRun === true) {
       logger.info('DRY RUN MODE: No changes will be applied.');
     }
 
-    const result = await publish(config, client, publishOptions, reporter);
+    // Open one session: plan → confirm (interactive only) → execute
+    const result = await withSession(configPath, async (session) => {
+      const plan = await planPush(pushCtx, req);
+
+      // Interactive confirmation — only when not non-interactive/CI and there are changes
+      // (plan emits the hasChanges summary; we check via the intent having any assignments)
+      const hasChanges = plan.intent.assignments.length > 0;
+
+      if (!nonInteractive && !req.dryRun && hasChanges) {
+        logger.newline();
+        const confirmed = await promptConfirm('Proceed with push?', true);
+        if (!confirmed) {
+          logger.warn('Push cancelled by user.');
+          return {
+            success: true,
+            created: [],
+            updated: [],
+            skipped: [],
+            failed: [],
+            contentState: { ...(config.publish_history?.[0]?.content_state) },
+            summary: 'Cancelled by user',
+          };
+        }
+      }
+
+      return executePush(session, pushCtx, req, plan, reporter);
+    });
 
     if (result.success) {
       logger.success('Push completed successfully!');
