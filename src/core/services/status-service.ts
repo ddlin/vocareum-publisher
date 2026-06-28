@@ -137,6 +137,18 @@ export async function inspectStatus(ctx: StatusContext, opts: InspectStatusOptio
   };
 }
 
+/** One row in the verbose Assignment Details section, derived from config. */
+export interface AssignmentDetailRow {
+  /** Relative path from the workspace root (same as config `path`). */
+  path: string;
+  /** assignment_id from config, or null/empty string if not yet linked. */
+  assignmentId: string | null | undefined;
+  /** Number of parts whose `part_id` is a non-empty string. */
+  linkedParts: number;
+  /** Total number of parts listed in config. */
+  totalParts: number;
+}
+
 export interface RenderStatusHumanOptions {
   verbose?: boolean;
   /** Total configured templates (legacy + new). Required for human rendering. */
@@ -152,6 +164,12 @@ export interface RenderStatusHumanOptions {
   linkedAssignmentCount: number;
   totalPartCount: number;
   linkedPartCount: number;
+  /**
+   * Per-assignment detail rows for the verbose section. Callers MUST compute
+   * these from config (not from `report.assignments`) so that `--verbose` on
+   * the human path does not require a content scan.
+   */
+  assignmentDetails: AssignmentDetailRow[];
 }
 
 /**
@@ -205,13 +223,12 @@ export function renderStatusHuman(
   events.emit({ level: 'plain', message: `- Templates configured: ${options.templateCount}` });
   events.emit({ level: 'plain', message: `- Excluded assignment IDs: ${options.excludedCount}` });
 
-  if (options.verbose === true && report.assignments.length > 0) {
+  if (options.verbose === true && options.assignmentDetails.length > 0) {
     events.emit({ level: 'newline' });
     events.emit({ level: 'plain', message: 'Assignment Details' });
-    for (const a of report.assignments) {
-      const linkedParts = a.parts.filter(p => hasNonEmptyId(p.part_id)).length;
-      const assignmentId = hasNonEmptyId(a.assignment_id) ? a.assignment_id : 'pending';
-      events.emit({ level: 'plain', message: `- ${a.path} (id=${assignmentId}, parts=${linkedParts}/${a.parts.length})` });
+    for (const a of options.assignmentDetails) {
+      const assignmentId = hasNonEmptyId(a.assignmentId) ? a.assignmentId : 'pending';
+      events.emit({ level: 'plain', message: `- ${a.path} (id=${assignmentId}, parts=${a.linkedParts}/${a.totalParts})` });
     }
   }
 }

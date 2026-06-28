@@ -19,6 +19,10 @@ const FIX = { config: 'test/fixtures/sample-course/vocareum.yaml', root: 'test/f
 describe('golden: status', () => {
   beforeEach(() => { out.length = 0; err.length = 0; });
   it('human output is stable', async () => { await statusCommand({ ...FIX }); expect(norm(out)).toMatchSnapshot(); });
+  it('--verbose human output includes Assignment Details (no content scan)', async () => {
+    await statusCommand({ ...FIX, verbose: true });
+    expect(norm(out)).toMatchSnapshot();
+  });
   it('--json emits exactly one valid JSON doc and no human lines', async () => {
     const json: string[] = [];
     const spy = vi.spyOn(process.stdout, 'write').mockImplementation((s) => { json.push(String(s)); return true; });

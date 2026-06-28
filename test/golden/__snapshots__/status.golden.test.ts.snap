@@ -1,5 +1,28 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`golden: status > --verbose human output includes Assignment Details (no content scan) 1`] = `
+"Current Vocareum Publisher status
+
+Readiness
+- Auth (token): API key missing
+- Runtime: local
+
+Workspace
+- Config: <cwd>/test/fixtures/sample-course/vocareum.yaml
+- Org/Course: 12345/67890
+- Git: repo on main @ <sha>
+
+Sync Summary
+- Last push: never
+- Assignments: 1 total (1 linked, 0 pending create)
+- Parts: 1 total (1 linked, 0 pending map)
+- Templates configured: 1
+- Excluded assignment IDs: 0
+
+Assignment Details
+- lab1 (id=11111, parts=1/1)"
+`;
+
 exports[`golden: status > human output is stable 1`] = `
 "Current Vocareum Publisher status
 

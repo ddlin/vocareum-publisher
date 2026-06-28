@@ -113,6 +113,16 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
       0
     );
 
+    // Config-derived per-assignment detail rows for the verbose section.
+    const assignmentDetails = configAssignments.map(a => ({
+      path: a.path,
+      assignmentId: a.assignment_id,
+      linkedParts: (a.parts ?? []).filter(
+        p => typeof p.part_id === 'string' && p.part_id.trim() !== ''
+      ).length,
+      totalParts: a.parts?.length ?? 0,
+    }));
+
     renderStatusHuman(report, events, {
       verbose: options.verbose,
       templateCount,
@@ -121,6 +131,7 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
       linkedAssignmentCount: configLinkedAssignmentCount,
       totalPartCount: configTotalPartCount,
       linkedPartCount: configLinkedPartCount,
+      assignmentDetails,
     });
   } catch (error) {
     if (error instanceof CommandFailureError) { throw error; }
