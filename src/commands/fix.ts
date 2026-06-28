@@ -12,6 +12,7 @@ import { validateStructure } from '../core/validator';
 import { resolveWorkspaceContext } from '../core/workspace';
 import { ensureDirectory } from '../utils/files';
 import { logger } from '../utils/logger';
+import { CommandFailureError } from '../utils/command-failure';
 import { promptConfirm } from '../utils/prompts';
 
 export interface FixOptions {
@@ -84,8 +85,9 @@ export async function fixCommand(options: FixOptions): Promise<void> {
     logger.success('Fix operations completed.');
 
   } catch (error) {
+    if (error instanceof CommandFailureError) { throw error; }
     logger.error(`Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    process.exit(1);
+    throw new CommandFailureError(`Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 1);
   }
 }
 

@@ -52,6 +52,7 @@ vi.mock('../../src/utils/git', () => ({
 }));
 
 import { validateCommand } from '../../src/commands/validate';
+import { CommandFailureError } from '../../src/utils/command-failure';
 import * as path from 'path';
 
 /** Normalise volatile values so snapshots are deterministic */
@@ -86,50 +87,23 @@ describe('golden: validate', () => {
 
   // ── (b) STRICT-FAIL ────────────────────────────────────────────────────────
   //
-  // Today validateCommand calls process.exit(1) when validation fails or when
-  // --strict is true and there are warnings. In a vitest process, process.exit
-  // terminates the runner — we mock it to intercept the call instead.
-  //
-  // NOTE: Task 11 converts this to `rejects -> CommandFailureError`.
-  // At that point this test should be updated: remove the process.exit mock
-  // and use `await expect(validateCommand(...)).rejects.toThrow(CommandFailureError)`.
-  it('(b) strict-fail: missing part directory calls process.exit(1)', async () => {
-    const exitMock = vi.spyOn(process, 'exit').mockImplementation((_code?: number | string | null) => {
-      throw new Error(`process.exit called with code ${_code}`);
-    });
+  // Task 11: validateCommand now throws CommandFailureError instead of calling
+  // process.exit(1) when validation fails or --strict is true and there are warnings.
+  it('(b) strict-fail: missing part directory rejects with CommandFailureError', async () => {
+    // The sample-course fixture has a part at lab1/part1 which exists.
+    // Use the project root as workspaceRoot — "lab1" won't exist there,
+    // so validateStructure will report errors/missing folders.
+    const projectRoot = path.resolve(process.cwd());
 
-    try {
-      // The sample-course fixture has a part at lab1/part1 which exists.
-      // To trigger a structural failure we point to a config whose assignment
-      // path does not exist on disk.
-      // Use a root that exists but has no matching assignment directory.
-      // The config says path:"lab1" but we pass a root where there is no lab1/.
-      // We do this by using the project root as workspaceRoot — "lab1" won't exist there.
-      const projectRoot = path.resolve(process.cwd());
-      // Confirm there's no lab1 in the project root (would make the test invalid)
-      // (We use a synthetic fixture config via loadConfig mock below)
-
-      // Instead, leverage the fact that strict:true combined with warnings triggers exit.
-      // validateStructure returns warnings for parts whose directories may have drift issues.
-      // Simpler approach: use a config whose assignment path does not exist by pointing
-      // workspaceRoot to a directory where lab1 doesn't exist.
-      // We know process.cwd() is /Users/davidlin/Development/vocgit — no lab1 there.
-      await validateCommand({
+    await expect(
+      validateCommand({
         config: FIXTURE_CONFIG,
         root: projectRoot,  // lab1 doesn't exist relative to projectRoot
         strict: true,
-      });
+      })
+    ).rejects.toMatchObject({ name: 'CommandFailureError' });
 
-      // If validateCommand does NOT exit, fail the test
-      expect.fail('Expected process.exit(1) to be called');
-    } catch (e) {
-      // Expected: process.exit throws via our mock
-      expect(e instanceof Error && e.message).toMatch(/process\.exit called with code 1/);
-    } finally {
-      exitMock.mockRestore();
-    }
-
-    // Check that errors were logged
+    // Check that errors were logged before the throw
     expect(norm(err)).toMatch(/missing_folder|[Ff]ail|[Ee]rror|not exist/);
   });
 });

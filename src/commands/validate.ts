@@ -8,6 +8,7 @@ import { loadConfig } from '../core/config';
 import { validateStructure } from '../core/validator';
 import { resolveWorkspaceContext } from '../core/workspace';
 import { logger } from '../utils/logger';
+import { CommandFailureError } from '../utils/command-failure';
 
 export interface ValidateOptions {
   config?: string;
@@ -49,11 +50,12 @@ export async function validateCommand(options: ValidateOptions): Promise<void> {
     }
 
     if (!result.valid || (options.strict === true && result.warnings.length > 0)) {
-      process.exit(1);
+      throw new CommandFailureError('Validation failed', 1);
     }
 
   } catch (error) {
+    if (error instanceof CommandFailureError) { throw error; }
     logger.error(`Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    process.exit(1);
+    throw new CommandFailureError(`Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 1);
   }
 }

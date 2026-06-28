@@ -11,6 +11,7 @@ import { resolveWorkspaceContext } from '../core/workspace';
 import { loadDotEnvIfPresent, isCI, getCIProvider, getAuthModeEnv, getOAuthClientId, getOAuthClientSecret } from '../utils/env';
 import { getCurrentBranch, getCommitSha, hasUncommittedChanges, isGitRepo } from '../utils/git';
 import { logger } from '../utils/logger';
+import { CommandFailureError } from '../utils/command-failure';
 
 export interface StatusCommandOptions {
   config?: string;
@@ -158,7 +159,8 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
       }
     }
   } catch (error) {
+    if (error instanceof CommandFailureError) { throw error; }
     logger.error(`Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    process.exit(1);
+    throw new CommandFailureError(`Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 1);
   }
 }
