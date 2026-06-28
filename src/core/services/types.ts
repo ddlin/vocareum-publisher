@@ -26,7 +26,8 @@ export interface PartIntent {
 export interface AssignmentIntent {
   path: string;
   assignmentId: string | null;                 // null = create-from-template
-  templateAssignmentId?: string;               // template identity for creation
+  templateAssignmentId?: string;               // template assignment identity for creation
+  templateCourseId?: string;                   // course the template lives in (cross-course creation)
   action: AssignmentAction;
   settingsPayload?: Record<string, unknown>;
   parts: PartIntent[];

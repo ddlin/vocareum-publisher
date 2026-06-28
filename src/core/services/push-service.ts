@@ -11,7 +11,6 @@
 
 import * as path from 'path';
 import { createHash } from 'node:crypto';
-import { promises as fs } from 'fs';
 import type { Config, PublishHistory, PartSettings } from '../../types/config';
 import { normalizeSubmissionFilters, nullToUndefined } from '../../types/config';
 import type {
@@ -23,12 +22,13 @@ import type { HistorySettingChange, HistoryFileChange, AssignmentSettings } from
 import type { PublishResult } from '../../types/state';
 import { reconcile, displayPlan } from '../reconciler';
 import { assertConfinedToWorkspace, publishExcludePatterns } from '../local-scan';
-import { calculateDirectoryHash } from '../../utils/files';
+import { calculateDirectoryHash, readFile as readTextFile } from '../../utils/files';
 import { copyAssignment, getAssignment, updateAssignment } from '../../api/assignments';
 import { updateCourse } from '../../api/courses';
 import { getPart, updatePart } from '../../api/parts';
 import { mapParts } from '../mapper';
 import { readDirectory as readLocalDirectory, syncDirectory } from '../uploader';
+import { listFiles } from '../../api/content';
 import { commitChanges, getCommitSha, getGitUserName } from '../../utils/git';
 import { mapAssignmentSettings, mapPartSettings } from '../../utils/settings';
 import type { UnknownFieldReporter } from '../../utils/unknown-field-reporter';
@@ -171,13 +171,19 @@ export async function planPush(
     });
   }
 
-  // Build the configDigest from the persisted YAML text
-  let configDigest = '';
+  // Build the configDigest from the persisted YAML text.
+  // Fail-closed: a plan whose config precondition can't be captured must not
+  // be executed or cached — an empty-string sentinel would let stale-plan
+  // detection pass on garbage in Stage 1b.
+  // Uses readTextFile (from utils/files) so test mocks intercept the read.
+  let configDigest: string;
   try {
-    const yamlText = await fs.readFile(configPath, 'utf8');
+    const yamlText = await readTextFile(configPath);
     configDigest = createHash('sha256').update(yamlText).digest('hex');
-  } catch {
-    // non-fatal; leave empty
+  } catch (err) {
+    throw new Error(
+      `Cannot compute push preconditions: failed to read config file "${configPath}": ${err instanceof Error ? err.message : String(err)}`
+    );
   }
 
   // Effective exclude patterns — same set the reconciler/uploader use so hashes
@@ -190,6 +196,11 @@ export async function planPush(
   // produced in this planPush call.  executePush drives off _reconPlan directly
   // (same mutation set), while the intent is the complete, faithful projection
   // of that snapshot for fingerprinting, audit, and Stage-1b confirmation.
+  //
+  // executePush currently consumes the immutable _reconPlan snapshot this intent
+  // is derived from (same reconcile() call), so intent and execution cannot
+  // diverge in-process; full re-point of executePush onto the public intent is
+  // Stage 1b Task 1.
   const intentAssignments: AssignmentIntent[] = [];
   // Accumulate local directory hashes for preconditions (same values as intent contentHashes).
   const preconditionContentHashes: Record<string, string> = {};
@@ -231,15 +242,29 @@ export async function planPush(
 
       // Per-directory content hashes — real values using the same exclude
       // patterns the uploader will use, so plan-hash == post-upload hash.
+      // When the reconciler already computed the hash during change detection
+      // (partAction.dirHashes), reuse it directly to avoid a second filesystem
+      // traversal. For create actions (no reconciler hash) the hash is computed
+      // here for the first time.
       const contentHashes: Record<string, string> = {};
       for (const dir of partAction.changedDirectories ?? []) {
         const dirKey = path.join(action.assignment.path, partAction.part.path, dir);
         const localDirPath = path.resolve(workspaceRoot, dirKey);
-        let hash = '';
-        try {
-          hash = await calculateDirectoryHash(localDirPath, effectiveExcludePatterns);
-        } catch {
-          // If the directory is unreadable, leave empty — execution will fail too.
+        // Fail-closed: a plan with an unreadable directory has uncapturable
+        // preconditions and must not be executed or cached.
+        let hash: string;
+        if (partAction.dirHashes?.[dir] !== undefined) {
+          // Reuse the hash the reconciler already computed — same excludePatterns,
+          // same calculateDirectoryHash call, so the value is identical.
+          hash = partAction.dirHashes[dir];
+        } else {
+          try {
+            hash = await calculateDirectoryHash(localDirPath, effectiveExcludePatterns);
+          } catch (err) {
+            throw new Error(
+              `Cannot compute push preconditions: failed to hash directory "${dirKey}": ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
         }
         contentHashes[dir] = hash;
         preconditionContentHashes[dirKey] = hash;
@@ -255,11 +280,57 @@ export async function planPush(
         );
       }
 
+      // Populate deletePaths ONLY when syncDeletes is requested.
+      // Gate is strict: zero new API calls are made when req.syncDeletes !== true.
+      // Skipped for creates (no remote yet) and when either ID is absent.
+      let deletePaths: string[] | undefined;
+      if (
+        req.syncDeletes === true &&
+        action.willCreate !== true &&
+        action.assignment.assignment_id !== null &&
+        action.assignment.assignment_id !== undefined &&
+        partAction.part.part_id !== null &&
+        partAction.part.part_id !== undefined
+      ) {
+        const allDirsToCheck = partAction.changedDirectories ?? [];
+        if (allDirsToCheck.length > 0) {
+          deletePaths = [];
+          for (const dir of allDirsToCheck) {
+            const dirKey = path.join(action.assignment.path, partAction.part.path, dir);
+            const localDirPath = path.resolve(workspaceRoot, dirKey);
+            try {
+              const [remoteFiles, localFiles] = await Promise.all([
+                listFiles(
+                  ctx.client,
+                  workingConfig.vocareum.course_id,
+                  action.assignment.assignment_id,
+                  partAction.part.part_id,
+                  dir,
+                  ctx.persistedConfig.vocareum.architecture,
+                ),
+                readLocalDirectory(localDirPath, effectiveExcludePatterns),
+              ]);
+              const localFileSet = new Set(Object.keys(localFiles));
+              for (const rf of remoteFiles) {
+                if (!localFileSet.has(rf.path)) {
+                  deletePaths.push(path.join(dir, rf.path));
+                }
+              }
+            } catch {
+              // If listing fails, deletePaths stays empty for this dir — execution
+              // will attempt the sync anyway and encounter the same error.
+            }
+          }
+          if (deletePaths.length === 0) { deletePaths = undefined; }
+        }
+      }
+
       parts.push({
         partId: partAction.part.part_id ?? null,
         path: partAction.part.path,
         contentHashes,
         ...(partSettingsPayload !== undefined ? { settingsPayload: partSettingsPayload } : {}),
+        ...(deletePaths !== undefined ? { deletePaths } : {}),
       });
     }
 
@@ -267,6 +338,7 @@ export async function planPush(
       path: action.assignment.path,
       assignmentId: action.assignment.assignment_id ?? null,
       templateAssignmentId: action.templateId,
+      ...(action.templateCourseId !== undefined ? { templateCourseId: action.templateCourseId } : {}),
       action: action.type === 'create' ? 'create' : 'update',
       ...(assignmentSettingsPayload !== undefined ? { settingsPayload: assignmentSettingsPayload } : {}),
       parts,

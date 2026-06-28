@@ -43,6 +43,16 @@ vi.mock('../../src/core/reconciler', () => ({
   displayPlan: displayPlanMock,
 }));
 
+// utils/files: mock readFile (for configDigest) and calculateDirectoryHash
+// (fallback for create actions that have no reconciler-computed dirHashes).
+vi.mock('../../src/utils/files', () => ({
+  pathExists: vi.fn().mockResolvedValue(true),
+  readFile: vi.fn().mockResolvedValue('mock-config-yaml-content'),
+  ensureDirectory: vi.fn().mockResolvedValue(undefined),
+  readDirectory: vi.fn().mockResolvedValue({}),
+  calculateDirectoryHash: vi.fn().mockResolvedValue('mock-dir-hash'),
+}));
+
 vi.mock('../../src/api/assignments', () => ({
   copyAssignment: copyAssignmentMock,
   getAssignment: getAssignmentMock,

@@ -239,7 +239,7 @@ export async function reconcile(
           const effectiveDirs = directoriesForPart(config, configPart);
 
           const excludePatterns = publishExcludePatterns(config);
-          const changedDirs = await detectChangedDirectories(
+          const { changedDirs, hashes: dirHashes } = await detectChangedDirectories(
             configAssignment.path,
             configPart.path,
             effectiveDirs,
@@ -262,6 +262,9 @@ export async function reconcile(
               part: configPart,
               contentChanged: changedDirs.length > 0,
               changedDirectories: changedDirs.length > 0 ? changedDirs : undefined,
+              // Carry the hashes computed during change detection so planPush
+              // can read them directly instead of recomputing (Stage 1a Fix 3).
+              dirHashes: Object.keys(dirHashes).length > 0 ? dirHashes : undefined,
               metadataChanged,
               reason: reasons.join('; ')
             });

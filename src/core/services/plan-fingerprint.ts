@@ -53,6 +53,7 @@ export function semanticFingerprint(intent: PushIntent): string {
       path: assignment.path,
       assignmentId: assignment.assignmentId,
       templateAssignmentId: assignment.templateAssignmentId,
+      templateCourseId: assignment.templateCourseId,
       action: assignment.action,
       settingsPayload: assignment.settingsPayload,
       parts: [...assignment.parts]

@@ -43,4 +43,17 @@ describe('semanticFingerprint', () => {
     changed.assignments[0].templateAssignmentId = 'tpl2';
     expect(semanticFingerprint(baseWithTemplate)).not.toBe(semanticFingerprint(changed));
   });
+  it('changes when templateCourseId changes (P0 #1 — cross-course template source)', () => {
+    const baseWithCourse: PushIntent = JSON.parse(JSON.stringify(base));
+    baseWithCourse.assignments[0].templateCourseId = 'course-A';
+    const changed: PushIntent = JSON.parse(JSON.stringify(base));
+    changed.assignments[0].templateCourseId = 'course-B';
+    expect(semanticFingerprint(baseWithCourse)).not.toBe(semanticFingerprint(changed));
+  });
+  it('shifts when templateCourseId is added to an intent that previously had none', () => {
+    const withoutCourse: PushIntent = JSON.parse(JSON.stringify(base));
+    const withCourse: PushIntent = JSON.parse(JSON.stringify(base));
+    withCourse.assignments[0].templateCourseId = 'course-X';
+    expect(semanticFingerprint(withoutCourse)).not.toBe(semanticFingerprint(withCourse));
+  });
 });
