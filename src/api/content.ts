@@ -10,7 +10,6 @@ import { VocareumClient, APIError, VocareumError } from './client';
 import type { DirectoryType } from '../types/config';
 import { DEFAULT_PART_DIRECTORIES } from '../types/config';
 import type { UploadResult, FileMap, FileInfo } from '../types/api';
-import { logger } from '../utils/logger';
 
 interface PartUpdateResponse {
   status: 'success';
@@ -554,16 +553,17 @@ async function downloadDirectoryTree(
             directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict, budget
           );
         } else {
-          logger.debug(`Max depth reached, skipping ${filemapKey}`);
+          client.events.emit({ level: 'debug', message: `Max depth reached, skipping ${filemapKey}` });
         }
         continue;
       }
       if (strict) {
         throw error;
       }
-      logger.warn(
-        `Failed to download ${filemapKey}: ${error instanceof Error ? error.message : 'Unknown'}`
-      );
+      client.events.emit({
+        level: 'warn',
+        message: `Failed to download ${filemapKey}: ${error instanceof Error ? error.message : 'Unknown'}`,
+      });
     }
   }
 }
@@ -680,9 +680,10 @@ async function listFilesByApiPath(
     // Transient/non-400 errors must propagate: returning [] here would make an
     // unreachable directory look empty, which pull interprets as remote
     // deletions (and in --batch mode, deletes local files).
-    logger.warn(
-      `Failed to list files for part=${partId}, dir=${apiDirPath}: ${error instanceof Error ? error.message : 'Unknown'}`
-    );
+    client.events.emit({
+      level: 'warn',
+      message: `Failed to list files for part=${partId}, dir=${apiDirPath}: ${error instanceof Error ? error.message : 'Unknown'}`,
+    });
     throw error;
   }
 }
@@ -724,11 +725,11 @@ export async function deleteFile(
     // Handle errors gracefully - deletion may not be supported
     if (error instanceof VocareumError) {
       if (error.statusCode === 400 || error.statusCode === 404 || error.statusCode === 405) {
-        logger.debug(`File deletion not supported or file not found: ${filePath}`);
+        client.events.emit({ level: 'debug', message: `File deletion not supported or file not found: ${filePath}` });
         return;
       }
     }
     // For other errors, just log and continue (don't fail the operation)
-    logger.warn(`Failed to delete ${filePath}: ${error instanceof Error ? error.message : 'Unknown'}`);
+    client.events.emit({ level: 'warn', message: `Failed to delete ${filePath}: ${error instanceof Error ? error.message : 'Unknown'}` });
   }
 }

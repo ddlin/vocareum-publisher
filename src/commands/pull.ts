@@ -104,7 +104,7 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
     validatePullContentFlags(options);
 
     const throttle = resolveThrottle(config.vocareum.throttle);
-    const client = new VocareumClient(resolveAuthProvider(options, config.vocareum.api_base_url), throttle);
+    const client = new VocareumClient(resolveAuthProvider(options, config.vocareum.api_base_url), throttle, undefined, events);
 
     const pullCtx: PullContext = {
       persistedConfig: config,

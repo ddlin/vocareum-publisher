@@ -182,6 +182,7 @@ describe('waitForPartUpdateTransaction', () => {
     requestMock = vi.fn();
     mockClient = {
       request: requestMock,
+      events: { emit: vi.fn() },
     } as unknown as VocareumClient;
   });
 
@@ -293,6 +294,7 @@ describe('uploadContent', () => {
     requestMock = vi.fn();
     mockClient = {
       request: requestMock,
+      events: { emit: vi.fn() },
     } as unknown as VocareumClient;
   });
 
@@ -444,6 +446,7 @@ describe('listFiles', () => {
     requestMock = vi.fn();
     mockClient = {
       request: requestMock,
+      events: { emit: vi.fn() },
     } as unknown as VocareumClient;
   });
 
@@ -570,6 +573,7 @@ describe('deleteFile', () => {
     requestMock = vi.fn();
     mockClient = {
       request: requestMock,
+      events: { emit: vi.fn() },
     } as unknown as VocareumClient;
   });
 
@@ -629,6 +633,7 @@ describe('downloadContent', () => {
     requestMock = vi.fn();
     mockClient = {
       request: requestMock,
+      events: { emit: vi.fn() },
     } as unknown as VocareumClient;
     vi.clearAllMocks();
   });
@@ -929,6 +934,7 @@ describe('downloadContent recursive directory handling', () => {
     requestMock = vi.fn();
     mockClient = {
       request: requestMock,
+      events: { emit: vi.fn() },
     } as unknown as VocareumClient;
     vi.clearAllMocks();
   });

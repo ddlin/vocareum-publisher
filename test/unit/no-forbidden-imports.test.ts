@@ -14,4 +14,15 @@ describe('architecture guards', () => {
       return /utils\/logger/.test(s) || /\bloadConfig\b/.test(s) || /\bwithConfigLock\b/.test(s) || /new VocareumClient\(/.test(s);
     })).toEqual([]);
   });
+  it('src/api/client.ts and src/api/content.ts have no direct global-logger imports (EventSink-only output)', () => {
+    // These files must route all output through EventSink so per-course output
+    // cannot interleave during concurrent execution (Stage 1b isolation).
+    const transitiveSources = ['src/api/client.ts', 'src/api/content.ts'];
+    const violations = transitiveSources.filter((f) => {
+      const s = readFileSync(f, 'utf8');
+      // Importing from the global logger module is forbidden; LoggerEventSink is the allowed bridge.
+      return /from ['"][^'"]*utils\/logger['"]/.test(s);
+    });
+    expect(violations).toEqual([]);
+  });
 });
