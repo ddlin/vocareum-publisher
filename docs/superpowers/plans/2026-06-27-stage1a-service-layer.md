@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Refactor `push`/`pull`/`status`/`validate` onto a behavior-preserving service layer (operation-specific contracts, a locked-session writer, an event sink, and a single top-level exit) so the Stage 1b org runner can drive many courses — with **zero observable change** to today's single-course CLI.
+**Goal:** Refactor `push`/`pull`/`status`/`validate` onto a behavior-preserving service layer (operation-specific contracts + request objects, a canonical push intent, a locked-session writer, an event sink, and a single top-level exit) so the Stage 1b org runner can drive many courses — with **zero observable change** to today's single-course CLI.
 
-**Architecture:** Characterization (golden) tests are written **first** to lock current behavior. Then additive primitives (event sink, contexts, `withSession`, injected scheduler, plan fingerprint) land unused. Then the entrypoint moves to a single exit boundary. Then each command is reshaped into services that emit events instead of rendering and never call `process.exit`. The event sink is threaded through the transitive business-logic graph (`publisher`/`reconciler`/`uploader`/`validator`/`UnknownFieldReporter`) so concurrent Stage 1b output cannot interleave.
+**Architecture:** Characterization (golden) tests are written **first** to lock current behavior across clean/changed/cancel/failure cases. Then additive primitives land unused (event sink with metadata, contexts + request objects, `withSession`, injected scheduler, `PushIntent` + intent fingerprint). Then the entrypoint moves to a single exit boundary without changing error text. Then each command is reshaped into services that take `(ctx, request)`, return data, emit events instead of rendering, and never call `process.exit`. The event sink is threaded through the transitive business-logic graph so Stage 1b output cannot interleave.
 
 **Tech Stack:** TypeScript (strict), Node ≥18, Commander, vitest (`vi.mock`), js-yaml, zod, axios.
 
@@ -14,28 +14,87 @@
 
 - All IDs are strings, never numbers.
 - No `console.log` in `src/`; rendering goes through `logger` (CLI wrappers only) — services emit to the **event sink**.
-- No `process.exit` anywhere except `src/index.ts` (enforced by a CI grep guard, Task 16).
-- No `loadConfig`, `process.cwd()`, `loadDotEnvIfPresent`, `new VocareumClient(...)`, or `withConfigLock` inside `src/core/services/` (CI grep guards, Task 16).
-- TypeScript strict mode must pass (`npm run typecheck`); eslint clean (`npm run lint`).
-- **Behavior preservation is the acceptance criterion:** the Phase 0 golden tests must stay green, byte-for-byte (normalized stdout/stderr, exit code, filesystem/config result, prompt sequence, **API-call sequence**), through every later task. If a golden test changes, that is a bug unless the spec explicitly sanctions the change.
-- `vocareum.yaml` schema is unchanged in Stage 1a. No org schema, selectors, or multi-course code (that is Stage 1b).
-- `init`/`new`/`fix` are NOT service-refactored; only their `process.exit` calls move to the entrypoint (Phase 2).
-- Commit after every task (frequent commits). Run `npm test` before each commit.
+- No `process.exit` anywhere except `src/index.ts` (CI grep guard, Task 16).
+- No `logger`, `loadConfig`, `process.cwd()`, `loadDotEnvIfPresent`, `new VocareumClient(...)`, or `withConfigLock` inside `src/core/services/` (CI grep guards, Task 16). **The lock owner `withSession` lives at `src/core/session.ts` — OUTSIDE `src/core/services/`** (resolves the Task 8↔16 contradiction, review P0 #5).
+- TypeScript strict mode (`npm run typecheck`) and eslint (`npm run lint`) must pass.
+- **Behavior preservation is THE acceptance criterion:** the Phase 0 golden tests stay byte-for-byte green through every later task — normalized stdout/stderr, exit code, filesystem/config result, prompt sequence, and **API-call sequence including normalized query strings** (query params are preserved, not discarded — pagination must remain visible; only volatile tokens are normalized). A golden change is a bug unless the spec sanctions it.
+- `vocareum.yaml` schema unchanged in Stage 1a; no org schema/selectors/multi-course code (Stage 1b).
+- `init`/`new`/`fix` are NOT service-refactored; only their `process.exit` moves to the entrypoint (Phase 2).
+- Commit after every task; run `npm test` before each commit.
+
+### Canonical types (defined once; referenced by many tasks)
+
+These are the contract spine. Exact field shapes are pinned here so later tasks stay consistent.
+
+```ts
+// src/core/services/types.ts (Task 7 creates this)
+
+// Per-invocation options (NOT in the context — the context is the durable
+// environment; the request is what this call does). Mirror today's options.
+export interface PushRequest {
+  dryRun?: boolean; nonInteractive?: boolean; autoCommit?: boolean;
+  syncDeletes?: boolean; onMissingId?: 'skip' | 'abort'; abortOnError?: boolean;
+  assignment?: string; part?: string; forceAll?: boolean; verbose?: boolean;
+}
+export interface PullRequest {
+  batch?: boolean; nonInteractive?: boolean; skipContent?: boolean;
+  content?: boolean; assignment?: string[]; part?: string[]; verbose?: boolean;
+}
+
+// Canonical, immutable description of EVERY intended mutation (review P0 #1/#3).
+// Derived from the reconciliation plan; this — not result types — is what the
+// fingerprint hashes and what executePush consumes.
+export type AssignmentAction = 'create' | 'update' | 'skip';
+export interface PartIntent {
+  partId: string | null;                       // null = to be created
+  path: string;
+  settingsPayload?: Record<string, unknown>;   // canonical settings to PUT
+  contentHashes: Record<string, string>;       // per-directory hash of intended upload
+  deletePaths?: string[];                       // files to delete (sync-deletes)
+}
+export interface AssignmentIntent {
+  path: string;
+  assignmentId: string | null;                 // null = create-from-template
+  templateAssignmentId?: string;               // template identity for creation
+  action: AssignmentAction;
+  settingsPayload?: Record<string, unknown>;
+  parts: PartIntent[];
+}
+export interface PushIntent { assignments: AssignmentIntent[]; }
+
+export interface RemoteAssumption {
+  assignmentPath: string;
+  assignmentId: string | null;
+  exists: boolean;                             // false for a planned create (duplicate guard)
+  partIds: string[];
+}
+export interface PushPreconditions {
+  configDigest: string;                        // hash of persisted YAML text
+  contentHashes: Record<string, string>;       // local dir hashes plan was computed from
+  assignmentIds: string[];
+  partIds: string[];
+  remoteAssumptions: RemoteAssumption[];
+}
+export interface PushPlan {
+  intent: PushIntent;
+  preconditions: PushPreconditions;
+  semanticFingerprint: string;                 // hash of the WHOLE intent (Task 9)
+  summary: string;
+}
+```
 
 ---
 
 ## Phase 0 — Characterization harness (the regression net)
 
-Produces a recording client + golden tests that capture today's behavior. Independently valuable; everything after this is guarded by it.
-
-### Task 1: Recording API client test double
+### Task 1: Recording API client double (query strings preserved)
 
 **Files:**
 - Create: `test/helpers/recording-client.ts`
 - Test: `test/helpers/recording-client.test.ts`
 
 **Interfaces:**
-- Produces: `class RecordingClient` with `request(config: AxiosRequestConfig): Promise<T>` that pushes `{method, url}` onto a public `calls: Array<{method: string; url: string}>` and returns a queued canned response; `enqueue(response: unknown): void`; `sequence(): string[]` returning `` `${method} ${path}` `` strings (path = url without query, for stable snapshots).
+- Produces: `class RecordingClient` with `request(config): Promise<T>` pushing `{method, url}` onto public `calls`; `enqueue(response)`; `sequence(): string[]` returning `` `${method} ${normalizedUrl}` `` where normalization **keeps query params** but replaces volatile token values (e.g. `client_secret`, `token`) with `<redacted>` (P1 #6 — pagination like `?page=2` must stay visible).
 - Consumes: nothing.
 
 - [ ] **Step 1: Write the failing test**
@@ -46,544 +105,200 @@ import { describe, it, expect } from 'vitest';
 import { RecordingClient } from './recording-client';
 
 describe('RecordingClient', () => {
-  it('records method+path and returns enqueued responses in order', async () => {
+  it('records method+path, KEEPS query params, returns enqueued responses in order', async () => {
     const c = new RecordingClient();
-    c.enqueue({ courses: [{ id: '1' }] });
-    c.enqueue({ status: 'success' });
-    const a = await c.request({ method: 'GET', url: '/courses?page=1' });
-    const b = await c.request({ method: 'PUT', url: '/courses/1' });
-    expect(a).toEqual({ courses: [{ id: '1' }] });
-    expect(b).toEqual({ status: 'success' });
-    expect(c.sequence()).toEqual(['GET /courses', 'PUT /courses/1']);
+    c.enqueue({ a: 1 }); c.enqueue({ b: 2 });
+    await c.request({ method: 'GET', url: '/courses/1/assignments?page=2&size=10' });
+    await c.request({ method: 'PUT', url: '/courses/1' });
+    expect(c.sequence()).toEqual(['GET /courses/1/assignments?page=2&size=10', 'PUT /courses/1']);
   });
-
-  it('throws a clear error when no response is enqueued', async () => {
-    const c = new RecordingClient();
-    await expect(c.request({ method: 'GET', url: '/x' })).rejects.toThrow(/no enqueued response/i);
+  it('redacts volatile token params but keeps the key present', async () => {
+    const c = new RecordingClient(); c.enqueue({});
+    await c.request({ method: 'POST', url: '/oauth/token?client_secret=abc123' });
+    expect(c.sequence()).toEqual(['POST /oauth/token?client_secret=<redacted>']);
+  });
+  it('throws when no response is enqueued', async () => {
+    await expect(new RecordingClient().request({ method: 'GET', url: '/x' })).rejects.toThrow(/no enqueued response/i);
   });
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run to verify it fails** — `npx vitest run test/helpers/recording-client.test.ts` → module not found.
 
-Run: `npx vitest run test/helpers/recording-client.test.ts`
-Expected: FAIL — cannot find module `./recording-client`.
+- [ ] **Step 3: Implement** — `calls` + `enqueue`; `sequence()` parses the URL, sorts query keys, replaces values of a `VOLATILE = new Set(['client_secret','client_id','token','access_token'])` with `<redacted>`, and re-serializes `path?k=v&...`. `request` throws `RecordingClient: no enqueued response for ${method} ${url}` when empty.
 
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **Step 4: Run to verify it passes** — same command → PASS (3 tests).
 
-```ts
-// test/helpers/recording-client.ts
-import type { AxiosRequestConfig } from 'axios';
+- [ ] **Step 5: Commit** — `git commit -m "test: add RecordingClient double preserving normalized query strings"`
 
-export class RecordingClient {
-  readonly calls: Array<{ method: string; url: string }> = [];
-  private responses: unknown[] = [];
+### Task 2: Golden tests — `status` human + `status --json` purity
 
-  enqueue(response: unknown): void { this.responses.push(response); }
+**Files:** Create `test/golden/status.golden.test.ts`. Uses `test/fixtures/sample-course/`.
 
-  async request<T = unknown>(config: AxiosRequestConfig): Promise<T> {
-    const method = (config.method ?? 'GET').toUpperCase();
-    const url = config.url ?? '';
-    this.calls.push({ method, url });
-    if (this.responses.length === 0) {
-      throw new Error(`RecordingClient: no enqueued response for ${method} ${url}`);
-    }
-    return this.responses.shift() as T;
-  }
+**Interfaces:** Consumes `statusCommand`. Captures (a) human output snapshot, (b) **`--json` stdout is a single valid JSON document with no human lines** (P1 #7).
 
-  sequence(): string[] {
-    return this.calls.map((c) => `${c.method} ${c.url.split('?')[0]}`);
-  }
-}
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `npx vitest run test/helpers/recording-client.test.ts`
-Expected: PASS (2 tests).
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add test/helpers/recording-client.ts test/helpers/recording-client.test.ts
-git commit -m "test: add RecordingClient test double for golden API-sequence tests"
-```
-
-### Task 2: Golden test — `status` (offline) behavior
-
-**Files:**
-- Create: `test/golden/status.golden.test.ts`
-- Uses: `test/fixtures/sample-course/` (exists)
-
-**Interfaces:**
-- Consumes: `statusCommand` ([src/commands/status.ts](../../../src/commands/status.ts)), `RecordingClient` (Task 1).
-- Produces: a captured baseline of status stdout (normalized) + exit behavior + **zero API calls** (status is offline).
-
-- [ ] **Step 1: Write the characterization test** (captures CURRENT behavior — it must pass against unrefactored code)
+- [ ] **Step 1: Write the characterization tests**
 
 ```ts
 // test/golden/status.golden.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-
-// Capture rendered lines instead of asserting exact strings up front:
-const lines: string[] = [];
+const out: string[] = []; const err: string[] = [];
 vi.mock('../../src/utils/logger', () => {
-  const sink = (s = '') => { lines.push(String(s)); };
-  return { logger: { info: sink, success: sink, error: sink, warn: sink, debug: sink, newline: () => lines.push(''), plain: sink } };
+  const o = (s = '') => out.push(String(s)); const e = (s = '') => err.push(String(s));
+  return { logger: { info: o, success: o, plain: o, newline: () => out.push(''), warn: e, error: e, debug: e } };
 });
-vi.mock('../../src/utils/env', () => ({
-  loadDotEnvIfPresent: vi.fn(),
-  isCI: vi.fn().mockReturnValue(false),
-}));
-
+vi.mock('../../src/utils/env', () => ({ loadDotEnvIfPresent: vi.fn(), isCI: () => false, getAuthModeEnv: () => undefined, getOAuthClientId: () => undefined, getOAuthClientSecret: () => undefined, getCIProvider: () => undefined }));
 import { statusCommand } from '../../src/commands/status';
+const norm = (ls: string[]) => ls.join('\n').replace(/\b[0-9a-f]{7,40}\b/g, '<sha>').replace(/\d{4}-\d{2}-\d{2}T[\d:.Z+-]+/g, '<ts>');
+const FIX = { config: 'test/fixtures/sample-course/vocareum.yaml', root: 'test/fixtures/sample-course' };
 
-const normalize = (ls: string[]) =>
-  ls.join('\n')
-    .replace(/\b[0-9a-f]{7,40}\b/g, '<sha>')
-    .replace(/\d{4}-\d{2}-\d{2}T[\d:.Z+-]+/g, '<ts>');
-
-describe('golden: status (offline)', () => {
-  beforeEach(() => { lines.length = 0; });
-
-  it('renders a stable offline status report for the sample course', async () => {
-    await statusCommand({ config: 'test/fixtures/sample-course/vocareum.yaml', root: 'test/fixtures/sample-course' });
-    expect(normalize(lines)).toMatchSnapshot();
+describe('golden: status', () => {
+  beforeEach(() => { out.length = 0; err.length = 0; });
+  it('human output is stable', async () => { await statusCommand({ ...FIX }); expect(norm(out)).toMatchSnapshot(); });
+  it('--json emits exactly one valid JSON doc and no human lines', async () => {
+    const json: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((s) => { json.push(String(s)); return true; });
+    await statusCommand({ ...FIX, json: true });
+    spy.mockRestore();
+    const printed = json.join('');
+    expect(() => JSON.parse(printed)).not.toThrow();           // purity
+    expect(out.filter((l) => l.trim() !== '')).toEqual([]);    // no human lines on the JSON path
   });
 });
 ```
 
-- [ ] **Step 2: Run to generate the snapshot**
+> If `statusCommand` writes JSON via `logger.plain` rather than `process.stdout.write`, adapt the capture to whichever it uses today — the assertion (one valid JSON doc, no extra human lines) is the contract.
 
-Run: `npx vitest run test/golden/status.golden.test.ts`
-Expected: PASS — writes `test/golden/__snapshots__/status.golden.test.ts.snap`. **Open the snapshot and sanity-check it reflects today's real status output** (org/course line, assignment counts). This snapshot is the contract.
+- [ ] **Step 2: Run to generate snapshots** — `npx vitest run test/golden/status.golden.test.ts` → PASS; inspect the snapshot. **This pins JSON purity BEFORE the Task 12 refactor.**
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Commit** — `git commit -m "test: golden status human + json-purity baseline"`
 
-```bash
-git add test/golden/status.golden.test.ts test/golden/__snapshots__/
-git commit -m "test: golden characterization test for status (baseline)"
-```
+### Task 3: Golden tests — `push` (changed, cancel, failure/history)
 
-### Task 3: Golden test — `push` API-call sequence + result
+**Files:** Create `test/golden/push.golden.test.ts`. Mocks mirror [test/integration/publish.test.ts](../../../test/integration/publish.test.ts).
 
-**Files:**
-- Create: `test/golden/push.golden.test.ts`
+**Interfaces:** Consumes `publishCommand`, `RecordingClient`. Captures the **method+path(+query) sequence** and rendered output for three cases (P1 #6): (a) a push with a **changed** directory (real PUTs), (b) **cancel** at the confirm prompt (no PUTs), (c) a **failed** upload (failure recorded in history, exit path).
 
-**Interfaces:**
-- Consumes: `publishCommand` ([src/commands/publish.ts](../../../src/commands/publish.ts)), `RecordingClient` (Task 1). Mocks mirror [test/integration/publish.test.ts](../../../test/integration/publish.test.ts) (config/logger/env/files/git/prompts/client all mocked).
-- Produces: a baseline of the **method+path sequence** and rendered lines for a representative push (one assignment with IDs, one changed directory).
+- [ ] **Step 1: Write the three characterization cases** — build a `Config` with one assignment/part; for (a) make `readLocalDirectory` return content whose hash differs from `publish_history` so a PUT occurs; for (b) mock `promptConfirm` → `false` and assert `recorder.sequence()` contains no `PUT`; for (c) enqueue an error/empty for an upload PUT and assert the failure appears in the rendered output and the run reports failure. Snapshot `{ sequence, output }` per case.
 
-- [ ] **Step 1: Write the characterization test**
+- [ ] **Step 2: Run, iterate enqueued responses until green, snapshot** — `npx vitest run test/golden/push.golden.test.ts`. Fill missing responses (mirror real shapes) until PASS; sanity-check each snapshot shows the intended behavior (PUT present in (a), absent in (b), failure in (c)).
 
-```ts
-// test/golden/push.golden.test.ts
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { RecordingClient } from '../helpers/recording-client';
-import type { Config } from '../../src/types/config';
+- [ ] **Step 3: Commit** — `git commit -m "test: golden push baselines (changed, cancel, failure)"`
 
-const lines: string[] = [];
-const recorder = new RecordingClient();
+### Task 4: Golden tests — `validate` (pass + strict-fail) and `pull` (interactive ordering + batch)
 
-vi.mock('../../src/utils/logger', () => {
-  const sink = (s = '') => { lines.push(String(s)); };
-  return { logger: { info: sink, success: sink, error: sink, warn: sink, debug: sink, newline: () => lines.push(''), plain: sink } };
-});
-vi.mock('../../src/utils/env', () => ({
-  loadDotEnvIfPresent: vi.fn(), isCI: vi.fn().mockReturnValue(true),
-  getApiKeyOrThrow: vi.fn().mockReturnValue('k'), getOAuthClientId: vi.fn(), getOAuthClientSecret: vi.fn(),
-  getAuthModeEnv: vi.fn(), getV3ApiBaseUrl: vi.fn().mockReturnValue('https://labs.vocareum.com/api/v3'),
-  getOAuthTokenUrl: vi.fn().mockReturnValue('https://labs.vocareum.com/api/v3/oauth/token'),
-}));
-vi.mock('../../src/core/config', () => ({
-  loadConfig: vi.fn(),
-  updateConfig: vi.fn(),
-  withConfigLock: vi.fn((_p: string, fn: () => Promise<unknown>) => fn()),
-}));
-vi.mock('../../src/api/client', async (orig) => ({
-  ...(await orig<typeof import('../../src/api/client')>()),
-  VocareumClient: vi.fn().mockImplementation(() => recorder),
-}));
-vi.mock('../../src/utils/prompts', () => ({ promptConfirm: vi.fn().mockResolvedValue(true) }));
+**Files:** Create `test/golden/validate.golden.test.ts`, `test/golden/pull.golden.test.ts`.
 
-import { publishCommand } from '../../src/commands/publish';
-import { loadConfig } from '../../src/core/config';
+**Interfaces:** Consumes `validateCommand`, `pullCommand`, `RecordingClient`. Captures: validate clean snapshot + a `--strict` failure case (asserted via thrown error AFTER Task 11; pre-Task-11 it documents today's `process.exit` — see note); **interactive pull** that prompts orphan-by-orphan and imports each before the next (assert the interleaved order of prompt vs import via a shared event log); **`pull --batch`** sequence + import side effects.
 
-const sampleConfig: Config = {
-  version: '1.0',
-  vocareum: { org_id: '347', course_id: '22180', architecture: 'elite', templates: [], template_assignment_ids: [], excluded_assignments: [], api_base_url: 'https://api.vocareum.com' },
-  assignments: [{ assignment_id: '900', name: 'Lab 1', path: 'lab1', parts: [{ part_id: '901', path: 'part1' }] }],
-  publish_history: [],
-} as unknown as Config;
+- [ ] **Step 1: Write validate clean snapshot** (offline, mock logger/env; snapshot normalized output).
 
-describe('golden: push', () => {
-  beforeEach(() => { lines.length = 0; recorder.calls.length = 0; });
+- [ ] **Step 2: Write interactive-pull ordering test** — mock `promptChoice`/`prompt` (from `src/utils/prompts`) to push markers onto a shared `events[]` array, and mock `importAssignment` (via the `files`/client mocks) to push an `import:<name>` marker; with two orphans, assert `events` is `[prompt#1, import#1, prompt#2, import#2]` (today's interleaving — the P0 #4 contract).
 
-  it('produces a stable API-call sequence + output for a no-change push', async () => {
-    (loadConfig as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(sampleConfig);
-    // enqueue whatever GETs the reconcile path performs; fill iteratively until green
-    recorder.enqueue({ assignments: [{ id: '900', name: 'Lab 1' }], total_records: 1 });
-    recorder.enqueue({ parts: [{ part_id: '901', seqnum: '0', name: 'part1' }] });
-    await publishCommand({ config: 'vocareum.yaml', nonInteractive: true });
-    expect({ sequence: recorder.sequence(), output: lines }).toMatchSnapshot();
-  });
-});
-```
+- [ ] **Step 3: Write `pull --batch` test** — snapshot `{ sequence, output }`.
 
-- [ ] **Step 2: Run, iterate enqueued responses until green, then snapshot**
+- [ ] **Step 4: Run all, iterate enqueues until green, snapshot.** For the validate strict-fail case, write it to capture today's behavior; mark it `it.todo`-style with a comment that Task 11 converts it to `rejects → CommandFailureError`.
 
-Run: `npx vitest run test/golden/push.golden.test.ts`
-Expected: initially FAIL with "no enqueued response for GET …" — add each missing response (mirror real API shapes from [test/integration/publish.test.ts](../../../test/integration/publish.test.ts)) until it passes and a snapshot is written. The captured `sequence` is the API-call contract the refactor must preserve.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add test/golden/push.golden.test.ts test/golden/__snapshots__/
-git commit -m "test: golden characterization test for push (API sequence + output)"
-```
-
-### Task 4: Golden tests — `validate` (offline) and `pull --batch`
-
-**Files:**
-- Create: `test/golden/validate.golden.test.ts`, `test/golden/pull-batch.golden.test.ts`
-
-**Interfaces:**
-- Consumes: `validateCommand`, `pullCommand`, `RecordingClient`.
-- Produces: baselines for offline validate (no API) and `pull --batch` (non-interactive resolver path; records API sequence + import side effects via mocked `files`).
-
-- [ ] **Step 1: Write `validate` golden test** (offline; mock logger + env like Task 2; call `validateCommand({ config, root })` against the sample fixture; `expect(normalize(lines)).toMatchSnapshot()`).
-
-- [ ] **Step 2: Write `pull-batch` golden test** (mock like Task 3 but set `batch: true`, mock `../../src/utils/files` and `../../src/utils/git` as in [test/integration/pull.test.ts](../../../test/integration/pull.test.ts); enqueue orphan-listing responses; snapshot `{ sequence, output }`).
-
-- [ ] **Step 3: Run both, iterate enqueues until green, snapshot**
-
-Run: `npx vitest run test/golden/validate.golden.test.ts test/golden/pull-batch.golden.test.ts`
-Expected: PASS with snapshots written. Sanity-check both snapshots.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add test/golden/ && git commit -m "test: golden characterization tests for validate + pull --batch (baseline)"
-```
+- [ ] **Step 5: Commit** — `git commit -m "test: golden validate + pull (interactive ordering, batch) baselines"`
 
 ---
 
-## Phase 1 — Behavior-preserving primitives (land unused)
+## Phase 1 — Behavior-preserving primitives
 
-Each task adds a new module or an additive parameter with its own unit test. No command behavior changes; Phase 0 goldens must stay green.
+### Task 5: `EventSink` with metadata forwarding
 
-### Task 5: `EventSink` + CLI and collecting sinks
+**Files:** Create `src/core/services/event-sink.ts`; Test `test/unit/event-sink.test.ts`.
 
-**Files:**
-- Create: `src/core/services/event-sink.ts`
-- Test: `test/unit/event-sink.test.ts`
-
-**Interfaces:**
-- Produces:
-  - `interface ServiceEvent { level: 'info'|'success'|'warn'|'error'|'debug'|'plain'|'newline'; code?: string; message?: string; data?: unknown }`
-  - `interface EventSink { emit(e: ServiceEvent): void }`
-  - `class LoggerEventSink implements EventSink` — renders each event through the existing `logger` (preserving today's output formatting).
-  - `class CollectingEventSink implements EventSink` — buffers events in a public `events: ServiceEvent[]`; `flushTo(sink: EventSink): void` replays them (used by Stage 1b to group per-course output).
-- Consumes: `logger` from `src/utils/logger` (LoggerEventSink only).
+**Interfaces:** Produces `ServiceEvent { level; code?; message?; data?: unknown }`, `EventSink`, `LoggerEventSink` (renders via `logger`, **forwarding `data` to `error`/`warn`/`debug` as the `meta` arg** — P1 #8), `CollectingEventSink` (buffers `events`, `flushTo(sink)`).
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
 // test/unit/event-sink.test.ts
 import { describe, it, expect, vi } from 'vitest';
-const calls: Array<[string, unknown]> = [];
-vi.mock('../../src/utils/logger', () => ({
-  logger: {
-    info: (m: string) => calls.push(['info', m]), success: (m: string) => calls.push(['success', m]),
-    warn: (m: string) => calls.push(['warn', m]), error: (m: string) => calls.push(['error', m]),
-    debug: (m: string) => calls.push(['debug', m]), plain: (m: string) => calls.push(['plain', m]),
-    newline: () => calls.push(['newline', '']),
-  },
-}));
+const calls: Array<[string, unknown, unknown]> = [];
+vi.mock('../../src/utils/logger', () => ({ logger: {
+  info: (m: string) => calls.push(['info', m, undefined]),
+  success: (m: string) => calls.push(['success', m, undefined]),
+  warn: (m: string, meta?: unknown) => calls.push(['warn', m, meta]),
+  error: (m: string, meta?: unknown) => calls.push(['error', m, meta]),
+  debug: (m: string, meta?: unknown) => calls.push(['debug', m, meta]),
+  plain: (m: string) => calls.push(['plain', m, undefined]),
+  newline: () => calls.push(['newline', '', undefined]),
+} }));
 import { LoggerEventSink, CollectingEventSink } from '../../src/core/services/event-sink';
 
 describe('event sinks', () => {
-  it('LoggerEventSink maps events to logger methods', () => {
+  it('forwards data as meta for error/warn/debug (P1 #8)', () => {
     calls.length = 0;
-    new LoggerEventSink().emit({ level: 'info', message: 'hi' });
-    new LoggerEventSink().emit({ level: 'newline' });
-    expect(calls).toEqual([['info', 'hi'], ['newline', '']]);
+    const s = new LoggerEventSink();
+    s.emit({ level: 'error', message: 'boom', data: { file: 'x' } });
+    s.emit({ level: 'debug', message: 'dbg', data: { n: 1 } });
+    expect(calls).toEqual([['error', 'boom', { file: 'x' }], ['debug', 'dbg', { n: 1 }]]);
   });
-  it('CollectingEventSink buffers then replays in order', () => {
-    calls.length = 0;
-    const c = new CollectingEventSink();
-    c.emit({ level: 'success', message: 'done' });
-    expect(c.events).toHaveLength(1);
-    c.flushTo(new LoggerEventSink());
-    expect(calls).toEqual([['success', 'done']]);
+  it('CollectingEventSink buffers then replays', () => {
+    calls.length = 0; const c = new CollectingEventSink();
+    c.emit({ level: 'success', message: 'done' }); c.flushTo(new LoggerEventSink());
+    expect(calls).toEqual([['success', 'done', undefined]]);
   });
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run to verify it fails.**
 
-Run: `npx vitest run test/unit/event-sink.test.ts`
-Expected: FAIL — module not found.
+- [ ] **Step 3: Implement** — `LoggerEventSink.emit` maps level→method; for `error`/`warn`/`debug` pass `e.data` as the second arg; `info`/`success`/`plain` pass message only; `newline` calls `logger.newline()`.
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 4: Run to verify it passes.**
 
-```ts
-// src/core/services/event-sink.ts
-import { logger } from '../../utils/logger';
-
-export interface ServiceEvent {
-  level: 'info' | 'success' | 'warn' | 'error' | 'debug' | 'plain' | 'newline';
-  code?: string;
-  message?: string;
-  data?: unknown;
-}
-
-export interface EventSink { emit(event: ServiceEvent): void; }
-
-export class LoggerEventSink implements EventSink {
-  emit(e: ServiceEvent): void {
-    const msg = e.message ?? '';
-    switch (e.level) {
-      case 'info': logger.info(msg); break;
-      case 'success': logger.success(msg); break;
-      case 'warn': logger.warn(msg); break;
-      case 'error': logger.error(msg); break;
-      case 'debug': logger.debug(msg); break;
-      case 'plain': logger.plain(msg); break;
-      case 'newline': logger.newline(); break;
-    }
-  }
-}
-
-export class CollectingEventSink implements EventSink {
-  readonly events: ServiceEvent[] = [];
-  emit(e: ServiceEvent): void { this.events.push(e); }
-  flushTo(sink: EventSink): void { for (const e of this.events) { sink.emit(e); } }
-}
-```
-
-- [ ] **Step 4: Run to verify it passes**
-
-Run: `npx vitest run test/unit/event-sink.test.ts`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/core/services/event-sink.ts test/unit/event-sink.test.ts
-git commit -m "feat: add EventSink with logger-rendering and collecting implementations"
-```
+- [ ] **Step 5: Commit** — `git commit -m "feat: EventSink with metadata forwarding + collecting sink"`
 
 ### Task 6: Injected scheduler parameter on `VocareumClient`
 
-**Files:**
-- Modify: `src/api/client.ts:318-322` (constructor)
-- Test: `test/unit/client-scheduler.test.ts`
+**Files:** Modify `src/api/client.ts:318-322`; Test `test/unit/client-scheduler.test.ts`.
 
-**Interfaces:**
-- Produces: `new VocareumClient(authProvider, throttle?, scheduler?)` — when `scheduler` is provided it is used; otherwise the client constructs its own (today's behavior, default-preserving).
-- Consumes: `RequestScheduler` ([src/api/scheduler.ts](../../../src/api/scheduler.ts)).
+**Interfaces:** Produces `new VocareumClient(authProvider, throttle?, scheduler?)` — uses injected `scheduler` if given, else constructs its own (default preserved).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test** — assert injected scheduler is used (`(c as any).scheduler === shared`) and default path constructs a `RequestScheduler`. (Verify `RequestScheduler` option names against [scheduler.ts:30](../../../src/api/scheduler.ts#L30).)
+- [ ] **Step 2: Run to verify it fails.**
+- [ ] **Step 3: Implement** — add optional 3rd param; `this.scheduler = scheduler ?? new RequestScheduler(throttle)`.
+- [ ] **Step 4: Run unit + `test/golden/` — goldens unchanged.**
+- [ ] **Step 5: Commit** — `git commit -m "feat: allow injecting a shared RequestScheduler (default preserved)"`
 
-```ts
-// test/unit/client-scheduler.test.ts
-import { describe, it, expect } from 'vitest';
-import { VocareumClient } from '../../src/api/client';
-import { RequestScheduler } from '../../src/api/scheduler';
-import { TokenAuthProvider } from '../../src/api/auth/token-auth-provider';
+### Task 7: Contexts, request objects, prompter, RuntimeFacts
 
-describe('VocareumClient scheduler injection', () => {
-  it('uses an injected scheduler when provided', () => {
-    const shared = new RequestScheduler({ maxConcurrency: 1, minIntervalMs: 0, jitter: false });
-    const c = new VocareumClient(new TokenAuthProvider('t', 'https://api.vocareum.com'), undefined, shared);
-    expect((c as unknown as { scheduler: RequestScheduler }).scheduler).toBe(shared);
-  });
-  it('constructs its own scheduler when none injected (default preserved)', () => {
-    const c = new VocareumClient(new TokenAuthProvider('t', 'https://api.vocareum.com'));
-    expect((c as unknown as { scheduler: RequestScheduler }).scheduler).toBeInstanceOf(RequestScheduler);
-  });
-});
-```
+**Files:** Create `src/core/services/types.ts` (the canonical types block from Global Constraints) and `src/core/services/context.ts`; Test `test/unit/context.test.ts`.
 
-> Verify `RequestScheduler`'s constructor option names against [src/api/scheduler.ts:30](../../../src/api/scheduler.ts#L30) before running; adjust the `{maxConcurrency,...}` literal to match.
-
-- [ ] **Step 2: Run to verify it fails**
-
-Run: `npx vitest run test/unit/client-scheduler.test.ts`
-Expected: FAIL — constructor ignores the 3rd argument.
-
-- [ ] **Step 3: Implement** — change the constructor:
-
-```ts
-// src/api/client.ts (constructor)
-constructor(
-  authProvider: AuthProvider,
-  throttle: ResolvedThrottle = DEFAULT_THROTTLE,
-  scheduler?: RequestScheduler,
-) {
-  assertAllowedBaseUrl(authProvider.apiBaseUrl);
-  this.authProvider = authProvider;
-  this.scheduler = scheduler ?? new RequestScheduler(throttle);
-  // …rest unchanged…
-}
-```
-
-- [ ] **Step 4: Run tests (unit + Phase 0 goldens)**
-
-Run: `npx vitest run test/unit/client-scheduler.test.ts test/golden/`
-Expected: PASS — goldens unchanged (default path preserved).
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/api/client.ts test/unit/client-scheduler.test.ts
-git commit -m "feat: allow injecting a shared RequestScheduler into VocareumClient (default preserved)"
-```
-
-### Task 7: Operation-specific contexts
-
-**Files:**
-- Create: `src/core/services/context.ts`
-- Test: `test/unit/context.test.ts`
-
-**Interfaces:**
-- Produces (types only; no runtime logic beyond a builder):
-  - `interface RuntimeFacts { ci: boolean; ciProvider?: string; authReady: boolean }`
+**Interfaces:** Produces:
+- `types.ts`: `PushRequest`, `PullRequest`, `PushIntent`/`AssignmentIntent`/`PartIntent`, `PushPlan`/`PushPreconditions`/`RemoteAssumption` (verbatim from Global Constraints).
+- `context.ts`:
+  - `interface RuntimeFacts { ci: boolean; ciProvider?: string; authMode: 'token'|'oauth'; credentialLabel: string; credentialsConfigured: boolean }` (P1 #7 — includes auth mode/label/readiness).
   - `interface BaseContext { persistedConfig: Config; effectiveConfig: Config; configPath: string; workspaceRoot: string; events: EventSink; prompter: Prompter }`
-  - `type StatusContext = BaseContext & { runtime: RuntimeFacts }`
-  - `type ValidateContext = BaseContext`
-  - `type PushContext = BaseContext & { client: VocareumClient }`
-  - `type PullContext = BaseContext & { client: VocareumClient }`
-  - `interface Prompter { confirm(msg: string, def?: boolean): Promise<boolean>; choice(msg: string, choices: string[]): Promise<string>; input(msg: string, def?: string): Promise<string> }`
-  - `class InteractivePrompter implements Prompter` (delegates to `src/utils/prompts`), `class NonInteractivePrompter implements Prompter` (throws `UnresolvedDecisionError` on any call).
-- Consumes: `Config`, `EventSink` (Task 5), `VocareumClient`, `src/utils/prompts`.
+  - `StatusContext = BaseContext & { runtime: RuntimeFacts }`, `ValidateContext = BaseContext`, `PushContext = BaseContext & { client: VocareumClient }`, `PullContext = BaseContext & { client: VocareumClient }`.
+  - `interface Prompter { confirm(msg, def?): Promise<boolean>; choice(msg, choices): Promise<string>; input(msg, def?): Promise<string> }`; `InteractivePrompter` (delegates to `src/utils/prompts`), `NonInteractivePrompter` (throws `UnresolvedDecisionError`).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test** — `NonInteractivePrompter` rejects `confirm`/`choice`/`input` with `UnresolvedDecisionError`; a `RuntimeFacts` literal type-checks with `authMode`.
+- [ ] **Step 2: Run to verify it fails.**
+- [ ] **Step 3: Implement** both files.
+- [ ] **Step 4: Run to verify it passes.**
+- [ ] **Step 5: Commit** — `git commit -m "feat: service contexts + request objects + Prompter + RuntimeFacts(authMode)"`
 
-```ts
-// test/unit/context.test.ts
-import { describe, it, expect } from 'vitest';
-import { NonInteractivePrompter, UnresolvedDecisionError } from '../../src/core/services/context';
+### Task 8: `withSession` locked-session writer — at `src/core/session.ts`
 
-describe('prompters', () => {
-  it('NonInteractivePrompter throws a typed error on any decision', async () => {
-    const p = new NonInteractivePrompter();
-    await expect(p.confirm('ok?')).rejects.toBeInstanceOf(UnresolvedDecisionError);
-    await expect(p.choice('pick', ['a'])).rejects.toBeInstanceOf(UnresolvedDecisionError);
-  });
-});
-```
+**Files:** Create `src/core/session.ts` (**not** under `services/` — P0 #5); Test `test/unit/session.test.ts`.
 
-- [ ] **Step 2: Run to verify it fails**
+**Interfaces:** Produces `interface LockedSession { applyConfigUpdate(updates: ConfigUpdates): Promise<void> }` and `withSession<T>(configPath, fn): Promise<T>` — acquires `withConfigLock` once; `applyConfigUpdate` delegates to `updateConfig` (no own lock — [config.ts:140](../../../src/core/config.ts#L140)).
 
-Run: `npx vitest run test/unit/context.test.ts`
-Expected: FAIL — module not found.
+- [ ] **Step 1: Write the failing test** — assert order `['lock','update','unlock']` (mock `src/core/config`).
+- [ ] **Step 2: Run to verify it fails.**
+- [ ] **Step 3: Implement** in `src/core/session.ts` importing `withConfigLock`/`updateConfig` from `./config`.
+- [ ] **Step 4: Run to verify it passes.**
+- [ ] **Step 5: Commit** — `git commit -m "feat: withSession lock owner at src/core/session.ts (outside services/)"`
 
-- [ ] **Step 3: Implement** `src/core/services/context.ts` with the interfaces above, `InteractivePrompter` delegating to `prompt`/`promptConfirm`/`promptChoice` from `../../utils/prompts`, and:
+### Task 9: `semanticFingerprint(intent: PushIntent)` over the full intent
 
-```ts
-export class UnresolvedDecisionError extends Error {
-  constructor(public readonly decision: string) {
-    super(`A decision ("${decision}") was required but the context is non-interactive and no policy resolved it.`);
-    this.name = 'UnresolvedDecisionError';
-  }
-}
-export class NonInteractivePrompter implements Prompter {
-  confirm(): Promise<boolean> { return Promise.reject(new UnresolvedDecisionError('confirm')); }
-  choice(): Promise<string> { return Promise.reject(new UnresolvedDecisionError('choice')); }
-  input(): Promise<string> { return Promise.reject(new UnresolvedDecisionError('input')); }
-}
-```
+**Files:** Create `src/core/services/plan-fingerprint.ts`; Test `test/unit/plan-fingerprint.test.ts`.
 
-- [ ] **Step 4: Run to verify it passes**
-
-Run: `npx vitest run test/unit/context.test.ts`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/core/services/context.ts test/unit/context.test.ts
-git commit -m "feat: add operation-specific service contexts + Prompter abstraction"
-```
-
-### Task 8: `withSession` locked-session writer
-
-**Files:**
-- Create: `src/core/services/session.ts`
-- Test: `test/unit/session.test.ts`
-
-**Interfaces:**
-- Produces:
-  - `interface LockedSession { applyConfigUpdate(updates: ConfigUpdates): Promise<void> }`
-  - `function withSession<T>(configPath: string, fn: (s: LockedSession) => Promise<T>): Promise<T>` — acquires `withConfigLock(configPath)` ONCE and provides a session whose `applyConfigUpdate` delegates to `updateConfig(configPath, updates)` (which performs no locking of its own — [config.ts:140](../../../src/core/config.ts#L140)).
-- Consumes: `withConfigLock`, `updateConfig`, `ConfigUpdates` from `src/core/config` / `src/types/config`.
-
-- [ ] **Step 1: Write the failing test**
-
-```ts
-// test/unit/session.test.ts
-import { describe, it, expect, vi } from 'vitest';
-const order: string[] = [];
-vi.mock('../../src/core/config', () => ({
-  withConfigLock: vi.fn(async (_p: string, fn: () => Promise<unknown>) => { order.push('lock'); const r = await fn(); order.push('unlock'); return r; }),
-  updateConfig: vi.fn(async () => { order.push('update'); }),
-}));
-import { withSession } from '../../src/core/services/session';
-
-describe('withSession', () => {
-  it('acquires the lock once and delegates writes to updateConfig inside it', async () => {
-    order.length = 0;
-    await withSession('vocareum.yaml', async (s) => { await s.applyConfigUpdate({ publish_history: [] }); });
-    expect(order).toEqual(['lock', 'update', 'unlock']);
-  });
-});
-```
-
-- [ ] **Step 2: Run to verify it fails**
-
-Run: `npx vitest run test/unit/session.test.ts`
-Expected: FAIL — module not found.
-
-- [ ] **Step 3: Implement**
-
-```ts
-// src/core/services/session.ts
-import { withConfigLock, updateConfig } from '../config';
-import type { ConfigUpdates } from '../../types/config';
-
-export interface LockedSession { applyConfigUpdate(updates: ConfigUpdates): Promise<void>; }
-
-export function withSession<T>(configPath: string, fn: (s: LockedSession) => Promise<T>): Promise<T> {
-  return withConfigLock(configPath, () => {
-    const session: LockedSession = { applyConfigUpdate: (u) => updateConfig(configPath, u) };
-    return fn(session);
-  });
-}
-```
-
-- [ ] **Step 4: Run to verify it passes**
-
-Run: `npx vitest run test/unit/session.test.ts`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/core/services/session.ts test/unit/session.test.ts
-git commit -m "feat: add withSession locked-session that delegates writes to updateConfig under one lock"
-```
-
-### Task 9: `semanticFingerprint` over a push change set
-
-**Files:**
-- Create: `src/core/services/plan-fingerprint.ts`
-- Test: `test/unit/plan-fingerprint.test.ts`
-
-**Interfaces:**
-- Produces: `function semanticFingerprint(plan: { created: CreatedEntity[]; updated: UpdatedEntity[]; deleted?: DeletedEntity[] }): string` — a stable hash over the SET of (kind, assignment_id|path, part_id, directory) tuples, order-independent (sorted before hashing), ignoring incidental fields. Used by Stage 1b's replan policy.
-- Consumes: `CreatedEntity`/`UpdatedEntity`/`DeletedEntity` from `src/types/state`; `createHash` from `node:crypto`.
+**Interfaces:** Produces `function semanticFingerprint(intent: PushIntent): string` — canonicalizes the WHOLE intent (assignment action, ids, template id, settings payloads, per-directory content hashes, delete paths; sorted for order-independence) and SHA-256s it (P0 #1 — content/settings/deletes/template all participate, so a changed file flips the fingerprint).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -591,288 +306,177 @@ git commit -m "feat: add withSession locked-session that delegates writes to upd
 // test/unit/plan-fingerprint.test.ts
 import { describe, it, expect } from 'vitest';
 import { semanticFingerprint } from '../../src/core/services/plan-fingerprint';
+import type { PushIntent } from '../../src/core/services/types';
+
+const base: PushIntent = { assignments: [{ path: 'lab1', assignmentId: '900', action: 'update', parts: [
+  { partId: '901', path: 'part1', contentHashes: { startercode: 'h1' }, settingsPayload: { nosubmit: false } },
+]}]};
 
 describe('semanticFingerprint', () => {
-  it('is identical for the same change set regardless of order', () => {
-    const a = { created: [{ assignment: 'lab1', parts: ['p1'] }], updated: [{ assignment: 'lab2', parts: ['p2'] }] };
-    const b = { created: [{ assignment: 'lab1', parts: ['p1'] }], updated: [{ assignment: 'lab2', parts: ['p2'] }] };
-    expect(semanticFingerprint(a as never)).toBe(semanticFingerprint(b as never));
+  it('is order-independent for the same intent', () => {
+    const reordered: PushIntent = { assignments: [{ ...base.assignments[0],
+      parts: [{ ...base.assignments[0].parts[0] }] }] };
+    expect(semanticFingerprint(base)).toBe(semanticFingerprint(reordered));
   });
-  it('differs when the change set differs', () => {
-    const a = { created: [{ assignment: 'lab1', parts: ['p1'] }], updated: [] };
-    const c = { created: [{ assignment: 'lab1', parts: ['p1', 'p2'] }], updated: [] };
-    expect(semanticFingerprint(a as never)).not.toBe(semanticFingerprint(c as never));
+  it('changes when a content hash changes (P0 #1)', () => {
+    const changed: PushIntent = JSON.parse(JSON.stringify(base));
+    changed.assignments[0].parts[0].contentHashes.startercode = 'h2';
+    expect(semanticFingerprint(base)).not.toBe(semanticFingerprint(changed));
+  });
+  it('changes when a settings payload changes', () => {
+    const changed: PushIntent = JSON.parse(JSON.stringify(base));
+    changed.assignments[0].parts[0].settingsPayload = { nosubmit: true };
+    expect(semanticFingerprint(base)).not.toBe(semanticFingerprint(changed));
   });
 });
 ```
 
-> Verify `CreatedEntity`/`UpdatedEntity` shapes against [src/types/state.ts](../../../src/types/state.ts) and adjust the tuple projection accordingly.
-
-- [ ] **Step 2: Run to verify it fails**
-
-Run: `npx vitest run test/unit/plan-fingerprint.test.ts`
-Expected: FAIL — module not found.
-
-- [ ] **Step 3: Implement** a function that projects each entity to a `kind:id:parts` string, sorts the array, joins, and returns `createHash('sha256').update(joined).digest('hex')`.
-
-- [ ] **Step 4: Run to verify it passes**
-
-Run: `npx vitest run test/unit/plan-fingerprint.test.ts`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/core/services/plan-fingerprint.ts test/unit/plan-fingerprint.test.ts
-git commit -m "feat: add order-independent semanticFingerprint for push change sets"
-```
+- [ ] **Step 2: Run to verify it fails.**
+- [ ] **Step 3: Implement** — a deterministic canonicalizer: recursively sort object keys, sort assignment/part arrays by `path`, JSON.stringify, `createHash('sha256')`.
+- [ ] **Step 4: Run to verify it passes.**
+- [ ] **Step 5: Commit** — `git commit -m "feat: semanticFingerprint over full PushIntent (content+settings+deletes+template)"`
 
 ---
 
 ## Phase 2 — Single top-level exit boundary
 
-### Task 10: `CommandFailureError` + entrypoint `parseAsync` with one catch
+### Task 10: `CommandFailureError` + entrypoint `parseAsync`, one error owner per path
 
-**Files:**
-- Create: `src/utils/command-failure.ts`
-- Modify: `src/index.ts` — every `.action()` try/catch (lines 62-69, 97-104, 138-145, 172-179, 246-253, 286-293, 349-357) and `program.parse()` (line 359)
-- Test: `test/unit/command-failure.test.ts`
+**Files:** Create `src/utils/command-failure.ts`; Modify `src/index.ts`; Test `test/unit/command-failure.test.ts` + `test/integration/exit-codes.test.ts`.
 
-**Interfaces:**
-- Produces: `class CommandFailureError extends Error { constructor(message: string, public exitCode = 1) }`.
-- Consumes: nothing.
+**Interfaces:** Produces `class CommandFailureError extends Error { constructor(message, public exitCode = 1) }`. Entrypoint owns exit-code mapping; **does not re-log a `CommandFailureError` that a command already rendered** (P1 #9).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing unit + subprocess tests**
 
 ```ts
-// test/unit/command-failure.test.ts
+// test/integration/exit-codes.test.ts
 import { describe, it, expect } from 'vitest';
-import { CommandFailureError } from '../../src/utils/command-failure';
-describe('CommandFailureError', () => {
-  it('carries a message and default exit code 1', () => {
-    const e = new CommandFailureError('boom');
-    expect(e.exitCode).toBe(1);
-    expect(e.message).toBe('boom');
+import { execFileSync } from 'child_process';
+const run = (args: string[]) => {
+  try { execFileSync('node', ['dist/index.js', ...args], { stdio: 'pipe' }); return { code: 0, stderr: '' }; }
+  catch (e: any) { return { code: e.status as number, stderr: String(e.stderr) }; }
+};
+describe('exit codes (subprocess)', () => {
+  it('exits non-zero with a single error line on a missing config', () => {
+    const r = run(['status', '--config', 'definitely-missing.yaml']);
+    expect(r.code).not.toBe(0);
+    expect((r.stderr.match(/not found/gi) || []).length).toBeLessThanOrEqual(1); // no double-log
   });
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+> Requires `npm run build` first. The CommandFailureError unit test asserts default `exitCode === 1`.
 
-Run: `npx vitest run test/unit/command-failure.test.ts`
-Expected: FAIL — module not found.
+- [ ] **Step 2: Run to verify it fails** — `npm run build && npx vitest run test/integration/exit-codes.test.ts` (today: double "Status failed"/error text or `process.exit` semantics differ).
 
-- [ ] **Step 3: Implement `command-failure.ts`**, then rewrite each `.action()` to drop its `process.exit(1)` and instead throw, and replace the bottom of `index.ts`:
+- [ ] **Step 3: Implement.** Define the class. In each `.action()`: keep the command's own logging where it already exists; map a failure to `throw new CommandFailureError(msg)` **preserving exit code**, and **rethrow an existing `CommandFailureError` unchanged** (don't wrap twice). Replace `program.parse()`:
 
 ```ts
-// each action becomes (example: push) — log then rethrow as a typed failure:
-.action(async (options: PublishCommandOptions) => {
-  try {
-    await publishCommand(options);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Unknown error';
-    logger.error(`Push failed: ${msg}`);
-    throw new CommandFailureError(msg);
-  }
-});
-
-// replace `program.parse();` (line 359) with:
 program.parseAsync().catch((error) => {
-  if (!(error instanceof CommandFailureError)) {
+  if (error instanceof CommandFailureError) {
+    process.exitCode = error.exitCode;            // already rendered by the command
+  } else {
     logger.error(error instanceof Error ? error.message : 'Unknown error');
+    process.exitCode = 1;
   }
-  process.exitCode = error instanceof CommandFailureError ? error.exitCode : 1;
 });
 ```
 
-Apply the same throw-instead-of-exit transform to `init`, `new`, `validate`, `fix`, `pull`, `status` actions. **Add `import { CommandFailureError } from './utils/command-failure';`** near the other imports.
+Keep today's per-command error text (e.g. push action keeps "Unhandled error" only for genuinely-unhandled, since `publishCommand` logs its own failures — do not add a second "Push failed" line; P1 #9).
 
-- [ ] **Step 4: Run full suite (goldens must stay green)**
-
-Run: `npm test`
-Expected: PASS — `process.exit` no longer in `src/index.ts` actions; goldens unchanged. (`status`/`validate` still set exit code via thrown `CommandFailureError` from their own internal failures — see Task 11/12 which remove their inline `process.exit`.)
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/utils/command-failure.ts src/index.ts test/unit/command-failure.test.ts
-git commit -m "refactor: centralize exit handling in entrypoint via parseAsync + CommandFailureError"
-```
+- [ ] **Step 4: Run** `npm run build && npm test` — goldens green; exit-code subprocess test green.
+- [ ] **Step 5: Commit** — `git commit -m "refactor: centralize exit via parseAsync; one error owner per path"`
 
 ### Task 11: Remove inline `process.exit` from `status`/`validate`/`fix`
 
-**Files:**
-- Modify: `src/commands/status.ts:162`, `src/commands/validate.ts:51-57`, `src/commands/fix.ts:88`
+**Files:** Modify `src/commands/status.ts:162`, `src/commands/validate.ts:51-57`, `src/commands/fix.ts:88`.
 
-**Interfaces:**
-- Produces: `statusCommand`/`validateCommand`/`fixCommand` that **throw `CommandFailureError`** (with the right exit code) instead of calling `process.exit`. Callers (entrypoint) already map thrown errors to exit codes (Task 10).
+**Interfaces:** These throw `CommandFailureError(msg, code)` instead of `process.exit`; entrypoint maps it (Task 10).
 
-- [ ] **Step 1: Update the golden expectation for the exit path** — extend `test/golden/validate.golden.test.ts` with a case asserting that a `--strict` validation failure now **throws `CommandFailureError`** rather than exiting:
-
-```ts
-it('throws CommandFailureError (not process.exit) on strict failure', async () => {
-  await expect(validateCommand({ config: 'test/fixtures/sample-course/vocareum.yaml', root: 'test/fixtures/sample-course', strict: true /* with an injected warning */ }))
-    .rejects.toMatchObject({ name: 'CommandFailureError' });
-});
-```
-
-> If the sample fixture has no warnings, point at a fixture that does, or stub the validator to emit one. Keep the existing offline snapshot test intact.
-
-- [ ] **Step 2: Run to verify it fails**
-
-Run: `npx vitest run test/golden/validate.golden.test.ts`
-Expected: FAIL — currently calls `process.exit(1)` (which in tests throws/aborts differently), not `CommandFailureError`.
-
-- [ ] **Step 3: Replace each `process.exit(n)`** with `throw new CommandFailureError(<message>, n)` (import the class). For `status.ts:162` (catch block) and `fix.ts:88`, do the same. Remove now-dead `try/catch`-then-exit scaffolding where the entrypoint already wraps.
-
-- [ ] **Step 4: Run full suite**
-
-Run: `npm test`
-Expected: PASS — goldens green, new throw-path test green.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/commands/status.ts src/commands/validate.ts src/commands/fix.ts test/golden/validate.golden.test.ts
-git commit -m "refactor: status/validate/fix throw CommandFailureError instead of process.exit"
-```
-
----
-
-## Phase 3 — Service extraction: offline reads (status, validate)
-
-### Task 12: Extract `inspectStatus` service (offline)
-
-**Files:**
-- Create: `src/core/services/status-service.ts`
-- Modify: `src/commands/status.ts` (becomes a thin wrapper)
-- Test: `test/unit/status-service.test.ts`
-
-**Interfaces:**
-- Produces: `function inspectStatus(ctx: StatusContext): StatusReport` — pure, offline, no client, emits events via `ctx.events`, returns a `StatusReport` data object (move the computation currently in `statusCommand` here). Define `interface StatusReport` mirroring today's computed fields (assignment/part counts, linked counts, templates, last-push, git/env facts).
-- Consumes: `StatusContext` (Task 7), `EventSink` (Task 5).
-
-- [ ] **Step 1: Write the failing test** — construct a `StatusContext` over the sample config (with a `CollectingEventSink`), call `inspectStatus`, assert the returned `StatusReport` counts match the fixture and that emitted events include the org/course line.
-
-- [ ] **Step 2: Run to verify it fails** — `npx vitest run test/unit/status-service.test.ts` → module not found.
-
-- [ ] **Step 3: Implement** — move the body of `statusCommand` ([status.ts:37](../../../src/commands/status.ts#L37) onward) into `inspectStatus(ctx)`, replacing `logger.*` with `ctx.events.emit(...)` and reading config/runtime from `ctx`. Rewrite `statusCommand` to: resolve workspace, load config + runtime facts, build `StatusContext` with `LoggerEventSink` + `InteractivePrompter`, call `inspectStatus`, and (for `--json`) serialize the returned report.
-
-- [ ] **Step 4: Run full suite** — `npm test`. Expected: the `status` golden snapshot is **unchanged** (LoggerEventSink reproduces today's output).
-
-- [ ] **Step 5: Commit** — `git commit -m "refactor: extract inspectStatus offline service; status command becomes a wrapper"`
-
-### Task 13: Extract `validateWorkspace` service (offline)
-
-**Files:**
-- Create: `src/core/services/validate-service.ts`
-- Modify: `src/commands/validate.ts`, and `src/core/validator.ts` to accept an `EventSink` (it currently uses global `logger`)
-- Test: `test/unit/validate-service.test.ts`
-
-**Interfaces:**
-- Produces: `function validateWorkspace(ctx: ValidateContext): ValidationReport` (offline) — returns `{ errors: string[]; warnings: string[] }`; emits events. The `--remote` (`--vocareum`) path stays in the command wrapper for now (online; out of Stage 1a's offline contract — keep its existing code path, just routed through a `PushContext`-like client if already present).
-- Consumes: `ValidateContext`, `validator` core.
-
-- [ ] **Step 1: Write the failing test** — call `validateWorkspace` over the sample fixture; assert `ValidationReport` shape and that a known structural problem (e.g. missing part dir) appears in `errors`/`warnings`.
-
+- [ ] **Step 1: Convert the validate golden strict-fail case** (from Task 4) to assert `rejects → { name: 'CommandFailureError' }`.
 - [ ] **Step 2: Run to verify it fails.**
-
-- [ ] **Step 3: Implement** — thread an `EventSink` parameter through `validator.ts`'s public functions (default to a `LoggerEventSink` to keep existing call sites working), move the orchestration from `validateCommand` into `validateWorkspace(ctx)`, and make `validateCommand` a wrapper that builds the context and throws `CommandFailureError` on `--strict` failures.
-
-- [ ] **Step 4: Run full suite** — goldens unchanged.
-
-- [ ] **Step 5: Commit** — `git commit -m "refactor: extract validateWorkspace offline service; thread EventSink through validator"`
+- [ ] **Step 3: Replace each `process.exit(n)`** with `throw new CommandFailureError(message, n)`; remove now-redundant catch-then-exit scaffolding the entrypoint covers.
+- [ ] **Step 4: Run** `npm test` — goldens green.
+- [ ] **Step 5: Commit** — `git commit -m "refactor: status/validate/fix throw CommandFailureError instead of process.exit"`
 
 ---
 
-## Phase 4 — Service extraction: push (plan/execute + session + event sink)
+## Phase 3 — Offline read services (status, validate)
 
-### Task 14: Split `publish()` into `planPush` + `executePush`; thread EventSink through publisher/reconciler/uploader
+### Task 12: Extract `inspectStatus` — pure data, no human rendering on the JSON path
 
-**Files:**
-- Create: `src/core/services/push-service.ts`
-- Modify: `src/core/publisher.ts` (split `publish` at [publisher.ts:255](../../../src/core/publisher.ts#L255)), `src/commands/publish.ts`, and add an `EventSink` param to `reconciler.ts`/`uploader.ts`/`publisher.ts` public functions (default `LoggerEventSink`).
-- Test: `test/unit/push-service.test.ts`
+**Files:** Create `src/core/services/status-service.ts`; Modify `src/commands/status.ts`; Test `test/unit/status-service.test.ts`.
 
-**Interfaces:**
-- Produces:
-  - `function planPush(ctx: PushContext): Promise<PushPlan>` — READ-ONLY: reconcile + compute the change set; performs only GETs; no mutation, no state write. `interface PushPlan { created: CreatedEntity[]; updated: UpdatedEntity[]; skipped: SkippedEntity[]; deleted?: DeletedEntity[]; contentState: Record<string,string>; preconditions: { configDigest: string; contentHashes: Record<string,string>; assignmentIds: string[]; partIds: string[]; remoteAssumptions: unknown }; semanticFingerprint: string; summary: string }`.
-  - `function executePush(session: LockedSession, ctx: PushContext, plan: PushPlan): Promise<PushResult>` — applies the change set and writes state via `session.applyConfigUpdate`. `PushResult` = today's `PublishResult` minus the planning fields.
-- Consumes: `PushContext`, `LockedSession`, `semanticFingerprint`, `EventSink`, existing `reconcile`/`upload` core.
+**Interfaces:** Produces `function inspectStatus(ctx: StatusContext): Promise<StatusReport>` — **returns a data object; performs NO human rendering** (P1 #7). `StatusReport` mirrors today's JSON document fields (course, auth `{mode, configured}`, runtime, git, per-assignment content status, last_push, counts). The wrapper picks the renderer:
+- human → a `renderStatusHuman(report, events)` that emits today's lines via `ctx.events`;
+- `--json` → `JSON.stringify(report)` to stdout, with **no events emitted** (purity).
 
-- [ ] **Step 1: Write the failing test** — using `RecordingClient`, build a `PushContext`; call `planPush` and assert (a) only GET calls were recorded (no PUT), (b) `plan.semanticFingerprint` is set, (c) `plan.preconditions.configDigest` is a non-empty string. Then call `executePush` inside a stubbed session and assert PUTs occur and `session.applyConfigUpdate` was called once.
-
+- [ ] **Step 1: Write the failing test** — build a `StatusContext` over the sample config with a `CollectingEventSink`; assert `inspectStatus` returns a `StatusReport` with correct counts and `auth.mode`, and that **calling it emits zero events** (rendering is the wrapper's job).
 - [ ] **Step 2: Run to verify it fails.**
+- [ ] **Step 3: Implement** — move the computation from `statusCommand` ([status.ts:37+](../../../src/commands/status.ts#L37)) into `inspectStatus` returning data. Add `renderStatusHuman`. Rewrite `statusCommand` to build the context (+`RuntimeFacts` from the existing `authMode`/`credentialLabel`/`credentialsConfigured`/`getCIProvider` logic), call `inspectStatus`, then either `JSON.stringify` (json) or `renderStatusHuman` (human).
+- [ ] **Step 4: Run** `npm test` — **both** status goldens unchanged (human snapshot + JSON purity).
+- [ ] **Step 5: Commit** — `git commit -m "refactor: inspectStatus returns data; wrapper renders human/json separately"`
 
-- [ ] **Step 3: Implement the split.** Extract the read/reconcile portion of `publish()` into `planPush` (compute `preconditions`: `configDigest` = hash of the persisted YAML text; `contentHashes` from the existing per-directory hashing; ids from config; `remoteAssumptions` = per-assignment existence + part list for assignments in the change set). Extract the mutate+write portion into `executePush`, replacing the inline `updateConfig(...)` ([publisher.ts:1001](../../../src/core/publisher.ts#L1001)) with `session.applyConfigUpdate(...)` and replacing `logger.*` with `ctx.events.emit(...)`. Thread the `EventSink` through `reconciler.ts`/`uploader.ts` public functions (default param `new LoggerEventSink()` so any remaining direct callers are unaffected).
+### Task 13: Extract `validateWorkspace` — thread EventSink through validator
 
-- [ ] **Step 4: Rewire `publish()` as a thin back-compat shim** that calls `planPush` then `executePush` inside one `withSession` (so existing `publishCommand` and the integration test keep working unchanged):
+**Files:** Create `src/core/services/validate-service.ts`; Modify `src/commands/validate.ts`, `src/core/validator.ts`; Test `test/unit/validate-service.test.ts`.
 
-```ts
-export async function publish(config, client, options, reporter?) {
-  const ctx = buildPushContextFromLegacyArgs(config, client, options, reporter); // LoggerEventSink + InteractivePrompter
-  return withSession(ctx.configPath, async (session) => {
-    const plan = await planPush(ctx);
-    // confirmation stays in publishCommand (the wrapper), not here
-    return executePush(session, ctx, plan);
-  });
-}
-```
+**Interfaces:** Produces `function validateWorkspace(ctx: ValidateContext): Promise<ValidationReport>` (offline) returning `{ errors: string[]; warnings: string[] }`; emits via `ctx.events`. `--vocareum` (remote) path stays in the wrapper for Stage 1a.
 
-> The CLI confirmation (`promptConfirm`) must remain BETWEEN plan and execute and inside the single lock — keep it in `publishCommand`, which now calls `planPush` → confirm → `executePush` within one `withSession`. Update `publishCommand` accordingly so the golden API sequence (no extra GETs) is preserved.
-
-- [ ] **Step 5: Run full suite — the push golden API-sequence snapshot MUST be unchanged.**
-
-Run: `npm test`
-Expected: PASS; `test/golden/push.golden.test.ts` snapshot identical. If the sequence changed, a re-fetch leaked onto the CLI path — fix before committing.
-
-- [ ] **Step 6: Commit** — `git commit -m "refactor: split publish into planPush/executePush over a locked session; thread EventSink"`
-
----
-
-## Phase 5 — Service extraction: pull (inspect/apply + resolver)
-
-### Task 15: Extract `inspectPull` + `applyPull(session, ctx, inspection, resolver)`
-
-**Files:**
-- Create: `src/core/services/pull-service.ts`
-- Modify: `src/commands/pull.ts` (becomes a wrapper that supplies the interactive resolver), thread `EventSink` where pull calls `logger`
-- Test: `test/unit/pull-service.test.ts`
-
-**Interfaces:**
-- Produces:
-  - `function inspectPull(ctx: PullContext): Promise<PullInspection>` — remote reconnaissance only (orphans, stale, settings drift, optional content drift); no prompts, no writes. `interface PullInspection { orphanedInVocareum: OrphanedEntity[]; stale: ...; settingsDrift: ...; preconditions: { configDigest: string } }`.
-  - `type PullResolver = (issue: PullIssue) => Promise<PullDecision>` where `PullDecision = { action: 'import'|'exclude'|'skip'|'reset'|'remove'|'pull'|'keep'; dirName?: string }`.
-  - `function applyPull(session: LockedSession, ctx: PullContext, inspection: PullInspection, resolver: PullResolver): Promise<PullResult>` — **iterates issues and calls `resolver` immediately before each action** (preserving today's prompt→import interleaving and `-N` dir allocation), writing via `session.applyConfigUpdate`.
-- Consumes: `PullContext`, `LockedSession`, `EventSink`, existing import/download helpers in `pull.ts`.
-
-- [ ] **Step 1: Write the failing test** — with `RecordingClient` + mocked `files`, build a `PullContext`; call `inspectPull` and assert it returns orphans with no writes; then call `applyPull` with a stub resolver returning `{action:'import'}` for the first orphan and `{action:'skip'}` for the rest, and assert the import happened for exactly the first and `session.applyConfigUpdate` was called.
-
+- [ ] **Step 1: Write the failing test** — over a fixture with a known structural problem, assert `ValidationReport` lists it.
 - [ ] **Step 2: Run to verify it fails.**
-
-- [ ] **Step 3: Implement.** Move `pull.ts`'s detection logic into `inspectPull`. Move the per-issue loop ([pull.ts:1131](../../../src/commands/pull.ts#L1131)) into `applyPull`, replacing the inline `promptChoice`/`prompt` calls with `await resolver(issue)` invoked **inside** the loop right before each action, and `logger.*` with `ctx.events.emit`. The directory-name allocation (`getUniqueDirectoryName`) stays inside the loop, after the resolver decision, exactly as today.
-
-- [ ] **Step 4: Rewrite `pullCommand` as the wrapper** that builds a `PullContext`, opens one `withSession`, calls `inspectPull` then `applyPull` with an **interactive resolver** that reproduces today's `promptChoice`/`prompt` exchanges (and a `--batch`/`--non-interactive` resolver matching today's defaults).
-
-- [ ] **Step 5: Run full suite — `pull-batch` golden snapshot unchanged.**
-
-Run: `npm test`
-Expected: PASS; pull goldens identical (interleaving + API sequence preserved).
-
-- [ ] **Step 6: Commit** — `git commit -m "refactor: extract inspectPull/applyPull with per-item resolver; pull command supplies resolver"`
+- [ ] **Step 3: Implement** — add an `EventSink` parameter to `validator.ts` public fns (default `new LoggerEventSink()` so other callers are unaffected); move orchestration into `validateWorkspace`; wrapper builds context, throws `CommandFailureError` on `--strict` failure.
+- [ ] **Step 4: Run** `npm test` — goldens unchanged.
+- [ ] **Step 5: Commit** — `git commit -m "refactor: validateWorkspace offline service; EventSink through validator"`
 
 ---
 
-## Phase 6 — Hardening: complete the event-sink boundary + CI guards
+## Phase 4 — Push service (intent/plan/execute + session)
 
-### Task 16: Thread EventSink through remaining business logic + add grep guards
+### Task 14: `planPush`/`executePush` over `PushIntent`; internal `publish()` made non-interactive
 
-**Files:**
-- Modify: `src/utils/unknown-field-reporter.ts` (accept an `EventSink`, become a sink consumer), any residual `logger.*` calls under the push/pull/status/validate transitive graph
-- Create: `test/unit/no-forbidden-imports.test.ts` (the CI guards)
+**Files:** Create `src/core/services/push-service.ts`; Modify `src/core/publisher.ts` (split `publish` at [255](../../../src/core/publisher.ts#L255)), `src/commands/publish.ts`, and add an `EventSink` param to `reconciler.ts`/`uploader.ts`/`publisher.ts` public fns (default `LoggerEventSink`).
 
-**Interfaces:**
-- Produces: a test that fails if forbidden patterns appear under `src/core/services/` or if `process.exit` appears outside `src/index.ts`.
+**Interfaces:** Produces:
+- `function planPush(ctx: PushContext, req: PushRequest): Promise<PushPlan>` — READ-ONLY: reconcile → build a `PushIntent` (with settings payloads + per-dir content hashes + delete paths + template ids), compute `PushPreconditions` (configDigest, contentHashes, ids, `remoteAssumptions` incl. `exists:false` for planned creates), and `semanticFingerprint(intent)`. Only GETs; no mutation. Honors `req` (filters/forceAll/syncDeletes/dryRun affect what the intent contains).
+- `function executePush(session: LockedSession, ctx: PushContext, req: PushRequest, plan: PushPlan): Promise<PublishResult>` — applies `plan.intent` (creates get their new IDs HERE, populating `PublishResult.created` with real IDs — P0 #3), writes state via `session.applyConfigUpdate`. `PublishResult` (with `id`-bearing `CreatedEntity`/`UpdatedEntity`) is the RESULT type, distinct from the plan.
+
+- [ ] **Step 1: Write the failing test** — with `RecordingClient`: `planPush` records **only GETs**, returns a `PushPlan` whose `intent` reflects a changed directory and whose `semanticFingerprint` is set and `preconditions.configDigest` non-empty; then `executePush` in a stub session records PUTs, returns a `PublishResult` whose `created` entries carry real IDs, and calls `applyConfigUpdate` once.
+- [ ] **Step 2: Run to verify it fails.**
+- [ ] **Step 3: Implement the split** — extract reconcile/intent-build into `planPush`; extract mutate+write into `executePush`, replacing inline `updateConfig` ([publisher.ts:1001](../../../src/core/publisher.ts#L1001)) with `session.applyConfigUpdate` and `logger.*` with `ctx.events.emit`. Thread `EventSink` through `reconciler.ts`/`uploader.ts` (default `LoggerEventSink`).
+- [ ] **Step 4: Make `publish()` an explicit INTERNAL non-interactive compat API (P1 #10)** — JSDoc: "Internal: executes a push without prompting; confirmation belongs to the CLI wrapper." Implement as one `withSession`: `planPush` → (no confirm) → `executePush`. Update its ONLY callers: `publishCommand` is rewritten to orchestrate `withSession(plan → confirm via prompter → execute)` directly; the integration test ([test/integration/publish.test.ts](../../../test/integration/publish.test.ts), which already runs `nonInteractive`/CI) keeps working through `publishCommand`. Grep to confirm no other caller of `publish()` exists; if found, route it through the new non-interactive contract.
+- [ ] **Step 5: Run** `npm run build && npm test` — **the push golden API-sequence snapshots (changed/cancel/failure) are unchanged.** A changed sequence means a re-fetch leaked onto the CLI path — fix before committing.
+- [ ] **Step 6: Commit** — `git commit -m "refactor: planPush/executePush over PushIntent; publish() is internal non-interactive"`
+
+---
+
+## Phase 5 — Pull service (inspect + apply with split resolver)
+
+### Task 15: `inspectPull` + `applyPull` with `resolveAction` then `resolveImportPath`
+
+**Files:** Create `src/core/services/pull-service.ts`; Modify `src/commands/pull.ts`; Test `test/unit/pull-service.test.ts`.
+
+**Interfaces:** Produces:
+- `function inspectPull(ctx: PullContext, req: PullRequest): Promise<PullInspection>` — remote reconnaissance only; no prompts/writes.
+- `interface PullResolver { resolveAction(issue: PullIssue): Promise<PullAction>; resolveImportPath(issue: PullIssue, suggestedPath: string): Promise<string> }` (**split** — P0 #4: action first, then the suggested unique path is computed, then the path resolver runs, matching [pull.ts:1160-1172](../../../src/commands/pull.ts#L1160)).
+- `function applyPull(session, ctx, req, inspection, resolver): Promise<PullResult>` — iterates issues; per item: `await resolver.resolveAction(issue)`; if `import`, compute `suggestedPath` (today's `findExistingImportTarget`/`getUniqueDirectoryName`), then `await resolver.resolveImportPath(issue, suggestedPath)`, then import — **immediately, before the next issue** (preserves interleaving + `-N` allocation). Writes via `session.applyConfigUpdate`; `logger.*` → `ctx.events.emit`.
+
+- [ ] **Step 1: Write the failing test** — two orphans; a stub resolver whose `resolveAction` returns `import` then `skip`, and whose `resolveImportPath` echoes the suggested path; assert (a) import happened only for the first, (b) `resolveImportPath` received the computed suggestion, (c) `applyConfigUpdate` called.
+- [ ] **Step 2: Run to verify it fails.**
+- [ ] **Step 3: Implement** — move detection into `inspectPull`; move the loop ([pull.ts:1131](../../../src/commands/pull.ts#L1131)) into `applyPull` with the two-step resolver; keep dir allocation between the two resolver calls.
+- [ ] **Step 4: Rewrite `pullCommand`** to build a `PullContext`+`PullRequest`, open one `withSession`, call `inspectPull` then `applyPull` with an **interactive resolver** (`resolveAction` = today's `promptChoice`; `resolveImportPath` = today's `prompt('Local directory name:', suggested)`), and a `--batch`/`--non-interactive` resolver matching today's defaults.
+- [ ] **Step 5: Run** `npm test` — **interactive-ordering golden and batch golden unchanged** (the `[prompt#1, import#1, prompt#2, import#2]` order holds).
+- [ ] **Step 6: Commit** — `git commit -m "refactor: inspectPull/applyPull with split resolveAction/resolveImportPath"`
+
+---
+
+## Phase 6 — Hardening: finish EventSink boundary + guards
+
+### Task 16: Thread EventSink through remaining business logic + CI guards
+
+**Files:** Modify `src/utils/unknown-field-reporter.ts` (accept `EventSink`), any residual `logger.*` in the push/pull/status/validate transitive graph; Create `test/unit/no-forbidden-imports.test.ts`.
+
+**Interfaces:** Produces a guard test failing on forbidden patterns under `src/core/services/` or `process.exit` outside `src/index.ts`. **`src/core/session.ts` is explicitly allowed to use `withConfigLock`** (it is the lock owner and lives outside `services/`).
 
 - [ ] **Step 1: Write the guard test**
 
@@ -881,78 +485,62 @@ Expected: PASS; pull goldens identical (interleaving + API sequence preserved).
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
-
-function walk(dir: string): string[] {
-  return readdirSync(dir).flatMap((e) => {
-    const p = join(dir, e);
-    return statSync(p).isDirectory() ? walk(p) : p.endsWith('.ts') ? [p] : [];
-  });
-}
-
+const walk = (d: string): string[] => readdirSync(d).flatMap((e) => {
+  const p = join(d, e); return statSync(p).isDirectory() ? walk(p) : p.endsWith('.ts') ? [p] : [];
+});
 describe('architecture guards', () => {
   it('no process.exit outside src/index.ts', () => {
-    const offenders = walk('src').filter((f) => f !== 'src/index.ts' && /process\.exit\s*\(/.test(readFileSync(f, 'utf8')));
-    expect(offenders).toEqual([]);
+    expect(walk('src').filter((f) => f !== 'src/index.ts' && /process\.exit\s*\(/.test(readFileSync(f, 'utf8')))).toEqual([]);
   });
-  it('src/core/services/ does not import logger, loadConfig, withConfigLock, or construct a client', () => {
-    const offenders = walk('src/core/services').filter((f) => {
+  it('src/core/services/ imports no logger/loadConfig/withConfigLock and constructs no client', () => {
+    expect(walk('src/core/services').filter((f) => {
       const s = readFileSync(f, 'utf8');
-      return /from '.*utils\/logger'/.test(s) || /\bloadConfig\b/.test(s) || /\bwithConfigLock\b/.test(s) || /new VocareumClient\(/.test(s);
-    });
-    expect(offenders).toEqual([]);
+      return /utils\/logger/.test(s) || /\bloadConfig\b/.test(s) || /\bwithConfigLock\b/.test(s) || /new VocareumClient\(/.test(s);
+    })).toEqual([]);
   });
 });
 ```
 
-- [ ] **Step 2: Run — expect failures listing every remaining offender.**
-
-Run: `npx vitest run test/unit/no-forbidden-imports.test.ts`
-Expected: FAIL — lists residual `logger`/`loadConfig`/etc. under services and any stray `process.exit`.
-
-- [ ] **Step 3: Fix each offender** — convert `UnknownFieldReporter` to take an `EventSink`; replace remaining `logger.*` in service-graph modules with event emissions; ensure services receive config/client via context, not by importing loaders. For any global-`logger` call you intentionally leave (only on a non-concurrent path, e.g. a pre-fan-out banner in a CLI wrapper, which is NOT under `src/core/services/`), document it in a comment.
-
-- [ ] **Step 4: Run full suite + typecheck + lint**
-
-Run: `npm test && npm run typecheck && npm run lint`
-Expected: PASS — guards green, all goldens unchanged.
-
+- [ ] **Step 2: Run — expect a list of offenders.**
+- [ ] **Step 3: Fix each** — `UnknownFieldReporter` takes an `EventSink`; replace residual service-graph `logger.*` with events; ensure no service imports a loader/lock/client. Any intentionally-retained global `logger` call must be in a CLI wrapper (outside `services/`) on a non-concurrent path, with a comment.
+- [ ] **Step 4: Run** `npm test && npm run typecheck && npm run lint` — guards green, goldens unchanged.
 - [ ] **Step 5: Commit** — `git commit -m "refactor: complete EventSink threading; add architecture grep guards"`
 
-### Task 17: GitHub Action smoke confirmation + release prep
+### Task 17: Composite-action smoke test + release notes
 
-**Files:**
-- Modify: `CHANGELOG.md` (add Stage 1a entry), verify `.github/` Action smoke workflow still passes
-- No code changes beyond docs
+**Files:** Create `test/integration/action-smoke.test.ts`; Modify `CHANGELOG.md`.
 
-- [ ] **Step 1: Run the full suite once more, including integration tests**
+**Interfaces:** A concrete smoke test (P2 #11 — today there is NO such test): build the CLI, then invoke the published-entry binary against the sample fixture to prove install+invoke works headlessly.
 
-Run: `npm test`
-Expected: PASS — unit, golden, and `test/integration/{publish,pull,root-context}.test.ts` all green (these are the higher-level behavior guards).
+- [ ] **Step 1: Write the smoke test**
 
-- [ ] **Step 2: Add a CHANGELOG entry** describing the internal refactor (no user-facing change) and the new injected-scheduler capability.
+```ts
+// test/integration/action-smoke.test.ts
+import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'child_process';
+describe('action smoke (built CLI)', () => {
+  it('runs `status` against the sample fixture and exits 0', () => {
+    const out = execFileSync('node', ['dist/index.js', 'status',
+      '--config', 'test/fixtures/sample-course/vocareum.yaml',
+      '--root', 'test/fixtures/sample-course'], { stdio: 'pipe' });
+    expect(String(out)).toMatch(/course/i);
+  });
+});
+```
 
-- [ ] **Step 3: Commit** — `git commit -m "docs: changelog for Stage 1a service-layer refactor (no user-facing change)"`
-
-- [ ] **Step 4: Canary note** — do NOT bump/publish here. Per spec §8, Stage 1a ships as its own release and soaks via a production canary before Stage 1b begins. Release (bump → commit → npm publish → Action tag) is a separate, explicit step per AGENTS.md constraint #10.
+- [ ] **Step 2: Run** `npm run build && npx vitest run test/integration/action-smoke.test.ts` — PASS.
+- [ ] **Step 3: Add a CHANGELOG entry** (internal refactor; no user-facing change; new injected-scheduler capability).
+- [ ] **Step 4: Commit** — `git commit -m "test+docs: composite-action smoke test; Stage 1a changelog"`
+- [ ] **Step 5: Canary note** — do NOT bump/publish here. Per spec §8, Stage 1a ships as its own release and soaks via a production canary before Stage 1b. Release (bump → commit → npm publish → Action tag) is a separate explicit step per AGENTS.md constraint #10.
 
 ---
 
 ## Self-Review
 
-**Spec coverage (spec §-by-§ → task):**
-- §1 operation-specific contexts → Task 7; offline `status` no-client → Tasks 7, 12; `RuntimeFacts` → Task 7/12.
-- §1 event sink + transitive scope (P1 #4) → Tasks 5, 13, 14, 15, 16.
-- §2 locked session / `updateConfig` delegation (P0 #3) → Task 8; operation-specific contracts → Tasks 12–15; pull per-item resolver (P0 #1) → Task 15.
-- §3 push plan/execute, CLI one-lock no-refetch (P0 #2 behavior), preconditions, `semanticFingerprint` (P0 #2) → Tasks 9, 14.
-- §4 planning-failure policy → returns-as-data contracts (Tasks 14/15); the org-runner policy itself is Stage 1b (out of scope here, correctly).
-- §5 single top-level exit, `parseAsync`, `CommandFailureError` (P2 #9) → Tasks 10, 11.
-- §6 injected scheduler param → Task 6.
-- §8 golden tests (stdout/stderr, exit, fs/config, prompts, API sequence) → Tasks 2–4 + preserved through 12–16; Action smoke + canary → Task 17.
+**Spec coverage:** §1 contexts/offline status/RuntimeFacts → Tasks 7,12; event sink + transitive scope (P1 #4) → 5,13,14,15,16. §2 locked session/`updateConfig` delegation → 8; operation-specific contracts → 12–15; pull per-item split resolver (P0 #1 prev round / this P0 #4) → 15. §3 push intent/plan/execute, preconditions, `semanticFingerprint` (P0 #1/#3) → 9,14; CLI one-lock no-refetch → 14 step 5. §4 planning-failure-as-data → 14,15 (org policy is Stage 1b). §5 single exit/`parseAsync`/`CommandFailureError`, no double-log (P1 #9), exit-code subprocess tests → 10,11. §6 injected scheduler → 6. §8 golden matrix (changed/cancel/failure/interactive/json-purity), preserved query strings (P1 #6), action smoke (P2 #11) → 1–4,17.
 
-**Placeholder scan:** No "TBD"/"handle edge cases"/"similar to Task N" — each task carries real code or exact targets. Three tasks (6, 9, 13/14 detail) include a "verify the real signature against file X" note because the exact upstream shape (scheduler options, entity fields) must be read at implementation time; the verification target is named, not deferred.
+**Review findings → fixes:** P0 #1 full-intent fingerprint → Task 9 + `PushIntent`. P0 #2 request objects → Task 7 `PushRequest`/`PullRequest` (consumed 14,15). P0 #3 plan uses `PushIntent`/`AssignmentIntent`, results reserve `CreatedEntity` → Tasks 9,14. P0 #4 split `resolveAction`/`resolveImportPath` → Task 15. P0 #5 `withSession` at `src/core/session.ts`, guard exempts it → Tasks 8,16. P1 #6 expanded goldens + query preservation → Tasks 1–4. P1 #7 `inspectStatus` returns data, json purity, RuntimeFacts authMode → Tasks 7,12. P1 #8 metadata forwarding → Task 5. P1 #9 one error owner, rethrow CommandFailureError, subprocess tests → Task 10. P1 #10 `publish()` internal non-interactive + callers updated → Task 14 step 4. P2 #11 concrete smoke test → Task 17.
 
-**Type consistency:** `EventSink`/`ServiceEvent` (Task 5) used identically in 12–16; `LockedSession.applyConfigUpdate` (Task 8) used in 14/15; `PushContext`/`PullContext`/`StatusContext` (Task 7) consumed in 12/13/14/15; `semanticFingerprint` (Task 9) consumed in 14; `CommandFailureError` (Task 10) consumed in 11. `publish()` is kept as a shim (Task 14) so the existing `test/integration/publish.test.ts` and `publishCommand` signatures remain valid.
+**Type consistency:** canonical types live in `src/core/services/types.ts` (Task 7), imported by 9,14,15. `PushPlan.intent: PushIntent` (not result types); `executePush` returns `PublishResult` (id-bearing). `LockedSession.applyConfigUpdate` (Task 8) used in 14,15. `RuntimeFacts.authMode` (Task 7) used in 12. `CommandFailureError` (Task 10) used in 11,12,13. `EventSink` (Task 5) used 12–16.
 
-**Known judgment calls for the executor:**
-- Tasks 14–16 are the largest; if any single task's diff grows beyond one reviewable unit, split per-module (publisher, then reconciler, then uploader) keeping goldens green between splits.
-- The exact `preconditions.remoteAssumptions` shape is minimal-by-design (per-assignment existence + part list for change-set assignments only); widen only if a golden reveals a missed assumption.
+**Judgment calls for the executor:** Tasks 14–16 are largest; split per-module (publisher → reconciler → uploader) keeping goldens green between splits if a diff exceeds one reviewable unit. `remoteAssumptions` stays minimal (existence + part list for change-set assignments) — widen only if a golden reveals a missed assumption.
