@@ -5,9 +5,10 @@
  */
 
 import { loadConfig } from '../core/config';
-import { validateStructure } from '../core/validator';
 import { resolveWorkspaceContext } from '../core/workspace';
-import { logger } from '../utils/logger';
+import { validateWorkspace } from '../core/services/validate-service';
+import { LoggerEventSink } from '../utils/logger-event-sink';
+import { InteractivePrompter } from '../core/services/context';
 import { CommandFailureError } from '../utils/command-failure';
 
 export interface ValidateOptions {
@@ -27,35 +28,34 @@ export async function validateCommand(options: ValidateOptions): Promise<void> {
     root: options.root,
   });
 
+  const events = new LoggerEventSink();
+
   try {
-    logger.info('Validating configuration...');
+    events.emit({ level: 'info', message: 'Validating configuration...' });
     const config = await loadConfig(configPath);
-    logger.success('Configuration is valid.');
+    events.emit({ level: 'success', message: 'Configuration is valid.' });
 
-    logger.info('Validating file structure...');
-    const result = await validateStructure(config, workspaceRoot);
+    const ctx = {
+      persistedConfig: config,
+      effectiveConfig: config,
+      configPath,
+      workspaceRoot,
+      events,
+      prompter: new InteractivePrompter(),
+    };
 
-    if (result.valid) {
-      logger.success('File structure is valid.');
-    } else {
-      logger.error('File structure validation failed:');
-    }
+    const report = await validateWorkspace(ctx);
 
-    if (result.errors.length > 0) {
-      result.errors.forEach(e => logger.error(`[${e.type}] ${e.message}`));
-    }
+    const hasErrors = report.errors.length > 0;
+    const hasWarnings = report.warnings.length > 0;
 
-    if (result.warnings.length > 0) {
-      result.warnings.forEach(w => logger.warn(`[${w.type}] ${w.message}`));
-    }
-
-    if (!result.valid || (options.strict === true && result.warnings.length > 0)) {
+    if (hasErrors || (options.strict === true && hasWarnings)) {
       throw new CommandFailureError('Validation failed', 1);
     }
 
   } catch (error) {
     if (error instanceof CommandFailureError) { throw error; }
-    logger.error(`Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    events.emit({ level: 'error', message: `Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}` });
     throw new CommandFailureError(`Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 1);
   }
 }
