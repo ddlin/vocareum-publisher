@@ -140,8 +140,14 @@ export function normalizeApiBaseUrl(baseUrl: string): string {
 /**
  * Validate a base URL is safe to send credentials to: HTTPS + an allowed
  * (host, version-path) pair, unless VOCAREUM_ALLOW_CUSTOM_BASE_URL=1.
+ *
+ * @param baseUrl - The base URL to validate
+ * @param events - Event sink for warnings (defaults to LoggerEventSink so
+ *   standalone callers still get console output, but VocareumClient passes its
+ *   injected sink so warnings are captured by a CollectingEventSink in Stage 1b)
  */
-export function assertAllowedBaseUrl(baseUrl: string): void {
+export function assertAllowedBaseUrl(baseUrl: string, events?: EventSink): void {
+  const sink: EventSink = events ?? new LoggerEventSink();
   const allowCustom = process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL === '1';
   let parsed: URL;
   try { parsed = new URL(baseUrl); } catch { throw new InsecureBaseUrlError(baseUrl); }
@@ -149,13 +155,13 @@ export function assertAllowedBaseUrl(baseUrl: string): void {
     if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
     // Non-HTTPS is only reachable with the explicit override; skip the path
     // allowlist check since TLS is already absent (dev/test escape hatch).
-    new LoggerEventSink().emit({ level: 'warn', message: `WARNING: Using non-HTTPS API URL: ${baseUrl}` });
+    sink.emit({ level: 'warn', message: `WARNING: Using non-HTTPS API URL: ${baseUrl}` });
     return;
   }
   const canonical = `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, '')}`;
   if (!ALLOWED_BASE_URLS.has(canonical)) {
     if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
-    new LoggerEventSink().emit({ level: 'warn', message: `WARNING: Using non-standard API base URL: ${canonical}. Your credentials will be sent to this host.` });
+    sink.emit({ level: 'warn', message: `WARNING: Using non-standard API base URL: ${canonical}. Your credentials will be sent to this host.` });
   }
 }
 
@@ -166,21 +172,28 @@ export function assertAllowedBaseUrl(baseUrl: string): void {
  * VOCAREUM_API_V3_BASE_URL pointed at the v2 host) slips past the union
  * allowlist. HTTPS + exact (host, version-path) match required, unless
  * VOCAREUM_ALLOW_CUSTOM_BASE_URL=1.
+ *
+ * @param baseUrl - The base URL to validate
+ * @param version - API version to validate against ('v2' or 'v3')
+ * @param events - Event sink for warnings (defaults to LoggerEventSink so
+ *   standalone callers still get console output, but VocareumClient passes its
+ *   injected sink so warnings are captured by a CollectingEventSink in Stage 1b)
  */
-export function assertBaseUrlForVersion(baseUrl: string, version: 'v2' | 'v3'): void {
+export function assertBaseUrlForVersion(baseUrl: string, version: 'v2' | 'v3', events?: EventSink): void {
+  const sink: EventSink = events ?? new LoggerEventSink();
   const allowed = version === 'v2' ? ALLOWED_V2_BASE_URLS : ALLOWED_V3_BASE_URLS;
   const allowCustom = process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL === '1';
   let parsed: URL;
   try { parsed = new URL(baseUrl); } catch { throw new InsecureBaseUrlError(baseUrl); }
   if (parsed.protocol !== 'https:') {
     if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
-    new LoggerEventSink().emit({ level: 'warn', message: `WARNING: Using non-HTTPS API URL: ${baseUrl}` });
+    sink.emit({ level: 'warn', message: `WARNING: Using non-HTTPS API URL: ${baseUrl}` });
     return;
   }
   const canonical = `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, '')}`;
   if (!allowed.has(canonical)) {
     if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
-    new LoggerEventSink().emit({ level: 'warn', message: `WARNING: Using non-standard ${version} API base URL: ${canonical}. Your credentials will be sent to this host.` });
+    sink.emit({ level: 'warn', message: `WARNING: Using non-standard ${version} API base URL: ${canonical}. Your credentials will be sent to this host.` });
   }
 }
 
@@ -318,10 +331,13 @@ export class VocareumClient {
   readonly events: EventSink;
 
   constructor(authProvider: AuthProvider, throttle: ResolvedThrottle = DEFAULT_THROTTLE, scheduler?: RequestScheduler, events?: EventSink) {
-    assertAllowedBaseUrl(authProvider.apiBaseUrl);
+    // Assign events FIRST so the injected sink (e.g. CollectingEventSink in
+    // Stage 1b) receives the base-URL validation warnings rather than a
+    // throwaway LoggerEventSink constructed inside the validators.
+    this.events = events ?? new LoggerEventSink();
+    assertAllowedBaseUrl(authProvider.apiBaseUrl, this.events);
     this.authProvider = authProvider;
     this.scheduler = scheduler ?? new RequestScheduler(throttle);
-    this.events = events ?? new LoggerEventSink();
     this.axios = axios.create({
       baseURL: authProvider.apiBaseUrl,
       timeout: 30000,
