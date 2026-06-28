@@ -3,6 +3,12 @@ import type { Config, HistorySettingChange, PartSettings } from '../../src/types
 import type { PublishOperationOptions, ReconciliationPlan } from '../../src/types/state';
 import type { VocareumClient } from '../../src/api/client';
 import { publish, pushSettingChange, buildPartSettingsPayload } from '../../src/core/publisher';
+import { executePush } from '../../src/core/services/push-service';
+import { semanticFingerprint } from '../../src/core/services/plan-fingerprint';
+import type { PushPlan } from '../../src/core/services/types';
+import type { LockedSession } from '../../src/core/session';
+import { CollectingEventSink } from '../../src/core/services/event-sink';
+import { NonInteractivePrompter } from '../../src/core/services/context';
 
 const {
   reconcileMock,
@@ -1562,5 +1568,162 @@ describe('publish — Fix #3: reporter threading through update-path reads', () 
       'assignments/lab1/parts/part1/settings/session_length': '60',
     });
     expect(history.settings_state).not.toHaveProperty('assignments/lab1/settings/nosubmit');
+  });
+});
+
+describe('executePush intent authority', () => {
+  it('executes the confirmed content directory and exact delete set, not reconciliation fields', async () => {
+    vi.clearAllMocks();
+    getCommitShaMock.mockResolvedValue('abc123');
+    getGitUserNameMock.mockResolvedValue('tester');
+    readDirectoryMock.mockResolvedValue({ 'keep.py': Buffer.from('keep') });
+    syncDirectoryMock.mockResolvedValue({
+      succeeded: ['keep.py'],
+      failed: [],
+      directoryHash: 'intent-hash',
+      deleted: ['approved.py'],
+    });
+
+    const config: Config = {
+      version: '1.0',
+      vocareum: {
+        org_id: '1',
+        course_id: '201303',
+        api_base_url: 'https://api.vocareum.com',
+      },
+      assignments: [{
+        assignment_id: 'a1',
+        name: 'Lab 1',
+        path: 'lab1',
+        parts: [{
+          part_id: 'p1',
+          path: 'part1',
+          directories: ['startercode'],
+        }],
+      }],
+      publish_history: [],
+      publish_options: { sync_deletes: true, exclude_patterns: [] },
+    };
+
+    // Deliberately disagree with the intent. Execution must use the intent's
+    // startercode directory and approved delete path, not this scripts value.
+    const reconciliation = {
+      config,
+      course: { type: 'skip' },
+      assignments: [{
+        type: 'update',
+        assignment: config.assignments[0],
+        parts: [{
+          type: 'update',
+          part: config.assignments[0].parts[0],
+          contentChanged: true,
+          changedDirectories: ['scripts'],
+        }],
+      }],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 1,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+      staleInConfig: [],
+    } as ReconciliationPlan;
+
+    const intent = {
+      assignments: [{
+        path: 'lab1',
+        name: 'Lab 1',
+        assignmentId: 'a1',
+        action: 'update' as const,
+        parts: [{
+          partId: 'p1',
+          path: 'part1',
+          contentHashes: { startercode: 'intent-hash' },
+          deletePaths: ['startercode/approved.py'],
+        }],
+      }],
+    };
+    const plan: PushPlan = {
+      intent,
+      preconditions: {
+        configDigest: 'config-hash',
+        contentHashes: { 'lab1/part1/startercode': 'intent-hash' },
+        assignmentIds: ['a1'],
+        partIds: ['p1'],
+        remoteAssumptions: [{
+          assignmentPath: 'lab1',
+          assignmentId: 'a1',
+          exists: true,
+          partIds: ['p1'],
+        }],
+      },
+      semanticFingerprint: semanticFingerprint(intent),
+      summary: '1 to update',
+      hasChanges: true,
+      execution: { reconciliation, workingConfig: config },
+    };
+
+    const applyConfigUpdate = vi.fn().mockResolvedValue(undefined);
+    await executePush(
+      { applyConfigUpdate } as unknown as LockedSession,
+      {
+        persistedConfig: config,
+        effectiveConfig: config,
+        configPath: 'vocareum.yaml',
+        workspaceRoot: process.cwd(),
+        events: new CollectingEventSink(),
+        prompter: new NonInteractivePrompter(),
+        client: {} as VocareumClient,
+      },
+      { syncDeletes: true },
+      plan,
+    );
+
+    expect(syncDirectoryMock).toHaveBeenCalledTimes(1);
+    expect(syncDirectoryMock.mock.calls[0][5]).toBe('startercode');
+    expect(syncDirectoryMock.mock.calls[0][6]).toMatchObject({
+      syncDeletes: true,
+      plannedDeletePaths: ['approved.py'],
+    });
+  });
+
+  it('rejects an intent modified after fingerprinting', async () => {
+    const intent = { assignments: [] };
+    const plan = {
+      intent,
+      preconditions: {
+        configDigest: 'config-hash',
+        contentHashes: {},
+        assignmentIds: [],
+        partIds: [],
+        remoteAssumptions: [],
+      },
+      semanticFingerprint: semanticFingerprint(intent),
+      summary: 'No changes',
+      hasChanges: false,
+      execution: {
+        reconciliation: {} as ReconciliationPlan,
+        workingConfig: {} as Config,
+      },
+    } satisfies PushPlan;
+    plan.intent.assignments.push({
+      path: 'changed',
+      name: 'Changed',
+      assignmentId: null,
+      action: 'create',
+      parts: [],
+    });
+
+    await expect(executePush(
+      {} as LockedSession,
+      {} as Parameters<typeof executePush>[1],
+      {},
+      plan,
+    )).rejects.toThrow(/intent changed after confirmation/);
   });
 });

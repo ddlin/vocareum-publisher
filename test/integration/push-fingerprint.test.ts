@@ -325,6 +325,19 @@ describe('push-fingerprint: deletePaths populated and shifts fingerprint (FIX 1b
     // deletePaths must be absent
     expect(plan.intent.assignments[0]?.parts[0]?.deletePaths).toBeUndefined();
   });
+
+  it('single-session CLI defers deletion resolution to preserve API-call order', async () => {
+    enqueueReconcileResponses();
+    const plan = await planPush(makeCtx(makeConfig()), {
+      syncDeletes: true,
+      deferDeleteResolution: true,
+    });
+
+    expect(recorder.sequence().filter((call) => call.includes('/files'))).toHaveLength(0);
+    const part = plan.intent.assignments[0]?.parts[0];
+    expect(part?.deletePaths).toBeUndefined();
+    expect(part?.reconcileDeleteDirectories).toEqual(['startercode']);
+  });
 });
 
 // ── fail-closed preconditions (FIX 2) ────────────────────────────────────────

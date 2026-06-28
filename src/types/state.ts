@@ -249,6 +249,11 @@ export interface UploadOptions {
   excludePatterns?: string[];
   forceAll?: boolean;
   syncDeletes?: boolean;
+  /**
+   * Exact remote-relative paths approved by the push intent for this directory.
+   * When supplied (including an empty array), syncDirectory must not relist.
+   */
+  plannedDeletePaths?: string[];
   concurrency?: number;
   /** Absolute confinement boundary for local reads (defaults to cwd) */
   workspaceRoot?: string;

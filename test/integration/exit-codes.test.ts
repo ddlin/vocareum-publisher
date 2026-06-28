@@ -1,9 +1,6 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'child_process';
 import { join } from 'path';
-import { ensureBuilt } from '../helpers/ensure-built';
-
-beforeAll(ensureBuilt, 120_000);
 
 const distIndex = join(__dirname, '../../dist/index.js');
 

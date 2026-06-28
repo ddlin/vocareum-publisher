@@ -1,4 +1,5 @@
-// src/core/services/types.ts (Task 7 creates this)
+import type { Config, PublishHistory } from '../../types/config';
+import type { ReconciliationPlan } from '../../types/state';
 
 // Per-invocation options (NOT in the context — the context is the durable
 // environment; the request is what this call does). Mirror today's options.
@@ -6,6 +7,12 @@ export interface PushRequest {
   dryRun?: boolean; nonInteractive?: boolean; autoCommit?: boolean;
   syncDeletes?: boolean; onMissingId?: 'skip' | 'abort'; abortOnError?: boolean;
   assignment?: string; part?: string; forceAll?: boolean; verbose?: boolean;
+  /**
+   * Internal single-session compatibility switch. The CLI resolves deletions
+   * after upload, preserving its historical API-call order. Detached callers
+   * omit this so exact delete paths are captured before confirmation.
+   */
+  deferDeleteResolution?: boolean;
 }
 export interface PullRequest {
   batch?: boolean; nonInteractive?: boolean; skipContent?: boolean;
@@ -21,10 +28,14 @@ export interface PartIntent {
   path: string;
   settingsPayload?: Record<string, unknown>;   // canonical settings to PUT
   contentHashes: Record<string, string>;       // per-directory hash of intended upload
-  deletePaths?: string[];                       // files to delete (sync-deletes)
+  /** Exact `directory/relative-path` files approved for deletion. Empty means none. */
+  deletePaths?: string[];
+  /** Deletion sets that can only be resolved after a new assignment is copied. */
+  reconcileDeleteDirectories?: string[];
 }
 export interface AssignmentIntent {
   path: string;
+  name: string;
   assignmentId: string | null;                 // null = create-from-template
   templateAssignmentId?: string;               // template assignment identity for creation
   templateCourseId?: string;                   // course the template lives in (cross-course creation)
@@ -58,4 +69,13 @@ export interface PushPlan {
   summary: string;
   /** True when there is at least one change to push (course, assignment, part, or ID discovery). */
   hasChanges: boolean;
+  /**
+   * Plain-data context needed for persistence and result reporting. Remote
+   * mutations remain governed by `intent`.
+   */
+  execution: {
+    reconciliation: ReconciliationPlan;
+    workingConfig: Config;
+    lastHistory?: PublishHistory;
+  };
 }

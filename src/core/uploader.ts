@@ -117,12 +117,23 @@ export async function syncDirectory(
     try {
       events.emit({ level: 'info', message: 'Syncing deletions...' });
 
-      // Get remote files
-      const remoteFiles = await listFiles(client, courseId, assignmentId, partId, directoryType, options.architecture);
-      const localFiles = await readLocalDirectory(localPath, options.excludePatterns);
-      const localFileSet = new Set(Object.keys(localFiles));
-
-      const filesToDelete = remoteFiles.filter(rf => !localFileSet.has(rf.path));
+      const filesToDelete = options.plannedDeletePaths !== undefined
+        ? options.plannedDeletePaths.map((path) => ({ path }))
+        : await (async (): Promise<Array<{ path: string }>> => {
+            // Creation-time reconciliation: no remote part existed when the
+            // intent was built, so resolve the deletion set now.
+            const remoteFiles = await listFiles(
+              client,
+              courseId,
+              assignmentId,
+              partId,
+              directoryType,
+              options.architecture,
+            );
+            const localFiles = await readLocalDirectory(localPath, options.excludePatterns);
+            const localFileSet = new Set(Object.keys(localFiles));
+            return remoteFiles.filter((remoteFile) => !localFileSet.has(remoteFile.path));
+          })();
 
       if (filesToDelete.length > 0) {
         events.emit({ level: 'info', message: `Deleting ${filesToDelete.length} files...` });

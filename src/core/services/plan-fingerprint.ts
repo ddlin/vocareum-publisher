@@ -51,6 +51,7 @@ export function semanticFingerprint(intent: PushIntent): string {
   const canonicalIntentStructure = {
     assignments: sortedAssignments.map(assignment => ({
       path: assignment.path,
+      name: assignment.name,
       assignmentId: assignment.assignmentId,
       templateAssignmentId: assignment.templateAssignmentId,
       templateCourseId: assignment.templateCourseId,
@@ -64,6 +65,9 @@ export function semanticFingerprint(intent: PushIntent): string {
           contentHashes: part.contentHashes,
           settingsPayload: part.settingsPayload,
           deletePaths: part.deletePaths ? [...part.deletePaths].sort() : undefined,
+          reconcileDeleteDirectories: part.reconcileDeleteDirectories
+            ? [...part.reconcileDeleteDirectories].sort()
+            : undefined,
         })),
     })),
   };

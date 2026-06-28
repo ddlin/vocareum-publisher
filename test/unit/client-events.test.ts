@@ -9,10 +9,24 @@
  * sink that is unreachable by Stage 1b's per-course output collection.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { VocareumClient } from '../../src/api/client';
 import { CollectingEventSink } from '../../src/core/services/event-sink';
 import { LoggerEventSink } from '../../src/utils/logger-event-sink';
+import { TokenAuthProvider } from '../../src/api/auth/token-auth-provider';
+
+const { loggerWarn } = vi.hoisted(() => ({ loggerWarn: vi.fn() }));
+vi.mock('../../src/utils/logger', () => ({
+  logger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: loggerWarn,
+    error: vi.fn(),
+    success: vi.fn(),
+    plain: vi.fn(),
+    newline: vi.fn(),
+  },
+}));
 
 /**
  * A minimal AuthProvider stub with a custom (non-standard) HTTPS base URL.
@@ -32,6 +46,7 @@ describe('VocareumClient event-sink isolation', () => {
   const ORIGINAL_ENV = process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL;
 
   afterEach(() => {
+    loggerWarn.mockClear();
     // Restore env var after each test regardless of test outcome.
     if (ORIGINAL_ENV === undefined) {
       delete process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL;
@@ -108,5 +123,21 @@ describe('VocareumClient event-sink isolation', () => {
     expect(() => {
       new VocareumClient(authProvider, undefined, undefined, collecting);
     }).toThrow();
+  });
+
+  it('routes auth-provider validation through the same injected sink', () => {
+    process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL = '1';
+    const collecting = new CollectingEventSink();
+    const provider = new TokenAuthProvider(
+      'dummy-token',
+      'https://custom.example.com',
+      collecting,
+    );
+    new VocareumClient(provider, undefined, undefined, collecting);
+
+    const captured: Array<{ level: string }> = [];
+    collecting.flushTo({ emit(event) { captured.push({ level: event.level }); } });
+    expect(captured.filter((event) => event.level === 'warn').length).toBeGreaterThan(0);
+    expect(loggerWarn).not.toHaveBeenCalled();
   });
 });

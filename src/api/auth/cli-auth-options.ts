@@ -1,6 +1,7 @@
 import { Command, Option } from 'commander';
 import { createAuthProvider } from './auth-provider';
 import type { AuthProvider } from './auth-provider';
+import type { EventSink } from '../../core/services/event-sink';
 
 export interface AuthCliOptions {
   auth?: string;
@@ -17,11 +18,16 @@ export function addAuthOptions(cmd: Command): Command {
 }
 
 /** Resolve an AuthProvider from CLI options + config base URL. */
-export function resolveAuthProvider(options: AuthCliOptions, apiBaseUrl: string | undefined): AuthProvider {
+export function resolveAuthProvider(
+  options: AuthCliOptions,
+  apiBaseUrl: string | undefined,
+  events?: EventSink,
+): AuthProvider {
   return createAuthProvider({
     authMode: options.auth,
     clientId: options.clientId,
     clientSecret: options.clientSecret,
     apiBaseUrl,
+    events,
   });
 }

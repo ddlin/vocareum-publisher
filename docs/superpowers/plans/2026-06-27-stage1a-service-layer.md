@@ -35,6 +35,7 @@ export interface PushRequest {
   dryRun?: boolean; nonInteractive?: boolean; autoCommit?: boolean;
   syncDeletes?: boolean; onMissingId?: 'skip' | 'abort'; abortOnError?: boolean;
   assignment?: string; part?: string; forceAll?: boolean; verbose?: boolean;
+  deferDeleteResolution?: boolean;             // internal: single-session CLI only
 }
 export interface PullRequest {
   batch?: boolean; nonInteractive?: boolean; skipContent?: boolean;
@@ -50,17 +51,23 @@ export interface PartIntent {
   path: string;
   settingsPayload?: Record<string, unknown>;   // canonical settings to PUT
   contentHashes: Record<string, string>;       // per-directory hash of intended upload
-  deletePaths?: string[];                       // files to delete (sync-deletes)
+  deletePaths?: string[];                       // exact approved directory/path deletions
+  reconcileDeleteDirectories?: string[];       // post-create or single-session policy
 }
 export interface AssignmentIntent {
   path: string;
+  name: string;
   assignmentId: string | null;                 // null = create-from-template
-  templateAssignmentId?: string;               // template identity for creation
+  templateAssignmentId?: string;               // template assignment identity
+  templateCourseId?: string;                   // cross-course template identity
   action: AssignmentAction;
   settingsPayload?: Record<string, unknown>;
   parts: PartIntent[];
 }
-export interface PushIntent { assignments: AssignmentIntent[]; }
+export interface PushIntent {
+  assignments: AssignmentIntent[];
+  courseSettings?: Record<string, unknown>;
+}
 
 export interface RemoteAssumption {
   assignmentPath: string;
@@ -80,6 +87,12 @@ export interface PushPlan {
   preconditions: PushPreconditions;
   semanticFingerprint: string;                 // hash of the WHOLE intent (Task 9)
   summary: string;
+  hasChanges: boolean;
+  execution: {                                 // plain-data persistence/reporting context
+    reconciliation: ReconciliationPlan;
+    workingConfig: Config;
+    lastHistory?: PublishHistory;
+  };
 }
 ```
 
@@ -439,7 +452,7 @@ Keep today's per-command error text (e.g. push action keeps "Unhandled error" on
 **Files:** Create `src/core/services/push-service.ts`; Modify `src/core/publisher.ts` (split `publish` at [255](../../../src/core/publisher.ts#L255)), `src/commands/publish.ts`, and add an `EventSink` param to `reconciler.ts`/`uploader.ts`/`publisher.ts` public fns (default `LoggerEventSink`).
 
 **Interfaces:** Produces:
-- `function planPush(ctx: PushContext, req: PushRequest): Promise<PushPlan>` — READ-ONLY: reconcile → build a `PushIntent` (with settings payloads + per-dir content hashes + delete paths + template ids), compute `PushPreconditions` (configDigest, contentHashes, ids, `remoteAssumptions` incl. `exists:false` for planned creates), and `semanticFingerprint(intent)`. Only GETs; no mutation. Honors `req` (filters/forceAll/syncDeletes/dryRun affect what the intent contains).
+- `function planPush(ctx: PushContext, req: PushRequest): Promise<PushPlan>` — READ-ONLY: reconcile → build a `PushIntent` (with settings payloads + per-dir content hashes + exact delete paths where the remote resource already exists, a fingerprinted reconcile-after-create policy otherwise, and template ids), compute `PushPreconditions` (configDigest, contentHashes, ids, `remoteAssumptions` incl. `exists:false` for planned creates), and `semanticFingerprint(intent)`. Only GETs; no mutation. Honors `req` (filters/forceAll/syncDeletes/dryRun affect what the intent contains). The single-session CLI sets `deferDeleteResolution:true` so its historical post-upload list call remains in the same position; detached callers omit it and capture exact existing-resource deletes before confirmation.
 - `function executePush(session: LockedSession, ctx: PushContext, req: PushRequest, plan: PushPlan): Promise<PublishResult>` — applies `plan.intent` (creates get their new IDs HERE, populating `PublishResult.created` with real IDs — P0 #3), writes state via `session.applyConfigUpdate`. `PublishResult` (with `id`-bearing `CreatedEntity`/`UpdatedEntity`) is the RESULT type, distinct from the plan.
 
 - [ ] **Step 1: Write the failing test** — with `RecordingClient`: `planPush` records **only GETs**, returns a `PushPlan` whose `intent` reflects a changed directory and whose `semanticFingerprint` is set and `preconditions.configDigest` non-empty; then `executePush` in a stub session records PUTs, returns a `PublishResult` whose `created` entries carry real IDs, and calls `applyConfigUpdate` once.

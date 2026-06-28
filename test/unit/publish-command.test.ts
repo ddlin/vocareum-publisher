@@ -131,6 +131,7 @@ describe('publishCommand option wiring', () => {
       forceAll: true,
       onMissingId: 'abort',
       abortOnError: true,
+      deferDeleteResolution: true,
     });
 
     // planPush is called with a PushContext and PushRequest

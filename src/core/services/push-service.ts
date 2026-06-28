@@ -11,10 +11,11 @@
 
 import * as path from 'path';
 import { createHash } from 'node:crypto';
-import type { Config, PublishHistory, PartSettings } from '../../types/config';
+import type { Config, PublishHistory, PartSettings, DirectoryType } from '../../types/config';
 import { normalizeSubmissionFilters, nullToUndefined } from '../../types/config';
 import type {
   AssignmentSettingsPayload,
+  PartSettingsPayload,
   VocareumAssignmentResponse,
   VocareumPartResponse,
 } from '../../types/api';
@@ -42,6 +43,62 @@ import type { LockedSession } from '../session';
 import type { PushRequest, PushPlan, PushIntent, PushPreconditions, AssignmentIntent, PartIntent } from './types';
 import { semanticFingerprint } from './plan-fingerprint';
 
+function validateExecutableIntent(plan: PushPlan): void {
+  const actionableAssignments = plan.execution.reconciliation.assignments.filter(
+    (action) => action.type === 'create' || action.type === 'update',
+  );
+  const actionsByPath = new Map(
+    actionableAssignments.map((action) => [action.assignment.path, action]),
+  );
+
+  if (actionsByPath.size !== plan.intent.assignments.length) {
+    throw new Error('Push intent does not match the planned assignment mutation set');
+  }
+
+  for (const assignmentIntent of plan.intent.assignments) {
+    const action = actionsByPath.get(assignmentIntent.path);
+    if (action === undefined) {
+      throw new Error(`Push intent does not match assignment "${assignmentIntent.path}"`);
+    }
+    if (action.type !== assignmentIntent.action) {
+      throw new Error(`Push intent does not match assignment "${assignmentIntent.path}"`);
+    }
+    if (action.assignment.name !== assignmentIntent.name) {
+      throw new Error(`Push intent assignment name changed for "${assignmentIntent.path}"`);
+    }
+    if (
+      assignmentIntent.action === 'update' &&
+      action.assignment.assignment_id !== assignmentIntent.assignmentId
+    ) {
+      throw new Error(`Push intent assignment ID changed for "${assignmentIntent.path}"`);
+    }
+
+    const actionableParts = action.parts.filter((partAction) => partAction.type !== 'skip');
+    const partActionsByPath = new Map(
+      actionableParts.map((partAction) => [partAction.part.path, partAction]),
+    );
+    if (partActionsByPath.size !== assignmentIntent.parts.length) {
+      throw new Error(`Push intent does not match parts for "${assignmentIntent.path}"`);
+    }
+    for (const partIntent of assignmentIntent.parts) {
+      const partAction = partActionsByPath.get(partIntent.path);
+      if (partAction === undefined) {
+        throw new Error(
+          `Push intent does not match part "${assignmentIntent.path}/${partIntent.path}"`
+        );
+      }
+      if (
+        assignmentIntent.action === 'update' &&
+        partAction.part.part_id !== partIntent.partId
+      ) {
+        throw new Error(
+          `Push intent part ID changed for "${assignmentIntent.path}/${partIntent.path}"`
+        );
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers — imported from payload-helpers (no cycle: push-service ← payload-helpers)
 // ---------------------------------------------------------------------------
@@ -57,22 +114,6 @@ import {
   collectSettingsState,
   withoutUndefined,
 } from '../payload-helpers';
-
-// ---------------------------------------------------------------------------
-// Internal extended plan type (not part of the public PushPlan interface)
-// ---------------------------------------------------------------------------
-
-/** Extended plan that carries the reconciliation artefacts planPush needs to pass to executePush */
-interface ExtendedPushPlan extends PushPlan {
-  /** @internal */
-  _reconPlan: Awaited<ReturnType<typeof reconcile>>;
-  /** @internal */
-  _workingConfig: Config;
-  /** @internal */
-  _lastHistory: PublishHistory | undefined;
-  /** @internal */
-  _hasChanges: boolean;
-}
 
 // ---------------------------------------------------------------------------
 // planPush — READ-ONLY
@@ -192,15 +233,9 @@ export async function planPush(
 
   // Build PushIntent from the reconciliation plan.
   //
-  // Intent + _reconPlan both derive from the same immutable reconPlan snapshot
-  // produced in this planPush call.  executePush drives off _reconPlan directly
-  // (same mutation set), while the intent is the complete, faithful projection
-  // of that snapshot for fingerprinting, audit, and Stage-1b confirmation.
-  //
-  // executePush currently consumes the immutable _reconPlan snapshot this intent
-  // is derived from (same reconcile() call), so intent and execution cannot
-  // diverge in-process; full re-point of executePush onto the public intent is
-  // Stage 1b Task 1.
+  // The intent is the authoritative mutation contract. The reconciliation
+  // snapshot is retained only as plain-data context for persistence, reporting,
+  // and mapping IDs returned by assignment creation.
   const intentAssignments: AssignmentIntent[] = [];
   // Accumulate local directory hashes for preconditions (same values as intent contentHashes).
   const preconditionContentHashes: Record<string, string> = {};
@@ -210,7 +245,11 @@ export async function planPush(
 
     // Build assignment-level settings payload (mirrors executePush ~line 506-534).
     let assignmentSettingsPayload: Record<string, unknown> | undefined;
-    if (action.type === 'update' && action.assignmentMetadataChanged === true) {
+    if (
+      action.type === 'update' &&
+      action.assignmentMetadataChanged === true &&
+      shouldSyncAssignmentSettings(workingConfig, action.assignment)
+    ) {
       const asnSettings = action.assignment.settings;
       const knownPayload: Record<string, unknown> = { name: action.assignment.name };
       if (asnSettings) {
@@ -272,7 +311,11 @@ export async function planPush(
 
       // Part-level settings payload (mirrors executePush ~line 660).
       let partSettingsPayload: Record<string, unknown> | undefined;
-      if (partAction.metadataChanged === true && action.willCreate !== true) {
+      if (
+        partAction.metadataChanged === true &&
+        action.willCreate !== true &&
+        shouldSyncPartSettings(workingConfig, action.assignment, partAction.part)
+      ) {
         partSettingsPayload = buildPartSettingsPayload(
           partAction.part.name ?? partAction.part.path,
           partAction.part.settings,
@@ -280,48 +323,54 @@ export async function planPush(
         );
       }
 
-      // Populate deletePaths ONLY when syncDeletes is requested.
-      // Gate is strict: zero new API calls are made when req.syncDeletes !== true.
-      // Skipped for creates (no remote yet) and when either ID is absent.
+      // Existing parts get an exact approved deletion set. New assignments have
+      // no remote part yet, so the intent records the directories whose delete
+      // sets must be reconciled after creation.
       let deletePaths: string[] | undefined;
+      let reconcileDeleteDirectories: string[] | undefined;
       if (
         req.syncDeletes === true &&
-        action.willCreate !== true &&
-        action.assignment.assignment_id !== null &&
-        action.assignment.assignment_id !== undefined &&
-        partAction.part.part_id !== null &&
-        partAction.part.part_id !== undefined
+        (partAction.changedDirectories?.length ?? 0) > 0
       ) {
         const allDirsToCheck = partAction.changedDirectories ?? [];
-        if (allDirsToCheck.length > 0) {
+        if (action.willCreate === true || req.deferDeleteResolution === true) {
+          reconcileDeleteDirectories = [...allDirsToCheck];
+        } else if (
+          action.assignment.assignment_id !== null &&
+          action.assignment.assignment_id !== undefined &&
+          partAction.part.part_id !== null &&
+          partAction.part.part_id !== undefined
+        ) {
           deletePaths = [];
           for (const dir of allDirsToCheck) {
             const dirKey = path.join(action.assignment.path, partAction.part.path, dir);
             const localDirPath = path.resolve(workspaceRoot, dirKey);
+            let remoteFiles: Awaited<ReturnType<typeof listFiles>>;
+            let localFiles: Awaited<ReturnType<typeof readLocalDirectory>>;
             try {
-              const [remoteFiles, localFiles] = await Promise.all([
+              [remoteFiles, localFiles] = await Promise.all([
                 listFiles(
                   ctx.client,
                   workingConfig.vocareum.course_id,
                   action.assignment.assignment_id,
                   partAction.part.part_id,
                   dir,
-                  ctx.persistedConfig.vocareum.architecture,
+                  workingConfig.vocareum.architecture,
                 ),
                 readLocalDirectory(localDirPath, effectiveExcludePatterns),
               ]);
-              const localFileSet = new Set(Object.keys(localFiles));
-              for (const rf of remoteFiles) {
-                if (!localFileSet.has(rf.path)) {
-                  deletePaths.push(path.join(dir, rf.path));
-                }
+            } catch (err) {
+              throw new Error(
+                `Cannot compute push intent: failed to resolve deletions for "${dirKey}": ${err instanceof Error ? err.message : String(err)}`
+              );
+            }
+            const localFileSet = new Set(Object.keys(localFiles));
+            for (const remoteFile of remoteFiles) {
+              if (!localFileSet.has(remoteFile.path)) {
+                deletePaths.push(path.posix.join(dir, remoteFile.path.replace(/\\/g, '/')));
               }
-            } catch {
-              // If listing fails, deletePaths stays empty for this dir — execution
-              // will attempt the sync anyway and encounter the same error.
             }
           }
-          if (deletePaths.length === 0) { deletePaths = undefined; }
         }
       }
 
@@ -331,11 +380,13 @@ export async function planPush(
         contentHashes,
         ...(partSettingsPayload !== undefined ? { settingsPayload: partSettingsPayload } : {}),
         ...(deletePaths !== undefined ? { deletePaths } : {}),
+        ...(reconcileDeleteDirectories !== undefined ? { reconcileDeleteDirectories } : {}),
       });
     }
 
     intentAssignments.push({
       path: action.assignment.path,
+      name: action.assignment.name,
       assignmentId: action.assignment.assignment_id ?? null,
       templateAssignmentId: action.templateId,
       ...(action.templateCourseId !== undefined ? { templateCourseId: action.templateCourseId } : {}),
@@ -351,7 +402,8 @@ export async function planPush(
   if (
     reconPlan.course.type === 'update' &&
     workingConfig.vocareum.course_settings &&
-    reconPlan.summary.coursesToUpdate > 0
+    reconPlan.summary.coursesToUpdate > 0 &&
+    shouldSyncCourseSettings(workingConfig)
   ) {
     courseSettingsPayload = {
       name: workingConfig.vocareum.course_settings.name,
@@ -401,16 +453,17 @@ export async function planPush(
   if (reconPlan.summary.assignmentsToSkip > 0) { summaryParts.push(`${reconPlan.summary.assignmentsToSkip} unchanged`); }
   const summary = summaryParts.length > 0 ? summaryParts.join(', ') : 'No changes';
 
-  const plan: ExtendedPushPlan = {
+  const plan: PushPlan = {
     intent,
     preconditions,
     semanticFingerprint: fingerprint,
     summary,
     hasChanges,
-    _reconPlan: reconPlan,
-    _workingConfig: workingConfig,
-    _lastHistory: lastHistory,
-    _hasChanges: hasChanges,
+    execution: {
+      reconciliation: reconPlan,
+      workingConfig,
+      ...(lastHistory !== undefined ? { lastHistory } : {}),
+    },
   };
   return plan;
 }
@@ -430,10 +483,13 @@ export async function executePush(
   plan: PushPlan,
   reporter?: UnknownFieldReporter,
 ): Promise<PublishResult> {
-  const extPlan = plan as ExtendedPushPlan;
-  const reconPlan = extPlan._reconPlan;
-  const workingConfig = extPlan._workingConfig;
-  const lastHistory = extPlan._lastHistory;
+  if (semanticFingerprint(plan.intent) !== plan.semanticFingerprint) {
+    throw new Error('Push plan intent changed after confirmation; refusing to execute');
+  }
+  validateExecutableIntent(plan);
+  const reconPlan = plan.execution.reconciliation;
+  const workingConfig = plan.execution.workingConfig;
+  const lastHistory = plan.execution.lastHistory;
   const { workspaceRoot, configPath, events } = ctx;
   const abortOnError = req.abortOnError ?? false;
 
@@ -452,7 +508,7 @@ export async function executePush(
   }
 
   // No changes
-  if (!extPlan._hasChanges) {
+  if (!plan.hasChanges) {
     events.emit({ level: 'success', message: 'No changes detected. Everything is up to date.' });
     return {
       success: true,
@@ -494,18 +550,21 @@ export async function executePush(
   const settingChanges: HistorySettingChange[] = [];
   const fileChanges: HistoryFileChange[] = [];
   const fileSizeState: Record<string, number> = { ...(lastHistory?.file_size_state ?? {}) };
+  const intentAssignmentsByPath = new Map(
+    plan.intent.assignments.map((assignmentIntent) => [assignmentIntent.path, assignmentIntent]),
+  );
 
   // Course updates
-  if (
-    reconPlan.course.type === 'update' &&
-    workingConfig.vocareum.course_settings &&
-    shouldSyncCourseSettings(workingConfig)
-  ) {
+  if (plan.intent.courseSettings !== undefined) {
     try {
       events.emit({ level: 'info', message: 'Updating course settings...' });
       await updateCourse(ctx.client, workingConfig.vocareum.course_id, {
-        name: workingConfig.vocareum.course_settings.name,
-        description: workingConfig.vocareum.course_settings.description,
+        name: typeof plan.intent.courseSettings.name === 'string'
+          ? plan.intent.courseSettings.name
+          : undefined,
+        description: typeof plan.intent.courseSettings.description === 'string'
+          ? plan.intent.courseSettings.description
+          : undefined,
       });
       events.emit({ level: 'success', message: 'Course settings updated' });
     } catch (error) {
@@ -536,8 +595,23 @@ export async function executePush(
       continue;
     }
 
-    if (action.type === 'create' && action.willCreate === true) {
-      if (!action.templateId) {
+    const assignmentIntent = intentAssignmentsByPath.get(action.assignment.path);
+    if (action.type === 'skip') {
+      for (const partAction of action.parts) {
+        result.skipped.push({
+          type: 'part',
+          id: partAction.part.part_id ?? 'unknown',
+          reason: 'No changes',
+        });
+      }
+      continue;
+    }
+    if (assignmentIntent === undefined) {
+      throw new Error(`Push intent is missing assignment "${action.assignment.path}"`);
+    }
+
+    if (assignmentIntent.action === 'create') {
+      if (assignmentIntent.templateAssignmentId === undefined) {
         events.emit({ level: 'error', message: `Cannot create assignment "${action.assignment.name}": No template ID configured.` });
         events.emit({ level: 'error', message: '' });
         events.emit({ level: 'error', message: 'To fix, add a template to your vocareum.yaml:' });
@@ -557,10 +631,10 @@ export async function executePush(
         events.emit({ level: 'info', message: `Creating assignment: ${action.assignment.name}` });
         const copyResult = await copyAssignment(
           ctx.client,
-          action.templateId,
-          action.assignment.name,
+          assignmentIntent.templateAssignmentId,
+          assignmentIntent.name,
           workingConfig.vocareum.course_id,
-          action.templateCourseId,
+          assignmentIntent.templateCourseId,
         );
         events.emit({ level: 'success', message: `Created assignment ${action.assignment.name} (${copyResult.assignment_id})` });
 
@@ -598,8 +672,8 @@ export async function executePush(
         result.success = false;
         continue;
       }
-    } else if (action.type === 'update') {
-      const updateId = action.assignment.assignment_id;
+    } else if (assignmentIntent.action === 'update') {
+      const updateId = assignmentIntent.assignmentId;
       if (!updateId) {
         events.emit({ level: 'error', message: `Update action for "${action.assignment.name}" has no assignment_id - skipping` });
         result.failed.push({ type: 'assignment', id: action.assignment.name, error: 'Missing assignment_id on update' });
@@ -616,20 +690,15 @@ export async function executePush(
         configChanged = true;
       }
 
-      if (
-        action.assignmentMetadataChanged === true &&
-        shouldSyncAssignmentSettings(workingConfig, action.assignment) &&
-        action.assignment.assignment_id !== null &&
-        action.assignment.assignment_id !== ''
-      ) {
+      if (assignmentIntent.settingsPayload !== undefined) {
         try {
           const remoteAssignment = await getAssignment(
             ctx.client,
             workingConfig.vocareum.course_id,
-            action.assignment.assignment_id,
+            updateId,
           );
           if (reporter) {
-            mapAssignmentSettings(remoteAssignment, reporter, action.assignment.assignment_id);
+            mapAssignmentSettings(remoteAssignment, reporter, updateId);
           }
           const asnSettings = action.assignment.settings;
           const assignmentKeys: (keyof NonNullable<AssignmentSettings>)[] = [
@@ -640,7 +709,7 @@ export async function executePush(
 
           pushSettingChange(settingChanges, {
             scope: 'assignment',
-            assignment_id: action.assignment.assignment_id,
+            assignment_id: updateId,
             assignment_name: action.assignment.name,
             field: 'name',
             from: remoteAssignment.name,
@@ -652,7 +721,7 @@ export async function executePush(
             const fromValue = remoteAssignment[key as keyof VocareumAssignmentResponse];
             pushSettingChange(settingChanges, {
               scope: 'assignment',
-              assignment_id: action.assignment.assignment_id,
+              assignment_id: updateId,
               assignment_name: action.assignment.name,
               field: key,
               from: fromValue,
@@ -686,15 +755,14 @@ export async function executePush(
             events,
           );
           const hasFilteredUnknowns = Object.keys(filteredAsnUnknowns).length > 0;
-          const fullAssignmentPayload: AssignmentSettingsPayload = hasFilteredUnknowns
-            ? { ...knownAssignmentPayload, ...filteredAsnUnknowns }
-            : knownAssignmentPayload;
+          const fullAssignmentPayload =
+            assignmentIntent.settingsPayload as AssignmentSettingsPayload;
 
           try {
             await updateAssignment(
               ctx.client,
               workingConfig.vocareum.course_id,
-              action.assignment.assignment_id,
+              updateId,
               fullAssignmentPayload,
             );
           } catch (error) {
@@ -708,30 +776,40 @@ export async function executePush(
             await updateAssignment(
               ctx.client,
               workingConfig.vocareum.course_id,
-              action.assignment.assignment_id,
+              updateId,
               knownAssignmentPayload,
             );
           }
           events.emit({ level: 'success', message: `Updated assignment metadata: ${action.assignment.name}` });
         } catch (error) {
           events.emit({ level: 'error', message: `Failed to update assignment metadata for ${action.assignment.name}`, data: { error } });
-          result.failed.push({ type: 'assignment', id: action.assignment.assignment_id, error });
+          result.failed.push({ type: 'assignment', id: updateId, error });
           result.success = false;
           if (abortOnError) { shouldAbort = true; break assignmentLoop; }
         }
       }
     }
 
+    const partIntentsByPath = new Map(
+      assignmentIntent.parts.map((partIntent) => [partIntent.path, partIntent]),
+    );
+
     // Parts & content
     for (const partAction of action.parts) {
       if (shouldAbort) { break assignmentLoop; }
 
-      if (partAction.type === 'skip') {
+      const partIntent = partIntentsByPath.get(partAction.part.path);
+      if (partIntent === undefined && partAction.type === 'skip') {
         result.skipped.push({ type: 'part', id: partAction.part.part_id ?? 'unknown', reason: 'No changes' });
         continue;
       }
+      if (partIntent === undefined) {
+        throw new Error(
+          `Push intent is missing part "${action.assignment.path}/${partAction.part.path}"`
+        );
+      }
 
-      const partId = partAction.part.part_id;
+      const partId = partIntent.partId ?? partAction.part.part_id;
       if (partId === null || partId === '') {
         events.emit({ level: 'error', message: `Part ${partAction.part.name} has no ID, skipping` });
         result.failed.push({ type: 'part', id: partAction.part.name ?? 'unknown', error: 'No Part ID' });
@@ -740,11 +818,7 @@ export async function executePush(
 
       let partWasUpdated = false;
 
-      if (
-        partAction.metadataChanged === true &&
-        action.willCreate !== true &&
-        shouldSyncPartSettings(workingConfig, action.assignment, partAction.part)
-      ) {
+      if (partIntent.settingsPayload !== undefined && assignmentIntent.action !== 'create') {
         const partName = partAction.part.name ?? partAction.part.path;
         const partSettings = partAction.part.settings;
         const assignmentId = action.assignment.assignment_id;
@@ -814,7 +888,7 @@ export async function executePush(
             }
           }
 
-          const fullPayload = buildPartSettingsPayload(partName, partSettings, 'full', events);
+          const fullPayload = partIntent.settingsPayload as PartSettingsPayload;
           try {
             await updatePart(ctx.client, workingConfig.vocareum.course_id, assignmentId, partId, fullPayload);
           } catch (error) {
@@ -852,9 +926,12 @@ export async function executePush(
         }
       }
 
-      // Upload content
-      if (partAction.contentChanged && partAction.changedDirectories) {
-        const uploadAssignmentId = action.assignment.assignment_id;
+      // Upload exactly the directories represented by the confirmed intent.
+      const contentDirectories = Object.keys(partIntent.contentHashes) as DirectoryType[];
+      if (contentDirectories.length > 0) {
+        const uploadAssignmentId = assignmentIntent.action === 'create'
+          ? action.assignment.assignment_id
+          : assignmentIntent.assignmentId;
         if (!uploadAssignmentId) {
           events.emit({ level: 'error', message: `Cannot upload content for "${action.assignment.name}": missing assignment ID` });
           result.failed.push({ type: 'part', id: partId, error: 'Assignment has no ID for content upload' });
@@ -862,7 +939,7 @@ export async function executePush(
           if (abortOnError) { shouldAbort = true; break assignmentLoop; }
           continue;
         }
-        for (const dir of partAction.changedDirectories) {
+        for (const dir of contentDirectories) {
           try {
             const dirKey = path.join(action.assignment.path, partAction.part.path, dir);
             const localDirPath = path.resolve(workspaceRoot, dirKey);
@@ -874,6 +951,14 @@ export async function executePush(
               localDirPath,
               effectiveExcludePatterns,
             );
+            const deletePrefix = `${dir}/`;
+            const plannedDeletePaths = partIntent.deletePaths?.filter(
+              (deletePath) => deletePath.startsWith(deletePrefix),
+            ).map((deletePath) => deletePath.slice(deletePrefix.length));
+            const reconcileDeletes =
+              partIntent.reconcileDeleteDirectories?.includes(dir) === true;
+            const syncDeletes = plannedDeletePaths !== undefined || reconcileDeletes;
+
             const uploadRes = await syncDirectory(
               ctx.client,
               workingConfig.vocareum.course_id,
@@ -882,7 +967,8 @@ export async function executePush(
               localDirPath,
               dir,
               {
-                syncDeletes: req.syncDeletes,
+                syncDeletes,
+                ...(plannedDeletePaths !== undefined ? { plannedDeletePaths } : {}),
                 excludePatterns: effectiveExcludePatterns,
                 architecture: ctx.persistedConfig.vocareum.architecture,
                 workspaceRoot,

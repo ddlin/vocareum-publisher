@@ -25,12 +25,14 @@ import {
   getApiKeyOrThrow, getOAuthClientId, getOAuthClientSecret,
   getAuthModeEnv, getV3ApiBaseUrl, getOAuthTokenUrl,
 } from '../../utils/env';
+import type { EventSink } from '../../core/services/event-sink';
 
 export interface CreateAuthProviderOptions {
   authMode?: string;         // validated here; from --auth or VOCAREUM_AUTH_MODE
   clientId?: string;
   clientSecret?: string;
   apiBaseUrl?: string;       // v2 base from config.vocareum.api_base_url
+  events?: EventSink;
 }
 
 export function createAuthProvider(opts: CreateAuthProviderOptions): AuthProvider {
@@ -51,7 +53,12 @@ export function createAuthProvider(opts: CreateAuthProviderOptions): AuthProvide
       clientId, clientSecret,
       apiBaseUrl: getV3ApiBaseUrl(),
       tokenUrl: getOAuthTokenUrl(),
+      events: opts.events,
     });
   }
-  return new TokenAuthProvider(getApiKeyOrThrow(), opts.apiBaseUrl ?? 'https://api.vocareum.com');
+  return new TokenAuthProvider(
+    getApiKeyOrThrow(),
+    opts.apiBaseUrl ?? 'https://api.vocareum.com',
+    opts.events,
+  );
 }

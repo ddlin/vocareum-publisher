@@ -58,7 +58,12 @@ async function publishCommandLocked(
     loadDotEnvIfPresent(path.join(workspaceRoot, '.env'));
     const config = await loadConfig(configPath);
     const throttle = resolveThrottle(config.vocareum.throttle);
-    const client = new VocareumClient(resolveAuthProvider(options, config.vocareum.api_base_url), throttle, undefined, events);
+    const client = new VocareumClient(
+      resolveAuthProvider(options, config.vocareum.api_base_url, events),
+      throttle,
+      undefined,
+      events,
+    );
 
     const requestedAutoCommit = options.autoCommit ?? config.publish_options?.auto_commit ?? false;
     const autoCommit = isCI() ? false : requestedAutoCommit;
@@ -80,6 +85,7 @@ async function publishCommandLocked(
       assignment: options.assignment,
       part: options.part,
       forceAll: options.forceAll ?? false,
+      deferDeleteResolution: true,
     };
 
     const pushCtx = {

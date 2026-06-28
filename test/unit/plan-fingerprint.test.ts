@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { semanticFingerprint } from '../../src/core/services/plan-fingerprint';
 import type { PushIntent } from '../../src/core/services/types';
 
-const base: PushIntent = { assignments: [{ path: 'lab1', assignmentId: '900', action: 'update', parts: [
+const base: PushIntent = { assignments: [{ path: 'lab1', name: 'Lab 1', assignmentId: '900', action: 'update', parts: [
   { partId: '901', path: 'part1', contentHashes: { startercode: 'h1' }, settingsPayload: { nosubmit: false } },
 ]}]};
 
@@ -42,6 +42,11 @@ describe('semanticFingerprint', () => {
     const changed: PushIntent = JSON.parse(JSON.stringify(base));
     changed.assignments[0].templateAssignmentId = 'tpl2';
     expect(semanticFingerprint(baseWithTemplate)).not.toBe(semanticFingerprint(changed));
+  });
+  it('changes when a create assignment name changes', () => {
+    const changed: PushIntent = JSON.parse(JSON.stringify(base));
+    changed.assignments[0].name = 'Renamed Lab';
+    expect(semanticFingerprint(base)).not.toBe(semanticFingerprint(changed));
   });
   it('changes when templateCourseId changes (P0 #1 — cross-course template source)', () => {
     const baseWithCourse: PushIntent = JSON.parse(JSON.stringify(base));

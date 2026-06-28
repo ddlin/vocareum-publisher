@@ -72,6 +72,7 @@ export async function publish(
     part: options.part,
     forceAll: options.forceAll,
     verbose: options.verbose,
+    deferDeleteResolution: true,
   };
 
   return withSession(configPath, async (session) => {
