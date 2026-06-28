@@ -49,7 +49,10 @@ async function publishCommandLocked(
   options: PublishCommandOptions
 ): Promise<void> {
   const { configPath, workspaceRoot } = ctx;
-  const reporter = new UnknownFieldReporter(logger);
+  // Shared event sink: reporter output joins the same stream as service events,
+  // preventing interleaving when Stage 1b processes courses concurrently.
+  const events = new LoggerEventSink();
+  const reporter = new UnknownFieldReporter(events);
 
   try {
     loadDotEnvIfPresent(path.join(workspaceRoot, '.env'));
@@ -60,7 +63,7 @@ async function publishCommandLocked(
     const requestedAutoCommit = options.autoCommit ?? config.publish_options?.auto_commit ?? false;
     const autoCommit = isCI() ? false : requestedAutoCommit;
     if (isCI() && requestedAutoCommit) {
-      logger.warn('Auto-commit is disabled in CI/CD environments.');
+      logger.warn('Auto-commit is disabled in CI/CD environments.'); // intentional: CI-only guard, non-concurrent command path
     }
 
     // In CI, always run non-interactive
@@ -84,7 +87,7 @@ async function publishCommandLocked(
       effectiveConfig: config,
       configPath,
       workspaceRoot,
-      events: new LoggerEventSink(),
+      events,
       prompter: nonInteractive ? new NonInteractivePrompter() : new InteractivePrompter(),
       client,
     };

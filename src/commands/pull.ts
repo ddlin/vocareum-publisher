@@ -92,7 +92,10 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
   const batch = options.batch ?? false;
   const nonInteractive = !batch && (options.nonInteractive ?? isCI());
   const verbose = options.verbose ?? false;
-  const reporter = new UnknownFieldReporter(logger);
+  // Shared event sink: reporter output joins the same stream as service events,
+  // preventing interleaving when Stage 1b processes courses concurrently.
+  const events = new LoggerEventSink();
+  const reporter = new UnknownFieldReporter(events);
 
   try {
     loadDotEnvIfPresent(path.join(workspaceRoot, '.env'));
@@ -108,7 +111,7 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
       effectiveConfig: config,
       configPath,
       workspaceRoot,
-      events: new LoggerEventSink(),
+      events,
       prompter: nonInteractive ? new NonInteractivePrompter() : new InteractivePrompter(),
       client,
     };

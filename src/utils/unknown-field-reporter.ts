@@ -7,6 +7,7 @@
 
 import { readFileSync } from 'fs';
 import * as path from 'path';
+import type { EventSink } from '../core/services/event-sink';
 
 export type UnknownFieldScope = 'assignment' | 'part'; // 'course' added in deferred phase
 
@@ -21,6 +22,25 @@ export interface UnknownFieldRecord {
 export interface MinimalLogger {
   warn: (msg: string) => void;
   plain: (msg: string) => void;
+}
+
+/**
+ * Adapter that bridges an EventSink to the MinimalLogger interface used
+ * internally by UnknownFieldReporter. Allows callers to pass either a
+ * MinimalLogger (legacy/test path) or an EventSink (service-layer path),
+ * so that reporter output participates in the per-command collecting sink
+ * and cannot interleave with concurrent-course output in Stage 1b.
+ */
+function makeMinimalLoggerFromSink(sink: EventSink): MinimalLogger {
+  return {
+    warn: (msg: string): void => { sink.emit({ level: 'warn', message: msg }); },
+    plain: (msg: string): void => { sink.emit({ level: 'plain', message: msg }); },
+  };
+}
+
+/** Type guard: distinguishes EventSink (has `emit`) from MinimalLogger. */
+function isEventSink(v: MinimalLogger | EventSink): v is EventSink {
+  return typeof (v as EventSink).emit === 'function';
 }
 
 const ISSUE_URL = 'https://github.com/ddlin/vocareum-publisher/issues/new';
@@ -51,8 +71,17 @@ function safeStringify(v: unknown): string {
 
 export class UnknownFieldReporter {
   private records = new Map<string, UnknownFieldRecord>();
+  private logger: MinimalLogger;
 
-  constructor(private logger: MinimalLogger) {}
+  /**
+   * @param output - Either a MinimalLogger (backward-compatible) or an EventSink.
+   *   Pass an EventSink (e.g. ctx.events from a command context) so that reporter
+   *   output joins the same event stream as the rest of the service layer; this
+   *   prevents output interleaving when Stage 1b runs courses concurrently.
+   */
+  constructor(output: MinimalLogger | EventSink) {
+    this.logger = isEventSink(output) ? makeMinimalLoggerFromSink(output) : output;
+  }
 
   record(
     scope: UnknownFieldScope,
