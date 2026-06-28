@@ -62,7 +62,7 @@ export function semanticFingerprint(intent: PushIntent): string {
           path: part.path,
           contentHashes: part.contentHashes,
           settingsPayload: part.settingsPayload,
-          deletePaths: part.deletePaths,
+          deletePaths: part.deletePaths ? [...part.deletePaths].sort() : undefined,
         })),
     })),
   };

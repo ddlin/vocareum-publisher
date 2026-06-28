@@ -22,4 +22,25 @@ describe('semanticFingerprint', () => {
     changed.assignments[0].parts[0].settingsPayload = { nosubmit: true };
     expect(semanticFingerprint(base)).not.toBe(semanticFingerprint(changed));
   });
+  it('changes when deletePaths set is different (P0 #1)', () => {
+    const baseWithDelete: PushIntent = JSON.parse(JSON.stringify(base));
+    baseWithDelete.assignments[0].parts[0].deletePaths = ['file1.txt', 'file2.txt'];
+    const changed: PushIntent = JSON.parse(JSON.stringify(base));
+    changed.assignments[0].parts[0].deletePaths = ['file1.txt', 'file3.txt'];
+    expect(semanticFingerprint(baseWithDelete)).not.toBe(semanticFingerprint(changed));
+  });
+  it('does not change when deletePaths order is different (proves sort)', () => {
+    const baseWithDelete: PushIntent = JSON.parse(JSON.stringify(base));
+    baseWithDelete.assignments[0].parts[0].deletePaths = ['b.txt', 'a.txt'];
+    const reordered: PushIntent = JSON.parse(JSON.stringify(base));
+    reordered.assignments[0].parts[0].deletePaths = ['a.txt', 'b.txt'];
+    expect(semanticFingerprint(baseWithDelete)).toBe(semanticFingerprint(reordered));
+  });
+  it('changes when templateAssignmentId changes (P0 #1)', () => {
+    const baseWithTemplate: PushIntent = JSON.parse(JSON.stringify(base));
+    baseWithTemplate.assignments[0].templateAssignmentId = 'tpl1';
+    const changed: PushIntent = JSON.parse(JSON.stringify(base));
+    changed.assignments[0].templateAssignmentId = 'tpl2';
+    expect(semanticFingerprint(baseWithTemplate)).not.toBe(semanticFingerprint(changed));
+  });
 });
