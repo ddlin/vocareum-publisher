@@ -17,6 +17,8 @@ describe('exit codes (subprocess)', () => {
   it('exits non-zero with a single error line on a missing config', () => {
     const r = run(['status', '--config', 'definitely-missing.yaml']);
     expect(r.code).not.toBe(0);
-    expect((r.stderr.match(/not found/gi) || []).length).toBeLessThanOrEqual(1); // no double-log
+    // Count occurrences of "Status failed:" — should appear exactly once, not double-logged
+    const matches = (r.stderr.match(/Status failed:/gi) || []);
+    expect(matches.length).toBe(1);
   });
 });

@@ -64,6 +64,7 @@ Examples:
     try {
       await initCommand(options);
     } catch (error) {
+      if (error instanceof CommandFailureError) { throw error; }
       const msg = `Init failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
       logger.error(msg);
       throw new CommandFailureError(msg);
@@ -100,6 +101,7 @@ Examples:
     try {
       await newCommand(assignmentPath);
     } catch (error) {
+      if (error instanceof CommandFailureError) { throw error; }
       const msg = `New assignment failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
       logger.error(msg);
       throw new CommandFailureError(msg);
@@ -142,6 +144,7 @@ Examples:
     try {
       await validateCommand(options);
     } catch (error) {
+      if (error instanceof CommandFailureError) { throw error; }
       const msg = `Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
       logger.error(msg);
       throw new CommandFailureError(msg);
@@ -177,6 +180,7 @@ Examples:
     try {
       await fixCommand(options);
     } catch (error) {
+      if (error instanceof CommandFailureError) { throw error; }
       const msg = `Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
       logger.error(msg);
       throw new CommandFailureError(msg);
@@ -252,6 +256,7 @@ Examples:
     try {
       await pullCommand(options);
     } catch (error) {
+      if (error instanceof CommandFailureError) { throw error; }
       const msg = `Pull failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
       logger.error(msg);
       throw new CommandFailureError(msg);
@@ -293,6 +298,7 @@ Examples:
     try {
       await statusCommand(options);
     } catch (error) {
+      if (error instanceof CommandFailureError) { throw error; }
       const msg = `Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
       logger.error(msg);
       throw new CommandFailureError(msg);
@@ -357,6 +363,7 @@ Examples:
     try {
       await publishCommand(options);
     } catch (error) {
+      if (error instanceof CommandFailureError) { throw error; }
       // logger.error handled in publishCommand mostly, but top level catch safety
       const msg = `Unhandled error: ${error instanceof Error ? error.message : 'Unknown error'}`;
       logger.error(msg);
