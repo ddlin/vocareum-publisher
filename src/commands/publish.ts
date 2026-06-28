@@ -4,7 +4,7 @@
  * Main command to publish assignments to Vocareum.
  */
 
-import { loadConfig, withConfigLock } from '../core/config';
+import { loadConfig } from '../core/config';
 import { resolveWorkspaceContext, type WorkspaceContext } from '../core/workspace';
 import * as path from 'path';
 import { VocareumClient } from '../api/client';
@@ -32,13 +32,16 @@ export interface PublishCommandOptions extends PublishOperationOptions {
 }
 
 /**
- * Execute the publish command
+ * Execute the publish command.
+ *
+ * The config lock is acquired exactly ONCE — inside publishCommandLocked via
+ * withSession — and is held across plan → confirm → execute.  Do NOT add a
+ * second withConfigLock wrapper here: withConfigLock is NON-REENTRANT (throws
+ * CONFIG_LOCKED if the lock file already exists).
  */
 export async function publishCommand(options: PublishCommandOptions): Promise<void> {
   const ctx = resolveWorkspaceContext({ config: options.config, root: options.root });
-  // Serialize runs against the same config: concurrent publishes can corrupt
-  // vocareum.yaml (read-modify-write races) or create duplicate assignments.
-  await withConfigLock(ctx.configPath, () => publishCommandLocked(ctx, options));
+  await publishCommandLocked(ctx, options);
 }
 
 async function publishCommandLocked(
@@ -95,11 +98,10 @@ async function publishCommandLocked(
     const result = await withSession(configPath, async (session) => {
       const plan = await planPush(pushCtx, req);
 
-      // Interactive confirmation — only when not non-interactive/CI and there are changes
-      // (plan emits the hasChanges summary; we check via the intent having any assignments)
-      const hasChanges = plan.intent.assignments.length > 0;
-
-      if (!nonInteractive && !req.dryRun && hasChanges) {
+      // Interactive confirmation — only when not non-interactive/CI and there are changes.
+      // plan.hasChanges is the authoritative flag (covers course-settings-only,
+      // ID-discovery, and errors-only runs, not just assignment intent length).
+      if (!nonInteractive && !req.dryRun && plan.hasChanges) {
         logger.newline();
         const confirmed = await promptConfirm('Proceed with push?', true);
         if (!confirmed) {

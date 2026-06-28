@@ -51,4 +51,6 @@ export interface PushPlan {
   preconditions: PushPreconditions;
   semanticFingerprint: string;                 // hash of the WHOLE intent (Task 9)
   summary: string;
+  /** True when there is at least one change to push (course, assignment, part, or ID discovery). */
+  hasChanges: boolean;
 }

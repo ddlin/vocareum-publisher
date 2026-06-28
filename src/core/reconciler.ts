@@ -21,7 +21,8 @@ import { getCourse } from '../api/courses';
 import { listAssignments, getAssignment } from '../api/assignments';
 import { listParts, getPart } from '../api/parts';
 import { mapParts } from './mapper';
-import { logger } from '../utils/logger';
+import { LoggerEventSink } from '../utils/logger-event-sink';
+import type { EventSink } from './services/event-sink';
 import {
   shouldSyncAssignmentSettings,
   shouldSyncCourseSettings,
@@ -101,9 +102,10 @@ export async function reconcile(
   config: Config,
   client: VocareumClient,
   lastPublishHistory?: PublishHistory,
-  options: { forceAll?: boolean; onMissingId?: 'skip' | 'abort'; workspaceRoot?: string } = {}
+  options: { forceAll?: boolean; onMissingId?: 'skip' | 'abort'; workspaceRoot?: string; events?: EventSink } = {}
 ): Promise<ReconciliationPlan> {
-  logger.info('Fetching current state from Vocareum...');
+  const events: EventSink = options.events ?? new LoggerEventSink();
+  events.emit({ level: 'info', message: 'Fetching current state from Vocareum...' });
 
   // 1. Fetch Course and compare settings
   const remoteCourse = await getCourse(client, config.vocareum.course_id);
@@ -159,7 +161,7 @@ export async function reconcile(
           assignmentReason = 'Assignment ID is excluded from sync';
         } else {
           // ID exists in config but not in Vocareum -> track as stale
-          logger.warn(`Assignment "${configAssignment.name}" (ID: ${configAssignment.assignment_id}) not found in Vocareum - may have been deleted`);
+          events.emit({ level: 'warn', message: `Assignment "${configAssignment.name}" (ID: ${configAssignment.assignment_id}) not found in Vocareum - may have been deleted` });
           staleInConfig.push({
             assignment_id: configAssignment.assignment_id,
             name: configAssignment.name,
@@ -177,7 +179,7 @@ export async function reconcile(
       );
 
       if (foundByName) {
-        logger.info(`Found existing assignment "${lookupName}" (ID: ${foundByName.id}) - will update instead of create`);
+        events.emit({ level: 'info', message: `Found existing assignment "${lookupName}" (ID: ${foundByName.id}) - will update instead of create` });
         remoteAssignment = foundByName;
         assignmentActionType = 'update';
         idDiscoveredByName = true;
@@ -273,7 +275,7 @@ export async function reconcile(
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown';
-        logger.error(`Part mapping failed for ${configAssignment.name}: ${message}`);
+        events.emit({ level: 'error', message: `Part mapping failed for ${configAssignment.name}: ${message}` });
         assignmentActionType = 'error';
         assignmentReason = `Part mapping failed: ${message}`;
       }
@@ -558,44 +560,45 @@ function detectPartSettingsChanged(
  * Display reconciliation plan to console
  *
  * @param plan - Plan to display
+ * @param events - Optional EventSink (defaults to LoggerEventSink)
  */
-export function displayPlan(plan: ReconciliationPlan): void {
-  logger.info('Reconciliation Plan:');
-  logger.plain(`To Create: ${plan.summary.assignmentsToCreate} assignments`);
-  logger.plain(`To Update: ${plan.summary.assignmentsToUpdate} assignments`);
-  logger.plain(`To Skip:   ${plan.summary.assignmentsToSkip} assignments`);
+export function displayPlan(plan: ReconciliationPlan, events: EventSink = new LoggerEventSink()): void {
+  events.emit({ level: 'info', message: 'Reconciliation Plan:' });
+  events.emit({ level: 'plain', message: `To Create: ${plan.summary.assignmentsToCreate} assignments` });
+  events.emit({ level: 'plain', message: `To Update: ${plan.summary.assignmentsToUpdate} assignments` });
+  events.emit({ level: 'plain', message: `To Skip:   ${plan.summary.assignmentsToSkip} assignments` });
   if (plan.summary.coursesToUpdate > 0) {
-    logger.plain('Course:    metadata update required');
+    events.emit({ level: 'plain', message: 'Course:    metadata update required' });
   }
   if (plan.summary.assignmentsWithDiscoveredIds > 0) {
-    logger.plain(`ID Sync:   ${plan.summary.assignmentsWithDiscoveredIds} assignment IDs discovered by name`);
+    events.emit({ level: 'plain', message: `ID Sync:   ${plan.summary.assignmentsWithDiscoveredIds} assignment IDs discovered by name` });
   }
-  logger.plain(`Orphaned:  ${plan.orphanedInVocareum.length} in Vocareum`);
+  events.emit({ level: 'plain', message: `Orphaned:  ${plan.orphanedInVocareum.length} in Vocareum` });
 
   if (plan.summary.assignmentsToCreate > 0) {
-    logger.newline();
-    logger.info('Assignments to Create:');
+    events.emit({ level: 'newline' });
+    events.emit({ level: 'info', message: 'Assignments to Create:' });
     plan.assignments.filter(a => a.type === 'create').forEach(a => {
-      logger.plain(`  + ${a.assignment.name} (from template)`);
+      events.emit({ level: 'plain', message: `  + ${a.assignment.name} (from template)` });
     });
   }
 
   if (plan.summary.assignmentsToUpdate > 0) {
-    logger.newline();
-    logger.info('Assignments to Update:');
+    events.emit({ level: 'newline' });
+    events.emit({ level: 'info', message: 'Assignments to Update:' });
     plan.assignments.filter(a => a.type === 'update' && a.parts.some(p => p.type !== 'skip')).forEach(a => {
-      logger.plain(`  * ${a.assignment.name}`);
+      events.emit({ level: 'plain', message: `  * ${a.assignment.name}` });
       a.parts.filter(p => p.type === 'update').forEach(p => {
-        logger.plain(`    - Part ${p.part.name ?? p.part.path}: ${p.reason}`);
+        events.emit({ level: 'plain', message: `    - Part ${p.part.name ?? p.part.path}: ${p.reason}` });
       });
     });
   }
 
   if (plan.orphanedInVocareum.length > 0) {
-    logger.newline();
-    logger.warn('Orphaned Assignments in Vocareum:');
+    events.emit({ level: 'newline' });
+    events.emit({ level: 'warn', message: 'Orphaned Assignments in Vocareum:' });
     plan.orphanedInVocareum.forEach(o => {
-      logger.plain(`  ? ${o.name} (${o.id})`);
+      events.emit({ level: 'plain', message: `  ? ${o.name} (${o.id})` });
     });
   }
 }

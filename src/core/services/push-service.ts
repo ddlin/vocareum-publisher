@@ -13,15 +13,9 @@ import * as path from 'path';
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'fs';
 import type { Config, PublishHistory, PartSettings } from '../../types/config';
-import {
-  labInterfaceToWriteObject,
-  normalizeSubmissionFilters,
-  nullToUndefined,
-} from '../../types/config';
+import { normalizeSubmissionFilters, nullToUndefined } from '../../types/config';
 import type {
-  ApiPartSettings,
   AssignmentSettingsPayload,
-  PartSettingsPayload,
   VocareumAssignmentResponse,
   VocareumPartResponse,
 } from '../../types/api';
@@ -38,14 +32,6 @@ import { commitChanges, getCommitSha, getGitUserName } from '../../utils/git';
 import { mapAssignmentSettings, mapPartSettings } from '../../utils/settings';
 import type { UnknownFieldReporter } from '../../utils/unknown-field-reporter';
 import {
-  KNOWN_ASSIGNMENT_SETTING_KEYS,
-  KNOWN_PART_SETTING_KEYS,
-  NON_SETTING_FIELDS_ASSIGNMENT,
-  NON_SETTING_FIELDS_PART,
-  OBSERVED_ASSIGNMENT_SETTING_KEYS,
-  OBSERVED_PART_SETTING_KEYS,
-} from '../../utils/known-settings';
-import {
   shouldSyncAssignmentSettings,
   shouldSyncCourseSettings,
   shouldSyncPartSettings,
@@ -56,179 +42,20 @@ import type { PushRequest, PushPlan, PushIntent, PushPreconditions, AssignmentIn
 import { semanticFingerprint } from './plan-fingerprint';
 
 // ---------------------------------------------------------------------------
-// Inline helpers (mirrors publisher.ts; kept here to avoid circular imports)
+// Helpers — imported from payload-helpers (no cycle: push-service ← payload-helpers)
 // ---------------------------------------------------------------------------
 
-const RESERVED_ASSIGNMENT_KEYS: ReadonlySet<string> = new Set([
-  ...KNOWN_ASSIGNMENT_SETTING_KEYS,
-  ...OBSERVED_ASSIGNMENT_SETTING_KEYS,
-  ...NON_SETTING_FIELDS_ASSIGNMENT,
-  '_unknown_settings',
-  '_observed_settings',
-]);
-
-const RESERVED_PART_KEYS: ReadonlySet<string> = new Set([
-  ...KNOWN_PART_SETTING_KEYS,
-  ...OBSERVED_PART_SETTING_KEYS,
-  ...NON_SETTING_FIELDS_PART,
-  '_unknown_settings',
-  '_observed_settings',
-]);
-
-function isHttp400(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) { return false; }
-  const maybeError = error as { response?: { status?: number }; statusCode?: number };
-  return maybeError.response?.status === 400 || maybeError.statusCode === 400;
-}
-
-function sanitizeSubmissionFilters(
-  filters: ReturnType<typeof normalizeSubmissionFilters>,
-): ApiPartSettings['submission_filters'] | undefined {
-  if (!filters) { return undefined; }
-  const include = filters.include?.filter((v) => v.length > 0);
-  const exclude = filters.exclude?.filter((v) => v.length > 0);
-  const list = filters.list?.filter((v) => v.length > 0);
-  if (
-    (!include || include.length === 0) &&
-    (!exclude || exclude.length === 0) &&
-    (!list || list.length === 0)
-  ) {
-    return undefined;
-  }
-  return { include, exclude, list };
-}
-
-function normalizeTags(
-  tags: string[] | Record<string, string | number | boolean> | null | undefined,
-): Record<string, string | number | boolean> | undefined {
-  if (tags === null || tags === undefined) { return undefined; }
-  if (Array.isArray(tags)) {
-    if (tags.length === 0) { return undefined; }
-    const result: Record<string, string> = {};
-    for (const tag of tags) {
-      const [key, ...valueParts] = tag.split(':');
-      if (key) { result[key] = valueParts.join(':') || ''; }
-    }
-    return Object.keys(result).length > 0 ? result : undefined;
-  }
-  return Object.keys(tags).length > 0 ? tags : undefined;
-}
-
-function withoutUndefined<T extends Record<string, unknown>>(payload: T): T {
-  return Object.fromEntries(
-    Object.entries(payload).filter(([, value]) => value !== undefined),
-  ) as T;
-}
-
-function filterUnknownSettingsForPayload(
-  unknowns: Record<string, unknown> | null | undefined,
-  reservedKeys: ReadonlySet<string>,
-  _scope: 'assignment' | 'part',
-  _resourceName: string,
-): Record<string, unknown> {
-  if (!unknowns || typeof unknowns !== 'object') { return {}; }
-  const filtered: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(unknowns)) {
-    if (!reservedKeys.has(k)) {
-      filtered[k] = v;
-    }
-    // (warning about reserved-key collisions is not emitted here because
-    // push-service must not call logger; push-service callers that want the
-    // warning should use publisher.filterUnknownSettingsForPayload instead)
-  }
-  return filtered;
-}
-
-function hasSettingValue(value: unknown): boolean {
-  return value !== undefined && value !== null;
-}
-
-function pushSettingChange(
-  changes: HistorySettingChange[],
-  change: HistorySettingChange,
-): void {
-  if (change.field === '_unknown_settings' || change.field === '_observed_settings') { return; }
-  if (change.from === change.to) { return; }
-  if (
-    typeof change.from === 'object' && change.from !== null &&
-    typeof change.to === 'object' && change.to !== null &&
-    JSON.stringify(change.from) === JSON.stringify(change.to)
-  ) { return; }
-  changes.push(change);
-}
-
-function buildPartSettingsPayload(
-  partName: string,
-  partSettings: PartSettings | undefined,
-  mode: 'full' | 'safe',
-): PartSettingsPayload {
-  const normalizedFilters = sanitizeSubmissionFilters(
-    normalizeSubmissionFilters(partSettings?.submission_filters),
-  );
-  const base: PartSettingsPayload = withoutUndefined({
-    name: partName,
-    submission_filters: normalizedFilters,
-    session_length: nullToUndefined(partSettings?.session_length),
-    monthly_dollar: nullToUndefined(partSettings?.monthly_dollar),
-    monthly_time: nullToUndefined(partSettings?.monthly_time),
-    total_time: nullToUndefined(partSettings?.total_time),
-    total_dollar: nullToUndefined(partSettings?.total_dollar),
-  });
-
-  if (mode === 'safe') { return base; }
-
-  const full: PartSettingsPayload = withoutUndefined({
-    ...base,
-    cloud_labs: nullToUndefined(partSettings?.cloud_labs),
-    instant_aws_access: nullToUndefined(partSettings?.instant_aws_access),
-    late_penalty_percent: nullToUndefined(partSettings?.late_penalty_percent),
-    late_penalty_percent_rule: nullToUndefined(partSettings?.late_penalty_percent_rule),
-    deadlinedate: nullToUndefined(partSettings?.deadlinedate),
-    endlab: nullToUndefined(partSettings?.endlab),
-    labtype: nullToUndefined(partSettings?.labtype),
-    container_image: nullToUndefined(partSettings?.container_image),
-    number_of_submissions: nullToUndefined(partSettings?.number_of_submissions),
-    lab_interface: labInterfaceToWriteObject(partSettings?.lab_interface),
-    databricks_maxusers: nullToUndefined(partSettings?.databricks_maxusers),
-    tags: normalizeTags(partSettings?.tags),
-  });
-
-  const filtered = filterUnknownSettingsForPayload(
-    partSettings?._unknown_settings,
-    RESERVED_PART_KEYS,
-    'part',
-    partName,
-  );
-  if (Object.keys(filtered).length > 0) {
-    Object.assign(full, filtered);
-  }
-  return full;
-}
-
-function collectSettingsState(config: Config): Record<string, unknown> {
-  const state: Record<string, unknown> = {};
-  for (const assignment of config.assignments) {
-    const asnSettings = assignment.settings;
-    if (asnSettings && shouldSyncAssignmentSettings(config, assignment)) {
-      for (const [key, value] of Object.entries(asnSettings)) {
-        if (value === undefined || value === null || key.startsWith('_')) { continue; }
-        if (!KNOWN_ASSIGNMENT_SETTING_KEYS.has(key)) { continue; }
-        state[`assignments/${assignment.path}/settings/${key}`] = value;
-      }
-    }
-    for (const part of assignment.parts) {
-      const partSettings = part.settings;
-      if (!partSettings) { continue; }
-      if (!shouldSyncPartSettings(config, assignment, part)) { continue; }
-      for (const [key, value] of Object.entries(partSettings)) {
-        if (value === undefined || value === null || key.startsWith('_')) { continue; }
-        if (!KNOWN_PART_SETTING_KEYS.has(key)) { continue; }
-        state[`assignments/${assignment.path}/parts/${part.path}/settings/${key}`] = value;
-      }
-    }
-  }
-  return state;
-}
+import {
+  RESERVED_ASSIGNMENT_KEYS,
+  isHttp400,
+  sanitizeSubmissionFilters,
+  filterUnknownSettingsForPayload,
+  hasSettingValue,
+  pushSettingChange,
+  buildPartSettingsPayload,
+  collectSettingsState,
+  withoutUndefined,
+} from '../payload-helpers';
 
 // ---------------------------------------------------------------------------
 // Internal extended plan type (not part of the public PushPlan interface)
@@ -309,6 +136,7 @@ export async function planPush(
     forceAll: req.forceAll,
     onMissingId: req.onMissingId,
     workspaceRoot,
+    events,
   });
 
   if (assignmentFilters.length > 0 || partFilters.length > 0) {
@@ -327,7 +155,7 @@ export async function planPush(
     hasErrorsInPlan;
 
   if ((req.verbose ?? false) || (req.dryRun ?? false)) {
-    displayPlan(reconPlan);
+    displayPlan(reconPlan, events);
   } else if (hasChanges) {
     const extras: string[] = [];
     if (reconPlan.summary.coursesToUpdate > 0) { extras.push('course settings update'); }
@@ -421,6 +249,7 @@ export async function planPush(
     preconditions,
     semanticFingerprint: fingerprint,
     summary,
+    hasChanges,
     _reconPlan: reconPlan,
     _workingConfig: workingConfig,
     _lastHistory: lastHistory,
@@ -697,6 +526,7 @@ export async function executePush(
             RESERVED_ASSIGNMENT_KEYS,
             'assignment',
             action.assignment.name,
+            events,
           );
           const hasFilteredUnknowns = Object.keys(filteredAsnUnknowns).length > 0;
           const fullAssignmentPayload: AssignmentSettingsPayload = hasFilteredUnknowns
@@ -827,13 +657,13 @@ export async function executePush(
             }
           }
 
-          const fullPayload = buildPartSettingsPayload(partName, partSettings, 'full');
+          const fullPayload = buildPartSettingsPayload(partName, partSettings, 'full', events);
           try {
             await updatePart(ctx.client, workingConfig.vocareum.course_id, assignmentId, partId, fullPayload);
           } catch (error) {
             if (!isHttp400(error)) { throw error; }
             events.emit({ level: 'warn', message: `Part settings update rejected for ${partId}; retrying with safe subset` });
-            const safePayload = buildPartSettingsPayload(partName, partSettings, 'safe');
+            const safePayload = buildPartSettingsPayload(partName, partSettings, 'safe', events);
             try {
               await updatePart(ctx.client, workingConfig.vocareum.course_id, assignmentId, partId, safePayload);
             } catch (retryError) {
@@ -897,6 +727,7 @@ export async function executePush(
                 architecture: ctx.persistedConfig.vocareum.architecture,
                 workspaceRoot,
               },
+              events,
             );
 
             if (uploadRes.failed.length > 0) {
