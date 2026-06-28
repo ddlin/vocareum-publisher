@@ -11,7 +11,8 @@ import { VocareumClient } from '../api/client';
 import { uploadContent, deleteFile, listFiles } from '../api/content';
 import { readDirectory as readLocalDirectory, calculateDirectoryHash } from '../utils/files';
 import { assertConfinedToWorkspace } from './local-scan';
-import { logger } from '../utils/logger';
+import { LoggerEventSink } from '../utils/logger-event-sink';
+import type { EventSink } from './services/event-sink';
 
 /**
  * Upload directory contents to Vocareum
@@ -32,20 +33,21 @@ export async function uploadDirectory(
   partId: string,
   localPath: string,
   directoryType: DirectoryType,
-  options: UploadOptions
+  options: UploadOptions,
+  events: EventSink = new LoggerEventSink(),
 ): Promise<UploadResult> {
   // localPath originates in vocareum.yaml — never read/upload outside the
   // workspace (covers --force-all, which bypasses the change detector's check).
   const workspaceRoot = options.workspaceRoot ?? process.cwd();
   await assertConfinedToWorkspace(workspaceRoot, localPath);
 
-  logger.debug(`Reading local directory: ${localPath}`);
+  events.emit({ level: 'debug', message: `Reading local directory: ${localPath}` });
 
   const files = await readLocalDirectory(localPath, options.excludePatterns);
   const fileKeys = Object.keys(files);
 
   if (fileKeys.length === 0) {
-    logger.debug(`Directory ${localPath} is empty, skipping upload`);
+    events.emit({ level: 'debug', message: `Directory ${localPath} is empty, skipping upload` });
     return {
       succeeded: [],
       failed: [],
@@ -53,7 +55,7 @@ export async function uploadDirectory(
     };
   }
 
-  logger.info(`Uploading ${fileKeys.length} files to ${directoryType}...`);
+  events.emit({ level: 'info', message: `Uploading ${fileKeys.length} files to ${directoryType}...` });
 
   const result = await uploadContent(
     client,
@@ -68,9 +70,9 @@ export async function uploadDirectory(
   result.directoryHash = await calculateDirectoryHash(localPath, options.excludePatterns);
 
   if (result.failed.length > 0) {
-    logger.error(`Failed to upload ${result.failed.length} files`);
+    events.emit({ level: 'error', message: `Failed to upload ${result.failed.length} files` });
   } else {
-    logger.success(`Uploaded ${result.succeeded.length} files`);
+    events.emit({ level: 'success', message: `Uploaded ${result.succeeded.length} files` });
   }
 
   return result;
@@ -95,7 +97,8 @@ export async function syncDirectory(
   partId: string,
   localPath: string,
   directoryType: DirectoryType,
-  options: UploadOptions
+  options: UploadOptions,
+  events: EventSink = new LoggerEventSink(),
 ): Promise<UploadResult> {
   // 1. Upload current content
   const uploadResult = await uploadDirectory(
@@ -105,23 +108,35 @@ export async function syncDirectory(
     partId,
     localPath,
     directoryType,
-    options
+    options,
+    events,
   );
 
   // 2. Handle deletions if enabled
   if (options.syncDeletes === true) {
     try {
-      logger.info('Syncing deletions...');
+      events.emit({ level: 'info', message: 'Syncing deletions...' });
 
-      // Get remote files
-      const remoteFiles = await listFiles(client, courseId, assignmentId, partId, directoryType, options.architecture);
-      const localFiles = await readLocalDirectory(localPath, options.excludePatterns);
-      const localFileSet = new Set(Object.keys(localFiles));
-
-      const filesToDelete = remoteFiles.filter(rf => !localFileSet.has(rf.path));
+      const filesToDelete = options.plannedDeletePaths !== undefined
+        ? options.plannedDeletePaths.map((path) => ({ path }))
+        : await (async (): Promise<Array<{ path: string }>> => {
+            // Creation-time reconciliation: no remote part existed when the
+            // intent was built, so resolve the deletion set now.
+            const remoteFiles = await listFiles(
+              client,
+              courseId,
+              assignmentId,
+              partId,
+              directoryType,
+              options.architecture,
+            );
+            const localFiles = await readLocalDirectory(localPath, options.excludePatterns);
+            const localFileSet = new Set(Object.keys(localFiles));
+            return remoteFiles.filter((remoteFile) => !localFileSet.has(remoteFile.path));
+          })();
 
       if (filesToDelete.length > 0) {
-        logger.info(`Deleting ${filesToDelete.length} files...`);
+        events.emit({ level: 'info', message: `Deleting ${filesToDelete.length} files...` });
 
         uploadResult.deleted = [];
 
@@ -129,16 +144,16 @@ export async function syncDirectory(
           try {
             await deleteFile(client, courseId, assignmentId, partId, directoryType, file.path, options.architecture);
             uploadResult.deleted.push(file.path);
-            logger.debug(`Deleted: ${file.path}`);
+            events.emit({ level: 'debug', message: `Deleted: ${file.path}` });
           } catch (error) {
-            logger.warn(`Failed to delete ${file.path}: ${error instanceof Error ? error.message : 'Unknown'}`);
+            events.emit({ level: 'warn', message: `Failed to delete ${file.path}: ${error instanceof Error ? error.message : 'Unknown'}` });
           }
         }
 
-        logger.success(`Deleted ${uploadResult.deleted.length} files`);
+        events.emit({ level: 'success', message: `Deleted ${uploadResult.deleted.length} files` });
       }
     } catch (error) {
-      logger.warn(`Sync deletions failed: ${error instanceof Error ? error.message : 'Unknown'}`);
+      events.emit({ level: 'warn', message: `Sync deletions failed: ${error instanceof Error ? error.message : 'Unknown'}` });
     }
   }
 

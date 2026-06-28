@@ -101,11 +101,25 @@ export function directoriesForPart(config: Config, part: Part): DirectoryType[] 
 }
 
 /**
+ * Result of change detection: the list of changed directories plus the
+ * per-directory hash computed during the scan. planPush reads these hashes
+ * directly instead of recomputing them (see reconciler.ts — Stage 1a Fix 3).
+ */
+export interface ChangedDirectoriesResult {
+  changedDirs: DirectoryType[];
+  /** Hash computed for every directory in the input set (changed or not). */
+  hashes: Record<string, string>;
+}
+
+/**
  * Detect which directories changed since the last publish.
  *
  * The state key is `path.join(assignmentPath, partPath, dir)` — the exact key
  * the publisher records in content_state. The newest history entry is used
  * even when failed: its content_state is what a retrying push compares to.
+ *
+ * Returns both the changed directory list and the per-directory hashes computed
+ * during the scan so callers can carry the hashes forward without recomputing.
  *
  * @param baseDir - Directory assignment paths are relative to (defaults to cwd)
  */
@@ -117,20 +131,35 @@ export async function detectChangedDirectories(
   forceAll: boolean = false,
   excludePatterns: string[] = [],
   baseDir: string = '.'
-): Promise<DirectoryType[]> {
+): Promise<ChangedDirectoriesResult> {
   // Confinement comes first — including under forceAll, whose returned list
   // the publisher will read and upload.
   await assertConfinedToWorkspace(baseDir, path.join(assignmentPath, partPath));
 
+  const hashes: Record<string, string> = {};
+
   if (forceAll) {
-    return directories;
+    // Under forceAll every directory is considered changed.  Still compute
+    // hashes so planPush can carry them forward without a second traversal.
+    for (const dir of directories) {
+      const key = path.join(assignmentPath, partPath, dir);
+      await assertConfinedToWorkspace(baseDir, key);
+      hashes[dir] = await calculateDirectoryHash(path.resolve(baseDir, key), excludePatterns);
+    }
+    return { changedDirs: directories, hashes };
   }
 
   if (!lastPublishHistory?.content_state) {
-    return directories; // All changed if no history
+    // No history: all directories are considered changed.
+    for (const dir of directories) {
+      const key = path.join(assignmentPath, partPath, dir);
+      await assertConfinedToWorkspace(baseDir, key);
+      hashes[dir] = await calculateDirectoryHash(path.resolve(baseDir, key), excludePatterns);
+    }
+    return { changedDirs: directories, hashes };
   }
 
-  const changed: DirectoryType[] = [];
+  const changedDirs: DirectoryType[] = [];
 
   for (const dir of directories) {
     const key = path.join(assignmentPath, partPath, dir);
@@ -138,14 +167,15 @@ export async function detectChangedDirectories(
 
     // Calculate hash with same exclude patterns as publisher to ensure consistency
     const currentHash = await calculateDirectoryHash(path.resolve(baseDir, key), excludePatterns);
+    hashes[dir] = currentHash;
     const previousHash = lastPublishHistory.content_state[key];
 
     if (currentHash !== previousHash) {
-      changed.push(dir);
+      changedDirs.push(dir);
     }
   }
 
-  return changed;
+  return { changedDirs, hashes };
 }
 
 /**
@@ -330,10 +360,10 @@ async function scanDirectory(
   }
 
   try {
-    const changed = await detectChangedDirectories(
+    const { changedDirs } = await detectChangedDirectories(
       assignmentPath, partPath, [directory], lastHistory, false, excludePatterns, baseDir
     );
-    return { directory, status: changed.length > 0 ? 'needs_publish' : 'synced' };
+    return { directory, status: changedDirs.length > 0 ? 'needs_publish' : 'synced' };
   } catch {
     return { directory, status: 'error' };
   }

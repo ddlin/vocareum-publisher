@@ -156,10 +156,11 @@ describe('initial set contents', () => {
 });
 
 describe('publisher hand-written settings arrays exclude _unknown_settings', () => {
-  it('publisher.ts does not include wrapper buckets in its keyof-typed arrays', async () => {
+  it('push-service.ts does not include wrapper buckets in its keyof-typed arrays', async () => {
     const fs = await import('node:fs/promises');
+    // The arrays were moved to push-service.ts as part of the planPush/executePush split.
     const src = await fs.readFile(
-      new URL('../../src/core/publisher.ts', import.meta.url),
+      new URL('../../src/core/services/push-service.ts', import.meta.url),
       'utf8'
     );
     const assignmentKeysMatch = src.match(/assignmentKeys:\s*\(keyof[\s\S]*?\)\[\]\s*=\s*\[([\s\S]*?)\];/);

@@ -9,7 +9,8 @@ import type { Config } from '../types/config';
 import type { ValidationResult } from '../types/state';
 import { getDirectories, pathExists } from '../utils/files';
 import { directoriesForPart, isConfinedToWorkspace } from './local-scan';
-import { logger } from '../utils/logger';
+import type { EventSink } from './services/event-sink';
+import { LoggerEventSink } from '../utils/logger-event-sink';
 
 /**
  * Validate that the filesystem structure matches the configuration
@@ -20,7 +21,8 @@ import { logger } from '../utils/logger';
  */
 export async function validateStructure(
   config: Config,
-  basePath: string
+  basePath: string,
+  events: EventSink = new LoggerEventSink()
 ): Promise<ValidationResult> {
   const result: ValidationResult = {
     valid: true,
@@ -140,7 +142,7 @@ export async function validateStructure(
   } catch (error) {
     // If basePath doesn't exist or other error, we might catch it here.
     // But valid structure assumes basePath exists.
-    logger.debug('Error checking orphaned folders:', { error });
+    events.emit({ level: 'debug', message: 'Error checking orphaned folders:', data: { error } });
   }
 
   return result;
@@ -151,33 +153,37 @@ export async function validateStructure(
  * Display validation result to console
  *
  * @param result - Validation result to display
+ * @param events - Event sink for output (defaults to LoggerEventSink)
  */
-export function displayValidationResult(result: ValidationResult): void {
+export function displayValidationResult(
+  result: ValidationResult,
+  events: EventSink = new LoggerEventSink()
+): void {
   if (result.valid && result.errors.length === 0 && result.warnings.length === 0) {
-    logger.success('Validation passed - no issues found');
+    events.emit({ level: 'success', message: 'Validation passed - no issues found' });
     return;
   }
 
   if (result.errors.length > 0) {
-    logger.error(`Found ${result.errors.length} error(s):`);
+    events.emit({ level: 'error', message: `Found ${result.errors.length} error(s):` });
     for (const error of result.errors) {
-      logger.plain(`  [${error.type}] ${error.message}`);
+      events.emit({ level: 'plain', message: `  [${error.type}] ${error.message}` });
       if (error.fix !== undefined && error.fix !== '') {
-        logger.plain(`    Fix: ${error.fix}`);
+        events.emit({ level: 'plain', message: `    Fix: ${error.fix}` });
       }
     }
   }
 
   if (result.warnings.length > 0) {
-    logger.warn(`Found ${result.warnings.length} warning(s):`);
+    events.emit({ level: 'warn', message: `Found ${result.warnings.length} warning(s):` });
     for (const warning of result.warnings) {
-      logger.plain(`  [${warning.type}] ${warning.message}`);
+      events.emit({ level: 'plain', message: `  [${warning.type}] ${warning.message}` });
     }
   }
 
   if (result.valid) {
-    logger.success('Validation passed with warnings');
+    events.emit({ level: 'success', message: 'Validation passed with warnings' });
   } else {
-    logger.error('Validation failed');
+    events.emit({ level: 'error', message: 'Validation failed' });
   }
 }

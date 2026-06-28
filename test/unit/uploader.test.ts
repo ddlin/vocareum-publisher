@@ -227,6 +227,31 @@ describe('syncDirectory', () => {
     expect(result.deleted).toEqual(['stale.py']);
   });
 
+  it('uses the approved deletion set without relisting remote files', async () => {
+    mockReadDirectory.mockResolvedValueOnce({ 'keep.py': Buffer.from('keep') });
+    mockUploadContent.mockResolvedValueOnce({
+      succeeded: ['keep.py'],
+      failed: [],
+      directoryHash: '',
+    });
+    mockDeleteFile.mockResolvedValue(undefined);
+
+    const result = await syncDirectory(
+      mockClient,
+      'c1', 'a1', 'p1',
+      'lab1/part1/startercode',
+      'startercode',
+      { syncDeletes: true, plannedDeletePaths: ['approved.py'] },
+    );
+
+    expect(mockListFiles).not.toHaveBeenCalled();
+    expect(mockReadDirectory).toHaveBeenCalledTimes(1);
+    expect(mockDeleteFile).toHaveBeenCalledWith(
+      mockClient, 'c1', 'a1', 'p1', 'startercode', 'approved.py', undefined,
+    );
+    expect(result.deleted).toEqual(['approved.py']);
+  });
+
   it('should not delete files that exist locally', async () => {
     mockReadDirectory
       .mockResolvedValueOnce({ 'a.py': Buffer.from('a'), 'b.py': Buffer.from('b') })

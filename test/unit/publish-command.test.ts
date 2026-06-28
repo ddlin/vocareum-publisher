@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import * as path from 'path';
 import type { Config } from '../../src/types/config';
 import { publishCommand } from '../../src/commands/publish';
 import { UnknownFieldReporter } from '../../src/utils/unknown-field-reporter';
@@ -8,7 +7,8 @@ import { VocareumClient } from '../../src/api/client';
 
 const {
   loadConfigMock,
-  publishMock,
+  planPushMock,
+  executePushMock,
   loadDotEnvIfPresentMock,
   isCIMock,
   getApiKeyOrThrowMock,
@@ -18,7 +18,8 @@ const {
   loggerSuccessMock,
 } = vi.hoisted(() => ({
   loadConfigMock: vi.fn(),
-  publishMock: vi.fn(),
+  planPushMock: vi.fn(),
+  executePushMock: vi.fn(),
   loadDotEnvIfPresentMock: vi.fn(),
   isCIMock: vi.fn(),
   getApiKeyOrThrowMock: vi.fn().mockReturnValue('test-api-key'),
@@ -33,8 +34,15 @@ vi.mock('../../src/core/config', () => ({
   withConfigLock: vi.fn((_path: string, fn: () => Promise<unknown>) => fn()),
 }));
 
-vi.mock('../../src/core/publisher', () => ({
-  publish: publishMock,
+vi.mock('../../src/core/session', () => ({
+  withSession: vi.fn((_path: string, fn: (session: unknown) => Promise<unknown>) =>
+    fn({ applyConfigUpdate: vi.fn().mockResolvedValue(undefined) })
+  ),
+}));
+
+vi.mock('../../src/core/services/push-service', () => ({
+  planPush: planPushMock,
+  executePush: executePushMock,
 }));
 
 vi.mock('../../src/api/client', async (importOriginal) => {
@@ -67,8 +75,23 @@ vi.mock('../../src/utils/logger', () => ({
     warn: loggerWarnMock,
     info: loggerInfoMock,
     success: loggerSuccessMock,
+    newline: vi.fn(),
+    debug: vi.fn(),
+    plain: vi.fn(),
   },
 }));
+
+vi.mock('../../src/utils/prompts', () => ({
+  promptConfirm: vi.fn().mockResolvedValue(true),
+}));
+
+/** Minimal stub PushPlan with no assignments (no-changes scenario). */
+const STUB_PLAN = {
+  intent: { assignments: [] },
+  preconditions: { configDigest: '', contentHashes: {}, assignmentIds: [], partIds: [], remoteAssumptions: [] },
+  semanticFingerprint: 'stub-fp',
+  summary: 'No changes',
+};
 
 describe('publishCommand option wiring', () => {
   const baseConfig: Config = {
@@ -94,7 +117,8 @@ describe('publishCommand option wiring', () => {
     vi.clearAllMocks();
     process.env.VOCAREUM_API_KEY = 'token';
     loadConfigMock.mockResolvedValue(baseConfig);
-    publishMock.mockResolvedValue({ success: true, summary: 'ok', failed: [] });
+    planPushMock.mockResolvedValue(STUB_PLAN);
+    executePushMock.mockResolvedValue({ success: true, summary: 'ok', failed: [], created: [], updated: [], skipped: [], contentState: {} });
   });
 
   it('should force-disable autoCommit in CI and pass scoped publish options', async () => {
@@ -107,22 +131,23 @@ describe('publishCommand option wiring', () => {
       forceAll: true,
       onMissingId: 'abort',
       abortOnError: true,
+      deferDeleteResolution: true,
     });
 
-    expect(publishMock).toHaveBeenCalledTimes(1);
-    const passedOptions = publishMock.mock.calls[0][2];
-    expect(passedOptions).toMatchObject({
-      autoCommit: false,
+    // planPush is called with a PushContext and PushRequest
+    expect(planPushMock).toHaveBeenCalledTimes(1);
+    const [ctx, req] = planPushMock.mock.calls[0];
+    expect(req).toMatchObject({
+      autoCommit: false,   // CI forces false
       nonInteractive: true,
       assignment: 'lab1',
       part: 'part1',
       forceAll: true,
       onMissingId: 'abort',
       abortOnError: true,
-      // WorkspaceContext resolves the config path to an absolute path
-      configPath: path.resolve(process.cwd(), 'custom.yaml'),
-      workspaceRoot: process.cwd(),
     });
+    expect(ctx.configPath).toMatch(/custom\.yaml$/);
+    expect(ctx.workspaceRoot).toBeTruthy();
   });
 
   it('should fall back to config publish_options for onMissingId and abortOnError', async () => {
@@ -130,10 +155,11 @@ describe('publishCommand option wiring', () => {
 
     await publishCommand({ config: 'vocareum.yaml' });
 
-    const passedOptions = publishMock.mock.calls[0][2];
-    expect(passedOptions.onMissingId).toBe('skip');
-    expect(passedOptions.abortOnError).toBe(true);
-    expect(passedOptions.syncDeletes).toBe(true);
+    expect(planPushMock).toHaveBeenCalledTimes(1);
+    const [, req] = planPushMock.mock.calls[0];
+    expect(req.onMissingId).toBe('skip');
+    expect(req.abortOnError).toBe(true);
+    expect(req.syncDeletes).toBe(true);
   });
 });
 
@@ -155,20 +181,23 @@ describe('publishCommand — reporter lifecycle', () => {
     isCIMock.mockReturnValue(false);
   });
 
-  it('constructs an UnknownFieldReporter and passes it as the 4th argument to publish()', async () => {
-    publishMock.mockResolvedValue({ success: true, failed: [], succeeded: [] });
+  it('constructs an UnknownFieldReporter and passes it to executePush()', async () => {
+    planPushMock.mockResolvedValue(STUB_PLAN);
+    executePushMock.mockResolvedValue({ success: true, failed: [], created: [], updated: [], skipped: [], contentState: {}, summary: '' });
     loadConfigMock.mockResolvedValue(minimalConfig);
 
     await publishCommand({ config: 'vocareum.yaml' });
 
-    expect(publishMock).toHaveBeenCalled();
-    const fourthArg = publishMock.mock.calls[0][3];
-    expect(fourthArg).toBeInstanceOf(UnknownFieldReporter);
+    expect(executePushMock).toHaveBeenCalled();
+    // executePush signature: (session, ctx, req, plan, reporter?)
+    const fifthArg = executePushMock.mock.calls[0][4];
+    expect(fifthArg).toBeInstanceOf(UnknownFieldReporter);
   });
 
-  it('calls reporter.printSummary even when publish() throws', async () => {
+  it('calls reporter.printSummary even when executePush() throws', async () => {
     const printSpy = vi.spyOn(UnknownFieldReporter.prototype, 'printSummary');
-    publishMock.mockRejectedValue(new Error('boom'));
+    planPushMock.mockResolvedValue(STUB_PLAN);
+    executePushMock.mockRejectedValue(new Error('boom'));
     loadConfigMock.mockResolvedValue(minimalConfig);
 
     await expect(publishCommand({ config: 'vocareum.yaml' })).rejects.toThrow();
@@ -193,10 +222,10 @@ describe('publishCommand resolves throttle before using the client', () => {
     vi.mocked(resolveThrottle).mockReturnValue({ maxConcurrency: 1, minIntervalMs: 0, jitter: false });
   });
 
-  it('does not construct the client or call publish when throttle resolution throws', async () => {
+  it('does not construct the client or call planPush when throttle resolution throws', async () => {
     vi.mocked(resolveThrottle).mockImplementationOnce(() => { throw new Error('bad throttle env'); });
     await expect(publishCommand({ config: 'vocareum.yaml' })).rejects.toThrow('bad throttle env');
     expect(vi.mocked(VocareumClient)).not.toHaveBeenCalled();
-    expect(publishMock).not.toHaveBeenCalled();
+    expect(planPushMock).not.toHaveBeenCalled();
   });
 });

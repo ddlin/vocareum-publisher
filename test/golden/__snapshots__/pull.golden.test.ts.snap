@@ -1,0 +1,85 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`golden: pull > (a) interactive: prompts and imports interleave [prompt#1, import#1, prompt#2, import#2] 1`] = `
+{
+  "errors": "",
+  "output": "Scanning for assignment sync issues...
+Fetching current state from Vocareum...
+Content drift not checked. Run \`vocgit pull --content\` to compare file contents (downloads remote files).
+Found 2 orphaned assignment(s) in Vocareum.
+
+[1/2] Orphan Alpha (ID: asn-orphan-1)
+  Part 1/1: created empty structure
+Imported "Orphan Alpha" to orphan-dir/
+
+[2/2] Orphan Beta (ID: asn-orphan-2)
+  Part 1/1: created empty structure
+Imported "Orphan Beta" to orphan-dir/
+
+Updated vocareum.yaml
+
+Summary:
+  Imported:        2
+  Settings pulled: 0
+  Content pulled:  0
+  Excluded:        0
+  Removed:         0
+  Reset:           0
+  Skipped:         0",
+}
+`;
+
+exports[`golden: pull > (b) batch: --batch imports both orphans without prompting 1`] = `
+{
+  "errors": "",
+  "output": "Scanning for assignment sync issues...
+Fetching current state from Vocareum...
+Content drift not checked. Run \`vocgit pull --content\` to compare file contents (downloads remote files).
+Found 2 orphaned assignment(s) in Vocareum.
+
+[1/2] Orphan Alpha (ID: asn-orphan-1)
+  Importing (batch mode)
+  Part 1/1: created empty structure
+Imported "Orphan Alpha" to orphan-alpha/
+
+[2/2] Orphan Beta (ID: asn-orphan-2)
+  Importing (batch mode)
+  Part 1/1: created empty structure
+Imported "Orphan Beta" to orphan-beta/
+
+Updated vocareum.yaml
+
+Summary:
+  Imported:        2
+  Settings pulled: 0
+  Content pulled:  0
+  Excluded:        0
+  Removed:         0
+  Reset:           0
+  Skipped:         0",
+  "sequence": [
+    "GET /courses/course-pull-golden",
+    "GET /courses/course-pull-golden/assignments",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-1",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-1/parts",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-1/parts/part-alpha-1",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-1/parts/part-alpha-1/files",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-1/parts/part-alpha-1/files",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-1/parts/part-alpha-1/files",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-1/parts/part-alpha-1/files",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-1/parts/part-alpha-1/files",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-1/parts/part-alpha-1/files",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-1/parts/part-alpha-1/files",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-2",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-2/parts",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-2/parts/part-beta-1",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-2/parts/part-beta-1/files",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-2/parts/part-beta-1/files",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-2/parts/part-beta-1/files",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-2/parts/part-beta-1/files",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-2/parts/part-beta-1/files",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-2/parts/part-beta-1/files",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-2/parts/part-beta-1/files",
+  ],
+}
+`;

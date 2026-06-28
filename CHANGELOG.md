@@ -5,6 +5,31 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Stage 1a: internal service layer
+
+### Internal / non-user-facing
+
+This release contains a behaviour-preserving internal refactor only. No CLI
+flags, config keys, output formats, exit codes, or API contracts have changed.
+
+- **Service layer** (`src/core/services/`): `push`, `pull`, `status`, and
+  `validate` commands now delegate their core logic through a dedicated service
+  layer rather than invoking API and filesystem helpers inline in the command
+  handlers. This decouples command-line parsing from business logic and makes
+  each operation independently testable without spawning a subprocess.
+- **Centralised process exit**: a single `CommandFailureError` path owns all
+  non-zero exits; command handlers rethrow rather than catching and
+  `process.exit`-ing independently, eliminating the double-log risk.
+- **Injected `RequestScheduler` capability**: the Vocareum API client now
+  accepts an optional `RequestScheduler` at construction time (defaults to the
+  existing throttle implementation). This seam supports deterministic testing
+  and future per-operation rate-limit overrides without changing the public
+  `throttle` config surface.
+- **Composite-action smoke test** (`test/integration/action-smoke.test.ts`):
+  first concrete end-to-end subprocess test that builds the CLI and invokes the
+  published-entry binary (`dist/index.js`) against the sample fixture, proving
+  that install + invoke works headlessly (addresses P2 #11).
+
 ## [1.3.1] - 2026-06-20
 
 ### Security

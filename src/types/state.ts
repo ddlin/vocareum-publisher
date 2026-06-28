@@ -65,6 +65,13 @@ export interface PartAction {
   part: Part;
   contentChanged: boolean;
   changedDirectories?: DirectoryType[];
+  /**
+   * Per-directory hashes computed by the reconciler during change detection.
+   * Keys are directory names (e.g. 'startercode'); values are the SHA-256
+   * hashes produced by calculateDirectoryHash with the effective exclude
+   * patterns. planPush reads these instead of recomputing (Stage 1a Fix 3).
+   */
+  dirHashes?: Record<string, string>;
   /** True when part metadata (name) differs from remote and needs updating */
   metadataChanged?: boolean;
   reason?: string;
@@ -242,6 +249,11 @@ export interface UploadOptions {
   excludePatterns?: string[];
   forceAll?: boolean;
   syncDeletes?: boolean;
+  /**
+   * Exact remote-relative paths approved by the push intent for this directory.
+   * When supplied (including an empty array), syncDirectory must not relist.
+   */
+  plannedDeletePaths?: string[];
   concurrency?: number;
   /** Absolute confinement boundary for local reads (defaults to cwd) */
   workspaceRoot?: string;

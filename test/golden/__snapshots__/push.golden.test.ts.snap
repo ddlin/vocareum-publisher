@@ -1,0 +1,69 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`golden: push > (a) changed: sequence contains PUT and snapshot is stable 1`] = `
+{
+  "errors": "",
+  "output": "Starting push for course course-golden-1...
+Analyzing changes...
+Fetching current state from Vocareum...
+Found: 0 to create, 1 to update, 0 unchanged
+
+Executing push...
+Uploading 1 files to startercode...
+Uploaded 1 files
+Push completed successfully!
+Pushed: 0 created, 1 updated.",
+  "sequence": [
+    "GET /courses/course-golden-1",
+    "GET /courses/course-golden-1/assignments",
+    "GET /courses/course-golden-1/assignments/asn-golden-1",
+    "GET /courses/course-golden-1/assignments/asn-golden-1/parts",
+    "GET /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1",
+    "PUT /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1",
+  ],
+}
+`;
+
+exports[`golden: push > (b) cancel: no PUT when user declines 1`] = `
+{
+  "errors": "Push cancelled by user.",
+  "output": "Starting push for course course-golden-1...
+Analyzing changes...
+Fetching current state from Vocareum...
+Found: 0 to create, 1 to update, 0 unchanged
+
+Push completed successfully!
+Cancelled by user",
+  "sequence": [
+    "GET /courses/course-golden-1",
+    "GET /courses/course-golden-1/assignments",
+    "GET /courses/course-golden-1/assignments/asn-golden-1",
+    "GET /courses/course-golden-1/assignments/asn-golden-1/parts",
+    "GET /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1",
+  ],
+}
+`;
+
+exports[`golden: push > (c) failure: upload error is recorded and run does not throw 1`] = `
+{
+  "errors": "Failed to upload startercode for part part-golden-1
+Push failed with errors.
+- file part-golden-1/startercode: Upload failed: server error",
+  "output": "Starting push for course course-golden-1...
+Analyzing changes...
+Fetching current state from Vocareum...
+Found: 0 to create, 1 to update, 0 unchanged
+
+Executing push...
+Uploading 1 files to startercode...",
+  "sequence": [
+    "GET /courses/course-golden-1",
+    "GET /courses/course-golden-1/assignments",
+    "GET /courses/course-golden-1/assignments/asn-golden-1",
+    "GET /courses/course-golden-1/assignments/asn-golden-1/parts",
+    "GET /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1",
+    "PUT /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1",
+  ],
+  "threw": "Push completed with errors",
+}
+`;
