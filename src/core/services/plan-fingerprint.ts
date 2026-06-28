@@ -17,7 +17,7 @@ function canonicalizeValue(value: unknown): unknown {
     } else {
       // Sort object keys recursively
       const sorted: Record<string, unknown> = {};
-      const keys = Object.keys(value as Record<string, unknown>).sort();
+      const keys = Object.keys(value).sort();
       for (const key of keys) {
         sorted[key] = canonicalizeValue((value as Record<string, unknown>)[key]);
       }
