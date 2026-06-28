@@ -10,7 +10,7 @@ Readiness
 Workspace
 - Config: <cwd>/test/fixtures/sample-course/vocareum.yaml
 - Org/Course: 12345/67890
-- Git: repo on feat/stage1a-service-layer @ <sha>
+- Git: repo on main @ <sha>
 
 Sync Summary
 - Last push: never
