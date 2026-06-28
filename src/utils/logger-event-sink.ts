@@ -17,13 +17,13 @@ export class LoggerEventSink implements EventSink {
 
     switch (level) {
       case 'error':
-        logger.error(message, event.data);
+        if (event.data !== undefined) { logger.error(message, event.data); } else { logger.error(message); }
         break;
       case 'warn':
-        logger.warn(message, event.data);
+        if (event.data !== undefined) { logger.warn(message, event.data); } else { logger.warn(message); }
         break;
       case 'debug':
-        logger.debug(message, event.data);
+        if (event.data !== undefined) { logger.debug(message, event.data); } else { logger.debug(message); }
         break;
       case 'info':
         logger.info(message);
