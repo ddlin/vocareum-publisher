@@ -315,10 +315,10 @@ export class VocareumClient {
   private authProvider: AuthProvider;
   private scheduler: RequestScheduler;
 
-  constructor(authProvider: AuthProvider, throttle: ResolvedThrottle = DEFAULT_THROTTLE) {
+  constructor(authProvider: AuthProvider, throttle: ResolvedThrottle = DEFAULT_THROTTLE, scheduler?: RequestScheduler) {
     assertAllowedBaseUrl(authProvider.apiBaseUrl);
     this.authProvider = authProvider;
-    this.scheduler = new RequestScheduler(throttle);
+    this.scheduler = scheduler ?? new RequestScheduler(throttle);
     this.axios = axios.create({
       baseURL: authProvider.apiBaseUrl,
       timeout: 30000,
