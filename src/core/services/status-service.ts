@@ -14,6 +14,17 @@ import type { AssignmentScan, LocalScanResult } from '../local-scan';
 import type { StatusContext } from './context';
 import type { EventSink } from './event-sink';
 
+export interface InspectStatusOptions {
+  /**
+   * When true, run `scanLocalContent` to populate `assignments` and `summary`
+   * (used by `status --json`). When false or omitted, the scan is skipped and
+   * `assignments` is an empty array — the human renderer derives counts from
+   * config-supplied options instead. Skipping keeps human `status` fast and
+   * avoids unnecessary filesystem traversal.
+   */
+  scanContent?: boolean;
+}
+
 /**
  * Version of the `status --json` schema. Bump when the shape changes so
  * consumers (VS Code extension) can detect incompatible CLIs.
@@ -57,8 +68,14 @@ function hasNonEmptyId(value: string | null | undefined): boolean {
 /**
  * Compute the full status report from the workspace described by `ctx`.
  * Returns pure data — no human rendering, no logger calls.
+ *
+ * Pass `{ scanContent: true }` (i.e. `--json`) to populate `assignments` and
+ * `summary` via a local filesystem scan. Omitting it (the human path) skips
+ * the scan for performance — `assignments` will be an empty array and
+ * `summary` will be all-zeros; the human renderer reads counts from its own
+ * config-derived options instead.
  */
-export async function inspectStatus(ctx: StatusContext): Promise<StatusReport> {
+export async function inspectStatus(ctx: StatusContext, opts: InspectStatusOptions = {}): Promise<StatusReport> {
   const { configPath, workspaceRoot, persistedConfig: config } = ctx;
   const { authMode, credentialsConfigured, ci, ciProvider } = ctx.runtime;
 
@@ -84,7 +101,18 @@ export async function inspectStatus(ctx: StatusContext): Promise<StatusReport> {
     dirty = await hasUncommittedChanges(workspaceRoot);
   }
 
-  const scan = await scanLocalContent(config, workspaceRoot);
+  const emptySummary: LocalScanResult['summary'] = {
+    synced: 0, needs_publish: 0, unknown: 0, pending_create: 0, unlinked: 0, error: 0,
+  };
+
+  let assignments: AssignmentScan[] = [];
+  let summary: LocalScanResult['summary'] = emptySummary;
+
+  if (opts.scanContent === true) {
+    const scan = await scanLocalContent(config, workspaceRoot);
+    assignments = scan.assignments;
+    summary = scan.summary;
+  }
 
   return {
     schema_version: STATUS_JSON_SCHEMA_VERSION,
@@ -104,8 +132,8 @@ export async function inspectStatus(ctx: StatusContext): Promise<StatusReport> {
       published_by: lastPush.published_by,
       commit_sha: lastPush.commit_sha,
     },
-    assignments: scan.assignments,
-    summary: scan.summary,
+    assignments,
+    summary,
   };
 }
 
@@ -115,28 +143,35 @@ export interface RenderStatusHumanOptions {
   templateCount: number;
   /** Number of excluded assignment IDs. Required for human rendering. */
   excludedCount: number;
+  /**
+   * Config-derived assignment/part counts. Callers MUST compute these from
+   * the persisted config (not from `report.assignments`) so that human status
+   * does not depend on a content scan.
+   */
+  assignmentCount: number;
+  linkedAssignmentCount: number;
+  totalPartCount: number;
+  linkedPartCount: number;
 }
 
 /**
  * Render the status report as human-readable lines via `events`.
- * All data is derived from the `StatusReport` itself — no config or env access.
- * `templateCount` and `excludedCount` must be supplied by the caller as they are
- * not included in the JSON document.
+ * Assignment/part counts come from `options` (config-derived by the caller)
+ * rather than from `report.assignments` — the human path skips the content
+ * scan, so `report.assignments` may be empty.
+ * `templateCount` and `excludedCount` must be supplied by the caller as they
+ * are not included in the JSON document.
  */
 export function renderStatusHuman(
   report: StatusReport,
   events: EventSink,
   options: RenderStatusHumanOptions
 ): void {
-  // Derive counts from the report data
-  const assignments = report.assignments;
-  const assignmentCount = assignments.length;
-  const linkedAssignmentCount = assignments.filter(a => hasNonEmptyId(a.assignment_id)).length;
-  const totalPartCount = assignments.reduce((sum, a) => sum + a.parts.length, 0);
-  const linkedPartCount = assignments.reduce(
-    (sum, a) => sum + a.parts.filter(p => hasNonEmptyId(p.part_id)).length,
-    0
-  );
+  // Counts come from config-derived options, not the (potentially empty) scan.
+  const assignmentCount = options.assignmentCount;
+  const linkedAssignmentCount = options.linkedAssignmentCount;
+  const totalPartCount = options.totalPartCount;
+  const linkedPartCount = options.linkedPartCount;
 
   const authMode = report.auth.mode;
   const credentialLabel = authMode === 'oauth' ? 'OAuth client credentials' : 'API key';
@@ -170,10 +205,10 @@ export function renderStatusHuman(
   events.emit({ level: 'plain', message: `- Templates configured: ${options.templateCount}` });
   events.emit({ level: 'plain', message: `- Excluded assignment IDs: ${options.excludedCount}` });
 
-  if (options.verbose === true) {
+  if (options.verbose === true && report.assignments.length > 0) {
     events.emit({ level: 'newline' });
     events.emit({ level: 'plain', message: 'Assignment Details' });
-    for (const a of assignments) {
+    for (const a of report.assignments) {
       const linkedParts = a.parts.filter(p => hasNonEmptyId(p.part_id)).length;
       const assignmentId = hasNonEmptyId(a.assignment_id) ? a.assignment_id : 'pending';
       events.emit({ level: 'plain', message: `- ${a.path} (id=${assignmentId}, parts=${linkedParts}/${a.parts.length})` });

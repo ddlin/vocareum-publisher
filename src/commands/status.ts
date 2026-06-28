@@ -63,7 +63,7 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
       runtime,
     };
 
-    const report = await inspectStatus(ctx);
+    const report = await inspectStatus(ctx, { scanContent: options.json === true });
 
     if (options.json === true) {
       // Pure JSON on stdout — consumers parse this; human output goes nowhere else.
@@ -94,10 +94,33 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
     const templateCount = templates.length + legacyTemplateIds.length;
     const excludedCount = config.vocareum.excluded_assignments?.length ?? 0;
 
+    // Derive assignment/part counts from config — not from the scan — so that
+    // human status stays fast (no filesystem traversal) and counts are correct
+    // even when scanContent is false.
+    const configAssignments = config.assignments ?? [];
+    const configAssignmentCount = configAssignments.length;
+    const configLinkedAssignmentCount = configAssignments.filter(
+      a => typeof a.assignment_id === 'string' && a.assignment_id.trim() !== ''
+    ).length;
+    const configTotalPartCount = configAssignments.reduce(
+      (sum, a) => sum + (a.parts?.length ?? 0),
+      0
+    );
+    const configLinkedPartCount = configAssignments.reduce(
+      (sum, a) => sum + (a.parts ?? []).filter(
+        p => typeof p.part_id === 'string' && p.part_id.trim() !== ''
+      ).length,
+      0
+    );
+
     renderStatusHuman(report, events, {
       verbose: options.verbose,
       templateCount,
       excludedCount,
+      assignmentCount: configAssignmentCount,
+      linkedAssignmentCount: configLinkedAssignmentCount,
+      totalPartCount: configTotalPartCount,
+      linkedPartCount: configLinkedPartCount,
     });
   } catch (error) {
     if (error instanceof CommandFailureError) { throw error; }

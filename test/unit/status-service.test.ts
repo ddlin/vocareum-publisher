@@ -10,6 +10,7 @@ import type { Config } from '../../src/types/config';
 import type { StatusContext } from '../../src/core/services/context';
 import { CollectingEventSink } from '../../src/core/services/event-sink';
 import { inspectStatus } from '../../src/core/services/status-service';
+import * as localScan from '../../src/core/local-scan';
 
 vi.mock('../../src/utils/git', () => ({
   isGitRepo: vi.fn().mockResolvedValue(true),
@@ -74,15 +75,38 @@ function makeContext(config: Config, sinkOverride?: CollectingEventSink): Status
 }
 
 describe('inspectStatus', () => {
-  it('returns correct assignment count from config', async () => {
+  it('returns correct assignment count from config when scanContent: true', async () => {
     const config = makeFixtureConfig();
     const ctx = makeContext(config);
-    const report = await inspectStatus(ctx);
+    const report = await inspectStatus(ctx, { scanContent: true });
 
     // 1 assignment in the fixture config
     expect(report.assignments).toHaveLength(1);
     // No publish history → assignment is "unknown"
     expect(report.summary.unknown).toBe(1);
+  });
+
+  it('does NOT call scanLocalContent on the human path (scanContent omitted)', async () => {
+    const config = makeFixtureConfig();
+    const ctx = makeContext(config);
+    const spy = vi.spyOn(localScan, 'scanLocalContent');
+
+    const report = await inspectStatus(ctx); // no scanContent option → human path
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(report.assignments).toHaveLength(0);
+    spy.mockRestore();
+  });
+
+  it('DOES call scanLocalContent when scanContent: true (json path)', async () => {
+    const config = makeFixtureConfig();
+    const ctx = makeContext(config);
+    const spy = vi.spyOn(localScan, 'scanLocalContent');
+
+    await inspectStatus(ctx, { scanContent: true });
+
+    expect(spy).toHaveBeenCalledOnce();
+    spy.mockRestore();
   });
 
   it('returns correct auth mode from context runtime', async () => {
