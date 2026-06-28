@@ -246,7 +246,9 @@ describe('golden: pull', () => {
       return 'Import to local repository';
     });
 
-    // mockPrompt handles the directory name prompt (after promptChoice)
+    // mockPrompt handles the directory name prompt (after promptChoice).
+    // Both orphans resolve to 'orphan-dir/' because files.pathExists is mocked to false
+    // (so the uniqueness check always passes on first try) — this is fine for a characterization test.
     mockPrompt.mockResolvedValue('orphan-dir');
 
     // ── Instrument the VocareumClient to push import markers ─────────────────
@@ -259,7 +261,7 @@ describe('golden: pull', () => {
     // the next request per orphan is getAssignment.
     let importCallCount = 0;
     const originalRequest = recorder.request.bind(recorder);
-    recorder.request = async function <T = unknown>(config: { method: string; url: string }): Promise<T> {
+    recorder.request = async <T = unknown>(config: { method: string; url: string }): Promise<T> => {
       // getAssignment for an orphan: URL ends with /assignments/<orphan-id> (no trailing path).
       // This distinguishes getAssignment from listParts (/parts) and getPart (/parts/<id>).
       // Matches: /courses/.../assignments/asn-orphan-1
