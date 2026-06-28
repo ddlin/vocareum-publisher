@@ -1,6 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'child_process';
 import { join } from 'path';
+import { ensureBuilt } from '../helpers/ensure-built';
+
+beforeAll(ensureBuilt, 120_000);
 
 describe('action smoke (built CLI)', () => {
   it('runs `status` against the sample fixture and exits 0', () => {
