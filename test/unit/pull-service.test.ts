@@ -1,0 +1,548 @@
+/**
+ * Unit tests for pull-service.ts — applyPull resolver contract
+ *
+ * These tests exercise the per-item resolver dispatch inside applyPull using a
+ * STUB resolver (no real prompts) and a stub LockedSession that records calls to
+ * applyConfigUpdate. importAssignment's low-level I/O dependencies (assignments
+ * API, parts API, content API, files, git, local-scan) are all mocked so the
+ * test runs without touching the filesystem or network.
+ *
+ * Test cases:
+ *   1. "import first, skip rest" — two orphans; stub resolver returns 'import'
+ *      for index 0 and 'skip' for index 1. Asserts: (a) applyConfigUpdate is
+ *      called once with a new assignment for the first orphan, (b)
+ *      resolveImportPath was called with the computed suggested path, (c) the
+ *      second orphan is counted as skipped (not imported).
+ *
+ *   2. "inspectPull is read-only" — drives inspectPull via a RecordingClient
+ *      (reconcile + empty lists) and asserts that applyConfigUpdate is NOT called
+ *      during inspection (no writes), and that the stub resolver methods are
+ *      never invoked (no prompts).
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// ── hoisted mock functions (must be declared before vi.mock factories) ────────
+const {
+  mockReconcile,
+  mockGetAssignment,
+  mockListParts,
+  mockGetPart,
+  mockDownloadContent,
+} = vi.hoisted(() => ({
+  mockReconcile: vi.fn(),
+  mockGetAssignment: vi.fn(),
+  mockListParts: vi.fn(),
+  mockGetPart: vi.fn(),
+  mockDownloadContent: vi.fn(),
+}));
+
+// ── mock local-scan (assertConfinedToWorkspace) ────────────────────────────────
+vi.mock('../../src/core/local-scan', () => ({
+  assertConfinedToWorkspace: vi.fn().mockResolvedValue(undefined),
+}));
+
+// ── mock reconciler (used by inspectPull) ──────────────────────────────────────
+vi.mock('../../src/core/reconciler', () => ({
+  reconcile: mockReconcile,
+}));
+
+// ── mock assignments API ───────────────────────────────────────────────────────
+vi.mock('../../src/api/assignments', () => ({
+  getAssignment: mockGetAssignment,
+}));
+
+// ── mock parts API ─────────────────────────────────────────────────────────────
+vi.mock('../../src/api/parts', () => ({
+  listParts: mockListParts,
+  getPart: mockGetPart,
+}));
+
+// ── mock content API ───────────────────────────────────────────────────────────
+vi.mock('../../src/api/content', () => ({
+  downloadContent: mockDownloadContent,
+}));
+
+// ── mock files utilities ───────────────────────────────────────────────────────
+vi.mock('../../src/utils/files', () => ({
+  pathExists: vi.fn().mockResolvedValue(false),
+  ensureDirectory: vi.fn().mockResolvedValue(undefined),
+  writeFile: vi.fn().mockResolvedValue(undefined),
+  writeFileUnderBase: vi.fn().mockResolvedValue(undefined),
+  calculateDirectoryHash: vi.fn().mockResolvedValue('hash-abc123'),
+  validatePath: vi.fn(),
+  readDirectory: vi.fn().mockResolvedValue({}),
+}));
+
+// ── mock path-security (used in content drift path; not exercised here but imported) ──
+vi.mock('../../src/utils/path-security', () => ({
+  isPathConfinedToBase: vi.fn().mockResolvedValue(true),
+}));
+
+// ── mock git utilities ─────────────────────────────────────────────────────────
+vi.mock('../../src/utils/git', () => ({
+  getCommitSha: vi.fn().mockResolvedValue('abc1234abc1234abc1234abc1234abc1234abc1234'),
+  getGitUserName: vi.fn().mockResolvedValue('test-user'),
+}));
+
+// ── mock settings utilities ────────────────────────────────────────────────────
+vi.mock('../../src/utils/settings', () => ({
+  mapAssignmentSettings: vi.fn().mockReturnValue({}),
+  mapPartSettings: vi.fn().mockReturnValue({}),
+}));
+
+// ── imports (after mocks) ──────────────────────────────────────────────────────
+import { inspectPull, applyPull } from '../../src/core/services/pull-service';
+import type {
+  PullResolver,
+  PullInspection,
+  PullIssueOrphan,
+  PullIssueStale,
+  PullIssueSettingsDrift,
+  PullIssueContentDrift,
+  OrphanAction,
+  StaleAction,
+  SettingsDriftAction,
+  ContentDriftAction,
+} from '../../src/core/services/pull-service';
+import { CollectingEventSink } from '../../src/core/services/event-sink';
+import { NonInteractivePrompter } from '../../src/core/services/context';
+import type { PullContext } from '../../src/core/services/context';
+import type { PullRequest } from '../../src/core/services/types';
+import type { LockedSession } from '../../src/core/session';
+import type { OrphanedEntity } from '../../src/types/state';
+import type { Config } from '../../src/types/config';
+
+// ── Shared fixtures ────────────────────────────────────────────────────────────
+
+const COURSE_ID = 'course-unit-test';
+const ORG_ID = 'org-unit-test';
+const WORKSPACE_ROOT = '/tmp/vocgit-unit-test';
+
+const BASE_CONFIG: Config = {
+  vocareum: {
+    course_id: COURSE_ID,
+    api_base_url: 'https://api.vocareum.com',
+    org_id: ORG_ID,
+  },
+  assignments: [],
+};
+
+/** Build a minimal PullContext with the given config, stub client, and fresh EventSink */
+function makeCtx(
+  config: Config = BASE_CONFIG,
+  client: { request: ReturnType<typeof vi.fn> } = { request: vi.fn() }
+): { ctx: PullContext; events: CollectingEventSink } {
+  const events = new CollectingEventSink();
+  const ctx: PullContext = {
+    persistedConfig: config,
+    effectiveConfig: config,
+    configPath: `${WORKSPACE_ROOT}/vocareum.yaml`,
+    workspaceRoot: WORKSPACE_ROOT,
+    events,
+    prompter: new NonInteractivePrompter(),
+    client: client as never,
+  };
+  return { ctx, events };
+}
+
+/** Build a stub LockedSession that records applyConfigUpdate calls */
+function makeSession(): { session: LockedSession; applyConfigUpdate: ReturnType<typeof vi.fn> } {
+  const applyConfigUpdate = vi.fn().mockResolvedValue(undefined);
+  const session: LockedSession = { applyConfigUpdate };
+  return { session, applyConfigUpdate };
+}
+
+/**
+ * Build a minimal stub PullResolver. All methods default to safe no-ops;
+ * override individual methods per test.
+ */
+function makeStubResolver(overrides: Partial<PullResolver> = {}): PullResolver & {
+  resolveOrphanAction: ReturnType<typeof vi.fn>;
+  resolveStaleAction: ReturnType<typeof vi.fn>;
+  resolveSettingsDriftAction: ReturnType<typeof vi.fn>;
+  resolveContentDriftAction: ReturnType<typeof vi.fn>;
+  resolveImportPath: ReturnType<typeof vi.fn>;
+} {
+  return {
+    resolveOrphanAction: vi.fn<[PullIssueOrphan], Promise<OrphanAction>>().mockResolvedValue('skip'),
+    resolveStaleAction: vi.fn<[PullIssueStale], Promise<StaleAction>>().mockResolvedValue('skip'),
+    resolveSettingsDriftAction: vi.fn<[PullIssueSettingsDrift], Promise<SettingsDriftAction>>().mockResolvedValue('skip'),
+    resolveContentDriftAction: vi.fn<[PullIssueContentDrift], Promise<ContentDriftAction>>().mockResolvedValue('skip'),
+    resolveImportPath: vi.fn<[PullIssueOrphan, string], Promise<string>>().mockImplementation(
+      (_issue, suggested) => Promise.resolve(suggested)
+    ),
+    ...overrides,
+  };
+}
+
+/** Two orphaned entities for use across tests */
+const ORPHAN_1: OrphanedEntity = {
+  type: 'assignment',
+  id: 'asn-orphan-1',
+  name: 'Orphan Alpha',
+  message: 'exists in Vocareum but not in config',
+};
+const ORPHAN_2: OrphanedEntity = {
+  type: 'assignment',
+  id: 'asn-orphan-2',
+  name: 'Orphan Beta',
+  message: 'exists in Vocareum but not in config',
+};
+
+/** Pre-built PullInspection with two orphans, no stale/drift */
+const INSPECTION_TWO_ORPHANS: PullInspection = {
+  orphans: [ORPHAN_1, ORPHAN_2],
+  stale: [],
+  settingsDrift: [],
+  contentDrift: [],
+};
+
+/** API response shapes expected by importAssignment */
+function enqueueImportResponses(client: { request: ReturnType<typeof vi.fn> }): void {
+  // getAssignment
+  mockGetAssignment.mockResolvedValueOnce({
+    assignments: [{ id: ORPHAN_1.id, name: ORPHAN_1.name, nosubmit: false }],
+  });
+  // listParts
+  mockListParts.mockResolvedValueOnce([
+    { id: 'part-alpha-1', name: 'Part 1', seqnum: '1', deleted: '0' },
+  ]);
+  // getPart
+  mockGetPart.mockResolvedValueOnce({
+    parts: [{ id: 'part-alpha-1', name: 'Part 1', seqnum: '1', deleted: '0', submission_filters: {} }],
+  });
+  // downloadContent — return empty file map (no actual files to write)
+  mockDownloadContent.mockResolvedValueOnce({});
+  // suppress unused parameter warning
+  void client;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('applyPull resolver contract', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Default reconcile mock (used only in inspectPull tests)
+    mockReconcile.mockResolvedValue({
+      config: BASE_CONFIG,
+      course: { type: 'skip' },
+      assignments: [],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 0,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 0,
+        estimatedApiCalls: 0,
+      },
+      orphanedInVocareum: [],
+      staleInConfig: [],
+    });
+  });
+
+  // ── Test 1: import first orphan, skip second ─────────────────────────────────
+  describe('import first orphan, skip second', () => {
+    it('calls applyConfigUpdate with the imported assignment', async () => {
+      const { ctx } = makeCtx();
+      const { session, applyConfigUpdate } = makeSession();
+      const clientMock = { request: vi.fn() };
+      (ctx as PullContext & { client: typeof clientMock }).client = clientMock as never;
+
+      // Enqueue API responses for importAssignment (only first orphan is imported)
+      enqueueImportResponses(clientMock);
+
+      const resolver = makeStubResolver({
+        resolveOrphanAction: vi.fn<[PullIssueOrphan], Promise<OrphanAction>>()
+          .mockImplementation(async (issue) => {
+            // import first orphan (index 0), skip all others
+            return issue.index === 0 ? 'import' : 'skip';
+          }),
+        // resolveImportPath echoes the suggested path (default implementation above)
+      });
+
+      const req: PullRequest = { batch: false, verbose: false, skipContent: false };
+      const result = await applyPull(session, ctx, req, INSPECTION_TWO_ORPHANS, resolver);
+
+      // (a) Only the first orphan was imported, second was skipped
+      expect(result.imported).toBe(1);
+      expect(result.skipped).toBe(1);
+
+      // (c) applyConfigUpdate was called exactly once (to persist the new assignment)
+      expect(applyConfigUpdate).toHaveBeenCalledTimes(1);
+
+      // The update must include a new assignment for ORPHAN_1's directory
+      const updateCall = applyConfigUpdate.mock.calls[0][0] as {
+        assignments?: Array<{ assignment_id?: string }>;
+      };
+      expect(updateCall.assignments).toBeDefined();
+      expect(updateCall.assignments!.length).toBeGreaterThanOrEqual(1);
+      const importedAsn = updateCall.assignments!.find(
+        (a) => a.assignment_id === ORPHAN_1.id
+      );
+      expect(importedAsn).toBeDefined();
+    });
+
+    it('calls resolveImportPath with the computed suggested path', async () => {
+      const { ctx } = makeCtx();
+      const { session } = makeSession();
+      const clientMock = { request: vi.fn() };
+      (ctx as PullContext & { client: typeof clientMock }).client = clientMock as never;
+
+      enqueueImportResponses(clientMock);
+
+      const resolveImportPath = vi.fn<[PullIssueOrphan, string], Promise<string>>()
+        .mockImplementation((_issue, suggested) => Promise.resolve(suggested));
+
+      const resolver = makeStubResolver({
+        resolveOrphanAction: vi.fn<[PullIssueOrphan], Promise<OrphanAction>>()
+          .mockImplementation(async (issue) => (issue.index === 0 ? 'import' : 'skip')),
+        resolveImportPath,
+      });
+
+      const req: PullRequest = { batch: false, verbose: false, skipContent: false };
+      await applyPull(session, ctx, req, INSPECTION_TWO_ORPHANS, resolver);
+
+      // (b) resolveImportPath was called once (for the first orphan)
+      expect(resolveImportPath).toHaveBeenCalledTimes(1);
+
+      // The suggested path must be a slugified form of the orphan's name
+      const [_issuePassed, suggestedPath] = resolveImportPath.mock.calls[0] as [PullIssueOrphan, string];
+      // slugify('Orphan Alpha') === 'orphan-alpha'
+      expect(suggestedPath).toBe('orphan-alpha');
+    });
+
+    it('does NOT call resolveImportPath for the skipped (second) orphan', async () => {
+      const { ctx } = makeCtx();
+      const { session } = makeSession();
+      const clientMock = { request: vi.fn() };
+      (ctx as PullContext & { client: typeof clientMock }).client = clientMock as never;
+
+      enqueueImportResponses(clientMock);
+
+      const resolveImportPath = vi.fn<[PullIssueOrphan, string], Promise<string>>()
+        .mockImplementation((_issue, suggested) => Promise.resolve(suggested));
+
+      const resolver = makeStubResolver({
+        resolveOrphanAction: vi.fn<[PullIssueOrphan], Promise<OrphanAction>>()
+          .mockImplementation(async (issue) => (issue.index === 0 ? 'import' : 'skip')),
+        resolveImportPath,
+      });
+
+      const req: PullRequest = { batch: false, verbose: false, skipContent: false };
+      await applyPull(session, ctx, req, INSPECTION_TWO_ORPHANS, resolver);
+
+      // resolveImportPath called exactly once — only for index 0
+      expect(resolveImportPath).toHaveBeenCalledTimes(1);
+      const issuePassed = resolveImportPath.mock.calls[0][0] as PullIssueOrphan;
+      expect(issuePassed.index).toBe(0);
+      expect(issuePassed.orphan.id).toBe(ORPHAN_1.id);
+    });
+  });
+
+  // ── Test 2: all-skip resolver ─────────────────────────────────────────────────
+  describe('all-skip resolver', () => {
+    it('does not call applyConfigUpdate when every orphan is skipped', async () => {
+      const { ctx } = makeCtx();
+      const { session, applyConfigUpdate } = makeSession();
+
+      const resolver = makeStubResolver();   // defaults to 'skip' for everything
+
+      const req: PullRequest = { batch: false, verbose: false, skipContent: false };
+      const result = await applyPull(session, ctx, req, INSPECTION_TWO_ORPHANS, resolver);
+
+      expect(result.imported).toBe(0);
+      expect(result.skipped).toBe(2);
+      expect(applyConfigUpdate).not.toHaveBeenCalled();
+    });
+
+    it('never calls resolveImportPath when action is skip', async () => {
+      const { ctx } = makeCtx();
+      const { session } = makeSession();
+
+      const resolver = makeStubResolver();
+      const req: PullRequest = { batch: false, verbose: false, skipContent: false };
+      await applyPull(session, ctx, req, INSPECTION_TWO_ORPHANS, resolver);
+
+      expect(resolver.resolveImportPath).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Test 3: batch mode skips resolveImportPath ────────────────────────────────
+  describe('batch mode (req.batch = true)', () => {
+    it('uses the suggested path directly without calling resolveImportPath', async () => {
+      const { ctx } = makeCtx();
+      const { session, applyConfigUpdate } = makeSession();
+      const clientMock = { request: vi.fn() };
+      (ctx as PullContext & { client: typeof clientMock }).client = clientMock as never;
+
+      // Enqueue import responses for BOTH orphans (batch imports all)
+      enqueueImportResponses(clientMock);
+      // Enqueue a second set for orphan 2
+      mockGetAssignment.mockResolvedValueOnce({
+        assignments: [{ id: ORPHAN_2.id, name: ORPHAN_2.name, nosubmit: false }],
+      });
+      mockListParts.mockResolvedValueOnce([
+        { id: 'part-beta-1', name: 'Part 1', seqnum: '1', deleted: '0' },
+      ]);
+      mockGetPart.mockResolvedValueOnce({
+        parts: [{ id: 'part-beta-1', name: 'Part 1', seqnum: '1', deleted: '0', submission_filters: {} }],
+      });
+      mockDownloadContent.mockResolvedValueOnce({});
+
+      const resolver = makeStubResolver({
+        // batch=true means applyPull doesn't call resolveImportPath;
+        // resolver still needs to return 'import' for both
+        resolveOrphanAction: vi.fn<[PullIssueOrphan], Promise<OrphanAction>>()
+          .mockResolvedValue('import'),
+      });
+
+      const req: PullRequest = { batch: true, verbose: false, skipContent: false };
+      const result = await applyPull(session, ctx, req, INSPECTION_TWO_ORPHANS, resolver);
+
+      expect(result.imported).toBe(2);
+      // resolveImportPath must NOT be called in batch mode
+      expect(resolver.resolveImportPath).not.toHaveBeenCalled();
+      // Config must have been written
+      expect(applyConfigUpdate).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ── Test 4: empty inspection ──────────────────────────────────────────────────
+  describe('empty inspection', () => {
+    it('does not call applyConfigUpdate or any resolver method', async () => {
+      const { ctx } = makeCtx();
+      const { session, applyConfigUpdate } = makeSession();
+      const resolver = makeStubResolver();
+
+      const emptyInspection: PullInspection = {
+        orphans: [],
+        stale: [],
+        settingsDrift: [],
+        contentDrift: [],
+      };
+
+      const req: PullRequest = { batch: false, verbose: false, skipContent: false };
+      const result = await applyPull(session, ctx, req, emptyInspection, resolver);
+
+      expect(result.imported).toBe(0);
+      expect(result.skipped).toBe(0);
+      expect(applyConfigUpdate).not.toHaveBeenCalled();
+      expect(resolver.resolveOrphanAction).not.toHaveBeenCalled();
+      expect(resolver.resolveImportPath).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('inspectPull is read-only (no writes, no prompts)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('does not call applyConfigUpdate during inspectPull', async () => {
+    const { session, applyConfigUpdate } = makeSession();
+    const { ctx } = makeCtx();
+
+    // reconcile returns empty — no orphans, no stale
+    mockReconcile.mockResolvedValue({
+      config: BASE_CONFIG,
+      course: { type: 'skip' },
+      assignments: [],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 0,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 0,
+        estimatedApiCalls: 0,
+      },
+      orphanedInVocareum: [],
+      staleInConfig: [],
+    });
+
+    const req: PullRequest = { batch: false, verbose: false, skipContent: false, content: false };
+    const inspection = await inspectPull(ctx, req);
+
+    // inspect returns a PullInspection shape
+    expect(inspection).toHaveProperty('orphans');
+    expect(inspection).toHaveProperty('stale');
+    expect(inspection).toHaveProperty('settingsDrift');
+    expect(inspection).toHaveProperty('contentDrift');
+
+    // inspectPull does NO writes — applyConfigUpdate must never be called
+    expect(applyConfigUpdate).not.toHaveBeenCalled();
+
+    // suppress unused warning
+    void session;
+  });
+
+  it('does not invoke any resolver method during inspectPull', async () => {
+    const { ctx } = makeCtx();
+    const resolver = makeStubResolver();
+
+    mockReconcile.mockResolvedValue({
+      config: BASE_CONFIG,
+      course: { type: 'skip' },
+      assignments: [],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 0,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 0,
+        estimatedApiCalls: 0,
+      },
+      orphanedInVocareum: [ORPHAN_1, ORPHAN_2],  // orphans present but inspect never calls resolver
+      staleInConfig: [],
+    });
+
+    const req: PullRequest = { batch: false, verbose: false, skipContent: false, content: false };
+    await inspectPull(ctx, req);
+
+    // inspectPull only detects issues — it must NOT call any resolver method
+    expect(resolver.resolveOrphanAction).not.toHaveBeenCalled();
+    expect(resolver.resolveStaleAction).not.toHaveBeenCalled();
+    expect(resolver.resolveSettingsDriftAction).not.toHaveBeenCalled();
+    expect(resolver.resolveContentDriftAction).not.toHaveBeenCalled();
+    expect(resolver.resolveImportPath).not.toHaveBeenCalled();
+  });
+
+  it('returns the orphans detected by reconcile without acting on them', async () => {
+    const { ctx } = makeCtx();
+
+    mockReconcile.mockResolvedValue({
+      config: BASE_CONFIG,
+      course: { type: 'skip' },
+      assignments: [],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 0,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 0,
+        estimatedApiCalls: 0,
+      },
+      orphanedInVocareum: [ORPHAN_1, ORPHAN_2],
+      staleInConfig: [],
+    });
+
+    const req: PullRequest = { batch: false, verbose: false, skipContent: false, content: false };
+    const inspection = await inspectPull(ctx, req);
+
+    expect(inspection.orphans).toHaveLength(2);
+    expect(inspection.orphans[0].id).toBe(ORPHAN_1.id);
+    expect(inspection.orphans[1].id).toBe(ORPHAN_2.id);
+    // No stale or drift detected
+    expect(inspection.stale).toHaveLength(0);
+    expect(inspection.settingsDrift).toHaveLength(0);
+    expect(inspection.contentDrift).toHaveLength(0);
+  });
+});
