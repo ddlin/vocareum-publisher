@@ -64,3 +64,7 @@ docs/vocareum-api-finding.md
 docs/ai-bugs-summary.md
 docs/scope-creep-analysis.md
 docs/project-stats.md
+
+# Internal design/process docs (specs + plans) — kept local; document
+# Vocareum API quirks/workarounds and review history, not for public exposure.
+docs/superpowers/
