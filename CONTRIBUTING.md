@@ -62,8 +62,8 @@ These are enforced by tests, lint, and review. The most important:
 5. Update `README.md` / `CHANGELOG.md` if your change is user-facing.
 6. Open a PR using the template; link any related issue.
 
-**Do not bump the package version** in a PR. Releases (version bump → npm publish →
-git tag) are handled by the maintainer, because publishing requires npm 2FA.
+**Do not bump the package version** in a PR. Releases are handled by the maintainer
+(publishing requires npm 2FA) — see [RELEASING.md](RELEASING.md) for the process.
 
 ## Questions
 

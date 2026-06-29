@@ -4,9 +4,9 @@ Push assignment content from GitHub to Vocareum.
 
 A CLI tool and GitHub Action that enables instructors to maintain assignment content in Git with full version control while seamlessly syncing to Vocareum.
 
-Current stable release in this repository (see [CHANGELOG.md](CHANGELOG.md)):
-- CLI package: `vocareum-publisher@1.2.0` ([npm](https://www.npmjs.com/package/vocareum-publisher))
-- VS Code extension: `vocgit@1.1.0` — see [vscode-extension/](vscode-extension/) for installation
+Released components (the CLI and the VS Code extension are versioned independently — see the [CHANGELOG](CHANGELOG.md), [npm](https://www.npmjs.com/package/vocareum-publisher), and the [Releases](https://github.com/ddlin/vocareum-publisher/releases) page for current versions):
+- CLI package: [`vocareum-publisher`](https://www.npmjs.com/package/vocareum-publisher) on npm (`npm install -g vocareum-publisher`)
+- VS Code extension: `vocgit` — see [vscode-extension/](vscode-extension/) for installation
 
 **[Video Walkthrough](https://www.loom.com/share/2af5f925c0244db0bf9825f8e7e133bd)** - Watch a quick demo of vocgit in action.
 
@@ -417,7 +417,7 @@ jobs:
   push-to-vocareum:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Push to Vocareum
         uses: ddlin/vocareum-publisher@v1
