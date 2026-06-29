@@ -51,21 +51,16 @@ test/vocareum-course-*.yaml
 # Claude Code
 .claude/
 
-# Internal AI/development artifacts (not useful to end users)
-AGENTS.md
-AI_IMPLEMENTATION_PROMPTS.md
-PRD.md
-PROJECT_SUMMARY.md
-
-# Internal AI artifacts (local only)
-PRD.md
+# Internal AI / development artifacts (local only, not useful to end users)
 AGENTS.md
 ARCHITECTURE.md
 AI_IMPLEMENTATION_PROMPTS.md
+PRD.md
 PROJECT_SUMMARY.md
 DEMO_SCRIPT.md
+BACKLOG.md
+IMPROVEMENTS-SUMMARY.md
 docs/vocareum-api-finding.md
 docs/ai-bugs-summary.md
 docs/scope-creep-analysis.md
-BACKLOG.md
 docs/project-stats.md
