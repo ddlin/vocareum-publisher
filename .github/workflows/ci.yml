@@ -17,6 +17,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
+      - run: npm run build  # dist/ is required by the subprocess integration tests (action-smoke, exit-codes)
       - run: npx vitest run
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high

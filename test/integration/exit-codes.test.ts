@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'child_process';
 import { join } from 'path';
+import { ensureBuilt } from '../helpers/ensure-built';
 
 const distIndex = join(__dirname, '../../dist/index.js');
 
@@ -14,6 +15,8 @@ const run = (args: string[]) => {
 };
 
 describe('exit codes (subprocess)', () => {
+  beforeAll(() => ensureBuilt(), 120_000);
+
   it('exits non-zero with a single error line on a missing config', () => {
     const r = run(['status', '--config', 'definitely-missing.yaml']);
     expect(r.code).not.toBe(0);
