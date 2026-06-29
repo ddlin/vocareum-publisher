@@ -66,10 +66,10 @@ tag must never precede the npm version). Run from a clean `master`.
    ( cd vscode-extension && npm ci --no-fund --no-audit && npm run package )
    gh release upload vX.Y.Z vscode-extension/vocgit-*.vsix
    ```
-   > **`.github/workflows/release.yml`** is meant to do step 7 automatically on a
-   > `v*.*.*` tag push (build the `.vsix` + create the Release). It is **currently
-   > unreliable / has not produced a Release** — until it's fixed, create the Release
-   > manually as above. (`v1.2.0`, the only existing Release, was hand-created.)
+   > Creating the Release manually (above) is the **canonical** path. There is no
+   > release automation: a `.github/workflows/release.yml` previously attempted to
+   > build the `.vsix` and create the Release on a `v*.*.*` tag push, but it never
+   > produced one, so it was **retired**. Follow this runbook.
 8. **Move `v1`** to this release **only when you're confident** (ends the canary):
    ```bash
    git tag -f v1 vX.Y.Z && git push -f origin v1
