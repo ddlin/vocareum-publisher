@@ -60,6 +60,7 @@ export const NON_SETTING_FIELDS_ASSIGNMENT: ReadonlySet<string> = new Set([
   'masterid',           // reference to the template/master it was copied from
   'num_parts',          // derived count of parts
   'part_ids',           // the assignment's part-ID list (structure, not config)
+  'lti_url',            // server-derived LTI launch URL (encodes course/assignment IDs)
 ]);
 
 export const KNOWN_PART_SETTING_KEYS: ReadonlySet<string> = new Set([

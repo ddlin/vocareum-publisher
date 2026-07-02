@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { scanLocalContent, detectChangedDirectories } from '../../src/core/local-scan';
+import { scanLocalContent, detectChangedDirectories, assertConfinedToWorkspace } from '../../src/core/local-scan';
 import { calculateDirectoryHash } from '../../src/utils/files';
 import type { Config } from '../../src/types/config';
 
@@ -442,5 +442,41 @@ describe('scanLocalContent', () => {
 
     // The failed entry's content_state is what push retries against
     expect(result.assignments[0].parts[0].directories[0].status).toBe('synced');
+  });
+});
+
+describe('assertConfinedToWorkspace', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-confine-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('allows a not-yet-created directory (fresh pull import target)', async () => {
+    await expect(assertConfinedToWorkspace(tempDir, 'ilt-assignment-en-us'))
+      .resolves.toBeUndefined();
+  });
+
+  it('rejects a path under an in-workspace symlink that points outside (import escape)', async () => {
+    // Regression: pull import used a lexical-only check, so a user-typed name
+    // beneath an in-workspace symlink escaped the workspace on write.
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-outside-'));
+    try {
+      await fs.symlink(outside, path.join(tempDir, 'link'));
+
+      await expect(assertConfinedToWorkspace(tempDir, path.join('link', 'asn')))
+        .rejects.toThrow(/escapes the workspace/);
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects lexical traversal above the workspace', async () => {
+    await expect(assertConfinedToWorkspace(tempDir, path.join('..', 'escape')))
+      .rejects.toThrow(/escapes the workspace/);
   });
 });

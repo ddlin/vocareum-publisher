@@ -531,6 +531,10 @@ async function importAssignment(
   events: EventSink
 ): Promise<ImportResult> {
   const assignmentId = orphan.id;
+  // localPath is user-typed at the import prompt — confine it before any writes.
+  // Must be realpath confinement, not lexical: a lexical check passes for a path
+  // under an in-workspace symlink that points outside, letting the import escape.
+  await assertConfinedToWorkspace(workspaceRoot, localPath);
   const localAbs = path.resolve(workspaceRoot, localPath);
 
   const fullAssignment = await getAssignment(client, courseId, assignmentId);

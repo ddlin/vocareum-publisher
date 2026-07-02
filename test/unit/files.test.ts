@@ -300,6 +300,18 @@ describe('File System Utilities', () => {
         .rejects.toMatchObject({ code: 'PATH_TRAVERSAL' });
     });
 
+    it('should create the base directory when it does not exist yet (fresh import)', async () => {
+      // Regression: v1.3.2 hardening reported a bogus "escapes base directory
+      // through a symlink" when the trusted base had not been created yet,
+      // breaking every `vocgit pull` orphan import.
+      const base = path.join(tempDir, 'ilt-assignment-en-us');
+
+      await writeFileUnderBase(base, path.join('scripts', 'grade.sh'), '#!/bin/bash');
+
+      await expect(fs.readFile(path.join(base, 'scripts', 'grade.sh'), 'utf8'))
+        .resolves.toBe('#!/bin/bash');
+    });
+
     it('should reject parent directory symlinks escaping the base', async () => {
       const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-outside-'));
       try {

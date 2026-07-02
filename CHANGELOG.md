@@ -5,6 +5,31 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.3] — 2026-07-02
+
+### Fixed
+- **Orphan import no longer fails with a bogus symlink error**: `vocgit pull`
+  imports failed with `Invalid path: "..." escapes base directory through a
+  symlink` for every orphaned assignment because the symlink-hardened write
+  path treated a not-yet-created import directory as an escape (`realpath` on
+  the missing base). `writeFileUnderBase` now creates the trusted base
+  directory before running its confinement checks, restoring fresh imports
+  while keeping all symlink-escape rejections intact.
+- **`lti_url` classified as a non-setting**: Vocareum returns a server-derived
+  LTI launch URL on assignment reads. It is identity metadata (encodes the
+  course/assignment IDs), not an instructor-configurable setting, so it is now
+  dropped like `part_url` instead of being preserved under `_unknown_settings`
+  and flagged in the end-of-run unsupported-fields report.
+
+### Security
+- The user-typed import directory name is now confined to the workspace with
+  realpath-based validation (`assertConfinedToWorkspace`) before any directory
+  creation. A lexical-only check was insufficient: a name beneath an
+  in-workspace symlink that points outside the workspace would pass the lexical
+  test and let the import write outside the working tree.
+- Removed an accidental self-dependency (`vocareum-publisher` listed in its own
+  `dependencies`) that caused a nested copy of the package to be installed.
+
 ## [1.3.2] — 2026-06-28 — Stage 1a: internal service layer
 
 ### Internal / non-user-facing

@@ -49,7 +49,10 @@ vi.mock('../../src/utils/files', () => ({
     readFile: vi.fn().mockResolvedValue('content'),
     ensureDirectory: vi.fn().mockResolvedValue(undefined),
     readLocalDirectory: vi.fn().mockResolvedValue({}),
+    readDirectory: vi.fn().mockResolvedValue({}),
     writeFile: vi.fn().mockResolvedValue(undefined),
+    writeFileUnderBase: vi.fn().mockResolvedValue(undefined),
+    validatePath: vi.fn(),
     calculateDirectoryHash: vi.fn().mockResolvedValue('hash'),
 }));
 

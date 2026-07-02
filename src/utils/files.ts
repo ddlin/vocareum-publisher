@@ -300,6 +300,11 @@ export async function writeFileUnderBase(
   const targetPath = path.resolve(basePath, relativePath);
   const parentPath = path.dirname(targetPath);
 
+  // The base is trusted; create it if absent (fresh import). Without this,
+  // realpath(base) fails ENOENT inside isPathConfinedToBase and the write is
+  // rejected as a symlink escape even though no symlink is involved.
+  await ensureDirectory(path.resolve(basePath));
+
   if (!await isPathConfinedToBase(basePath, parentPath)) {
     throw new FileError(
       `Invalid path: "${relativePath}" escapes base directory through a symlink`,

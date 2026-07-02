@@ -100,6 +100,21 @@ describe('mapAssignmentSettings — unknown settings preservation', () => {
     expect(result._unknown_settings).toBeUndefined();
   });
 
+  it('drops lti_url (server-derived LTI launch URL) without routing it into _unknown_settings', () => {
+    const reporter = new UnknownFieldReporter(noopLogger);
+    const spy = vi.spyOn(reporter, 'record');
+    const result = mapAssignmentSettings(
+      baseResponse({
+        nosubmit: true,
+        lti_url: 'https://labs.vocareum.com/lti/vclab.php?course=vc_x&assignment=1',
+      } as never),
+      reporter,
+      'a-1'
+    );
+    expect(result._unknown_settings).toBeUndefined();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it('reports each unknown field once to the reporter', () => {
     const reporter = new UnknownFieldReporter(noopLogger);
     const spy = vi.spyOn(reporter, 'record');
