@@ -59,6 +59,63 @@ export function isHttp400(error: unknown): boolean {
   return maybeError.response?.status === 400 || maybeError.statusCode === 400;
 }
 
+/**
+ * If `body` is just a wrapper around a single string message — `{ message }` or
+ * `{ error: { message } }` with no other keys — return that message; otherwise
+ * undefined. Used to skip appending a JSON body that would only echo the message
+ * the caller already surfaced (a body with extra keys, or a different message, is
+ * still appended).
+ */
+function bareWrapperMessage(body: Record<string, unknown>): string | undefined {
+  const keys = Object.keys(body);
+  if (keys.length !== 1) { return undefined; }
+  if (keys[0] === 'message' && typeof body.message === 'string') { return body.message; }
+  if (keys[0] === 'error' && typeof body.error === 'object' && body.error !== null) {
+    const inner = body.error as Record<string, unknown>;
+    if (Object.keys(inner).length === 1 && typeof inner.message === 'string') { return inner.message; }
+  }
+  return undefined;
+}
+
+/**
+ * Extract a concise, single-line description of an API error for diagnostics.
+ * Prefers the Vocareum-extracted message (`APIError.message`, which `wrapError`
+ * already pulls from `{message}` / `{error:{message}}`) and appends the raw response
+ * body ONLY when it carries detail beyond that message (e.g. a `field`/`code`) — so a
+ * rejected settings PUT surfaces *what* the API objected to without echoing the same
+ * text twice. Whitespace-flattened and truncated to stay readable in a one-line warning.
+ */
+export function describeApiError(error: unknown): string {
+  if (typeof error !== 'object' || error === null) { return String(error); }
+  const e = error as { message?: unknown; details?: unknown; response?: { data?: unknown } };
+  const message = typeof e.message === 'string' && e.message.length > 0 ? e.message : undefined;
+  const body = e.details ?? e.response?.data;
+
+  let bodyStr: string | undefined;
+  if (typeof body === 'string' && body.length > 0) {
+    // Skip if the message already contains this string.
+    bodyStr = message?.includes(body) === true ? undefined : body;
+  } else if (typeof body === 'object' && body !== null) {
+    // wrapError already extracted the nested message into `message`; skip the JSON body
+    // only when it's a bare wrapper echoing that SAME message (a different message, or
+    // extra keys like `field`/`code`, is still informative and gets appended).
+    const bare = bareWrapperMessage(body as Record<string, unknown>);
+    const echoesMessage = bare !== undefined && message !== undefined && bare === message;
+    if (!echoesMessage) {
+      let str: string | undefined;
+      try { str = JSON.stringify(body); } catch { str = undefined; }
+      if (str !== undefined && str !== '{}' && str !== '""') { bodyStr = str; }
+    }
+  }
+
+  const parts: string[] = [];
+  if (message !== undefined) { parts.push(message); }
+  if (bodyStr !== undefined) { parts.push(bodyStr); }
+  const detail = parts.join(' — ').replace(/\s+/g, ' ').trim();
+  if (detail === '') { return 'no error detail'; }
+  return detail.length > 300 ? `${detail.slice(0, 299)}…` : detail;
+}
+
 export function sanitizeSubmissionFilters(
   filters: ReturnType<typeof normalizeSubmissionFilters>,
 ): ApiPartSettings['submission_filters'] | undefined {

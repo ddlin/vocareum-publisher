@@ -5,6 +5,16 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Push settings-update fallbacks now log the Vocareum API's **actual 400 message**
+  (`[API: …]`) when a part or assignment settings `PUT` is rejected and vocgit retries
+  with a reduced payload. Previously the warning only said "rejected", hiding *which*
+  field the API objected to (e.g. re-sending create-only lab fields like `labtype` /
+  `container_image` / `lab_interface` on Databricks/cloud parts). Diagnostic only — the
+  retry ladder's behavior is unchanged.
+
 ## [1.3.3] — 2026-07-02
 
 ### Fixed

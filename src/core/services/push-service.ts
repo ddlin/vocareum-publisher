@@ -106,6 +106,7 @@ function validateExecutableIntent(plan: PushPlan): void {
 import {
   RESERVED_ASSIGNMENT_KEYS,
   isHttp400,
+  describeApiError,
   sanitizeSubmissionFilters,
   filterUnknownSettingsForPayload,
   hasSettingValue,
@@ -770,8 +771,8 @@ export async function executePush(
             if (!hasFilteredUnknowns) { throw error; }
             events.emit({
               level: 'warn',
-              message: `Assignment settings update failed with HTTP 400 for "${action.assignment.name}" ` +
-                '(likely an unrecognized field in _unknown_settings); retrying with known settings only',
+              message: `Assignment settings update rejected (400) for "${action.assignment.name}" ` +
+                `[API: ${describeApiError(error)}]; retrying with known settings only`,
             });
             await updateAssignment(
               ctx.client,
@@ -893,19 +894,19 @@ export async function executePush(
             await updatePart(ctx.client, workingConfig.vocareum.course_id, assignmentId, partId, fullPayload);
           } catch (error) {
             if (!isHttp400(error)) { throw error; }
-            events.emit({ level: 'warn', message: `Part settings update rejected for ${partId}; retrying with safe subset` });
+            events.emit({ level: 'warn', message: `Part settings update rejected (400) for ${partId} [API: ${describeApiError(error)}]; retrying with safe subset` });
             const safePayload = buildPartSettingsPayload(partName, partSettings, 'safe', events);
             try {
               await updatePart(ctx.client, workingConfig.vocareum.course_id, assignmentId, partId, safePayload);
             } catch (retryError) {
               if (!isHttp400(retryError)) { throw retryError; }
-              events.emit({ level: 'warn', message: `Safe part settings update rejected for ${partId}; retrying with name only` });
+              events.emit({ level: 'warn', message: `Safe part settings update rejected (400) for ${partId} [API: ${describeApiError(retryError)}]; retrying with name only` });
               try {
                 await updatePart(ctx.client, workingConfig.vocareum.course_id, assignmentId, partId, { name: partName });
               } catch (nameOnlyError) {
                 if (!isHttp400(nameOnlyError)) { throw nameOnlyError; }
                 metadataUpdated = false;
-                events.emit({ level: 'warn', message: `Skipping part metadata update for ${partId}: API rejected update payload (400)` });
+                events.emit({ level: 'warn', message: `Skipping part metadata update for ${partId}: API rejected update payload (400) [API: ${describeApiError(nameOnlyError)}]` });
                 result.skipped.push({
                   type: 'part',
                   id: partId,
