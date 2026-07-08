@@ -5,6 +5,29 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.5] — 2026-07-07
+
+### Fixed
+- **`pull --content` can again restore a deleted directory in an assignment that
+  also contains a symlink.** Previously, a single remote file whose local path was
+  (or resolved through) a symlink aborted the content drift check for the **entire
+  assignment** — so a separately-deleted directory in that same assignment was
+  never detected or re-pulled, and the only recovery was to drop `vocareum.yaml`
+  and re-init. This affected both symlinks **escaping** the part directory (e.g.
+  `docs/README.html` pointing into the shared `course/`≡`lib/` tree) and **in-part**
+  symlinks, which `writeFileUnderBase` refuses to overwrite regardless of target.
+  vocgit now skips just the symlinked file (with a per-file warning) and still
+  compares/restores the rest of the part.
+
+### Security
+- Hardened the content-drift scan and the stored remote-file map against symlinks.
+  The remote-file map persisted for apply now excludes any file whose local path
+  escapes the part directory **or** is itself a symlink, so a restore is never
+  aborted by `writeFileUnderBase` rejecting the path. The **deleted-file** detector
+  additionally skips any directory or nested entry whose path resolves outside the
+  part directory, so apply's `unlink` can never follow a symlink and delete a file
+  outside the workspace.
+
 ## [1.3.4] — 2026-07-07
 
 ### Changed

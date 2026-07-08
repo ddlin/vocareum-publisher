@@ -781,7 +781,7 @@ async function detectSettingsDrift(
   return driftList;
 }
 
-async function detectContentDrift(
+export async function detectContentDrift(
   config: { assignments: Assignment[]; vocareum: { course_id: string; excluded_assignments?: string[]; architecture?: 'elite' | 'container' } },
   client: VocareumClient,
   skipAssignmentIds: Set<string>,
@@ -830,12 +830,39 @@ async function detectContentDrift(
         await assertConfinedToWorkspace(workspaceRoot, localBasePath);
         const localBaseAbs = path.resolve(workspaceRoot, localBasePath);
 
+        // Remote files whose local path is confined to the part directory. apply
+        // writes this map verbatim through writeFileUnderBase (which THROWS on an
+        // escape), so escaping entries are excluded here — otherwise apply would
+        // abort before restoring the confined files.
+        const safeRemoteFiles: FileMap = {};
+
         for (const [remotePath, remoteContent] of Object.entries(remoteFiles)) {
           validatePath(localBaseAbs, remotePath);
           const localPath = path.join(localBaseAbs, remotePath);
           if (!await isPathConfinedToBase(localBaseAbs, localPath)) {
-            throw new Error(`Refusing to read "${remotePath}": path escapes the local part directory through a symlink`);
+            // A single escaping symlink must not abort drift detection for the
+            // whole assignment — skip just this file so the rest of the part
+            // (including locally-deleted directories that need restoring) is
+            // still compared. The write side keeps its own confinement, so
+            // nothing is ever materialized through the escaping symlink.
+            warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`);
+            continue;
           }
+          // apply writes this file through writeFileUnderBase, which refuses to
+          // write through ANY final symlink target — even one pointing inside the
+          // part. Skip such files at detection time (lstat, so broken symlinks are
+          // caught too) so a single symlinked file can't abort the whole part's
+          // restore; the user resolves the symlink manually.
+          const fsp = await import('fs/promises');
+          let localIsSymlink = false;
+          try {
+            localIsSymlink = (await fsp.lstat(localPath)).isSymbolicLink();
+          } catch { /* ENOENT (e.g. locally-deleted path) → not a symlink */ }
+          if (localIsSymlink) {
+            warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": local path is a symlink and cannot be safely overwritten`);
+            continue;
+          }
+          safeRemoteFiles[remotePath] = remoteContent;
 
           if (await pathExists(localPath)) {
             const fs = await import('fs/promises');
@@ -856,6 +883,13 @@ async function detectContentDrift(
         for (const dir of directories) {
           const localDirPath = path.join(localBaseAbs, dir);
           if (!await pathExists(localDirPath)) { continue; }
+          // Never walk a directory that resolves outside the part directory — a
+          // 'deleted' diff here would make apply's fs.unlink follow the symlink
+          // and remove a file outside the workspace.
+          if (!await isPathConfinedToBase(localBaseAbs, localDirPath)) {
+            warnFn(`Skipping "${dir}/" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`);
+            continue;
+          }
 
           const fs = await import('fs/promises');
           try {
@@ -866,6 +900,9 @@ async function detectContentDrift(
 
               const relativePath = path.join(dir, file);
               const fullPath = path.join(localDirPath, file);
+              // Skip nested entries that resolve outside the part directory
+              // (an escaping symlink below a confined dir) for the same reason.
+              if (!await isPathConfinedToBase(localBaseAbs, fullPath)) { continue; }
               const stat = await fs.stat(fullPath);
               if (stat.isFile() && remoteFiles[relativePath] === undefined) {
                 fileDiffs.push({ filePath: relativePath, status: 'deleted' });
@@ -882,7 +919,7 @@ async function detectContentDrift(
             partName: configPart.name ?? 'Part',
             partPath: configPart.path,
             fileDiffs,
-            remoteFiles,
+            remoteFiles: safeRemoteFiles,
           });
         }
       }
