@@ -17,6 +17,7 @@ import type {
 } from '../../src/core/services/pull-service';
 import type { Assignment, Config } from '../../src/types/config';
 import { CollectingEventSink } from '../../src/core/services/event-sink';
+import type { EventSink, ServiceEvent } from '../../src/core/services/event-sink';
 import { NonInteractivePrompter } from '../../src/core/services/context';
 import type { PullContext } from '../../src/core/services/context';
 import type { PullRequest } from '../../src/core/services/types';
@@ -286,5 +287,80 @@ describe('applyPull — scaffolds configured empty directories with .gitkeep on 
     // Configured-but-empty dirs are scaffolded with a .gitkeep (parity with import).
     await expect(fs.readFile(path.join(base, 'docs/.gitkeep'), 'utf8')).resolves.toBe('');
     await expect(fs.readFile(path.join(base, 'data/.gitkeep'), 'utf8')).resolves.toBe('');
+  });
+
+  it('never writes .gitkeep through an escaping symlinked configured directory', async () => {
+    const base = path.join(workspaceRoot, 'ai-compass');
+    await fs.mkdir(base, { recursive: true });
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'vocgit-outside-'));
+    try {
+      // A configured directory that is a symlink escaping the part directory.
+      await fs.symlink(outside, path.join(base, 'docs'));
+
+      const warns: string[] = [];
+      const events: EventSink = {
+        emit(e: ServiceEvent) {
+          if (e.level === 'warn' && typeof e.message === 'string') { warns.push(e.message); }
+        },
+      };
+      const config = {
+        vocareum: { course_id: 'C1', api_base_url: 'https://api.vocareum.com' },
+        assignments: [],
+      } as unknown as Config;
+      const ctx: PullContext = {
+        persistedConfig: config,
+        effectiveConfig: config,
+        configPath: `${workspaceRoot}/vocareum.yaml`,
+        workspaceRoot,
+        events,
+        prompter: new NonInteractivePrompter(),
+        client: {} as never,
+      };
+      const session: LockedSession = { applyConfigUpdate: vi.fn().mockResolvedValue(undefined) };
+      const req: PullRequest = { batch: false, verbose: false, skipContent: false };
+      const resolver = {
+        resolveOrphanAction: vi.fn().mockResolvedValue('skip'),
+        resolveStaleAction: vi.fn().mockResolvedValue('skip'),
+        resolveSettingsDriftAction: vi.fn().mockResolvedValue('skip'),
+        resolveContentDriftAction: vi.fn().mockResolvedValue('pull'),
+        resolveImportPath: vi.fn().mockImplementation((_i: unknown, s: string) => Promise.resolve(s)),
+      } as unknown as PullResolver;
+
+      const inspection: PullInspection = {
+        orphans: [],
+        stale: [],
+        settingsDrift: [],
+        contentDrift: [
+          {
+            assignmentId: 'A1',
+            assignmentName: 'AI Compass',
+            assignmentPath: 'ai-compass',
+            partsDrift: [
+              {
+                partId: 'P1',
+                partName: 'Part 1',
+                partPath: '.',
+                directories: ['scripts', 'docs', 'data'],
+                fileDiffs: [{ filePath: 'scripts/grade.sh', status: 'added' }],
+                remoteFiles: { 'scripts/grade.sh': Buffer.from('#!/bin/sh\n') },
+              },
+            ],
+          },
+        ],
+      };
+
+      await applyPull(session, ctx, req, inspection, resolver);
+
+      // No .gitkeep escaped into the outside directory through the docs symlink.
+      await expect(fs.access(path.join(outside, '.gitkeep'))).rejects.toThrow();
+      // The escaping symlink was warned about and skipped, not written through.
+      expect(warns.some((w) => w.includes('docs') && w.toLowerCase().includes('symlink'))).toBe(true);
+      // The symlink itself is left intact.
+      expect((await fs.lstat(path.join(base, 'docs'))).isSymbolicLink()).toBe(true);
+      // A legitimate empty configured dir is still scaffolded.
+      await expect(fs.readFile(path.join(base, 'data/.gitkeep'), 'utf8')).resolves.toBe('');
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
   });
 });

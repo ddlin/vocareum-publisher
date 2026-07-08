@@ -5,6 +5,18 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.7] — 2026-07-08
+
+### Security
+- **Directory scaffolding no longer writes `.gitkeep` through a symlink.** The
+  configured-directory scaffolding added in 1.3.6 (`pull --content` and orphan
+  import) used an unguarded write, so a configured directory that was a symlink
+  escaping the workspace (e.g. `docs -> /outside`) would get its `.gitkeep` written
+  outside the repository. Scaffolding now skips — with a warning — any configured
+  directory whose final path component is a symlink, matching the confinement the
+  content read/restore paths already enforce (the part base is realpath-confined by
+  the caller, so guarding the final segment closes the escape).
+
 ## [1.3.6] — 2026-07-08
 
 ### Fixed

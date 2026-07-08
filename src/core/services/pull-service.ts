@@ -477,6 +477,23 @@ async function ensurePartDirectories(
       ? path.join(assignmentPath, dir)
       : path.join(assignmentPath, partPath, dir);
 
+    // Never scaffold through a symlink: writing .gitkeep would follow it and could
+    // land outside the workspace. The base is already confined by the caller
+    // (assertConfinedToWorkspace) and `dir` is a single path segment, so guarding
+    // the final directory component here is sufficient. Skip + warn, mirroring the
+    // drift-side symlink policy. Uses lstat (catches broken symlinks too).
+    let isSymlink = false;
+    try {
+      isSymlink = (await fs.lstat(dirPath)).isSymbolicLink();
+    } catch { /* ENOENT: doesn't exist yet → safe to create below */ }
+    if (isSymlink) {
+      events.emit({
+        level: 'warn',
+        message: `Skipping directory scaffold for "${dir}/": it is a symlink`,
+      });
+      continue;
+    }
+
     await ensureDirectory(dirPath);
 
     let isEmpty = true;
