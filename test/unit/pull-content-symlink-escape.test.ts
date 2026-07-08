@@ -10,8 +10,17 @@ vi.mock('../../src/api/content', () => ({
   downloadContent: mockDownloadContent,
 }));
 
-import { detectContentDrift } from '../../src/core/services/pull-service';
-import type { Assignment } from '../../src/types/config';
+import { detectContentDrift, applyPull } from '../../src/core/services/pull-service';
+import type {
+  PullResolver,
+  PullInspection,
+} from '../../src/core/services/pull-service';
+import type { Assignment, Config } from '../../src/types/config';
+import { CollectingEventSink } from '../../src/core/services/event-sink';
+import { NonInteractivePrompter } from '../../src/core/services/context';
+import type { PullContext } from '../../src/core/services/context';
+import type { PullRequest } from '../../src/core/services/types';
+import type { LockedSession } from '../../src/core/session';
 
 /**
  * Regression: a repo pulled by an older vocgit contains a symlink that escapes
@@ -170,5 +179,112 @@ describe('detectContentDrift — escaping symlink must not abort the whole assig
     expect(Object.keys(part.remoteFiles)).not.toContain('docs/README.html');
     expect(Object.keys(part.remoteFiles)).toContain('scripts/build.sh');
     expect(warnings.some((w) => w.includes('docs/README.html') && w.includes('symlink'))).toBe(true);
+  });
+
+  it('restores an entirely-deleted part directory (missing base) without falsely flagging every file as an escaping symlink', async () => {
+    // The whole assignment/part directory was deleted — the base does not exist.
+    // There are no local files or symlinks, so every remote file is a fresh add.
+    // The base must not be mistaken for a symlink escape just because realpath()
+    // throws ENOENT on the missing directory.
+    const assignment = {
+      assignment_id: 'A1',
+      name: 'AI BI Lab',
+      path: 'ai-bi', // NOTE: this directory is intentionally never created
+      parts: [{ part_id: 'P1', name: 'Lab', path: '.', directories: ['scripts', 'notebooks'] }],
+    } as unknown as Assignment;
+
+    mockDownloadContent.mockResolvedValue({
+      'scripts/grade.sh': Buffer.from('#!/bin/sh'),
+      'notebooks/lab.py': Buffer.from('print(1)'),
+    });
+
+    const warnings: string[] = [];
+    const drift = await detectContentDrift(
+      { assignments: [assignment], vocareum: { course_id: 'C1', architecture: 'container' } },
+      {} as never,
+      new Set<string>(),
+      workspaceRoot,
+      (m) => warnings.push(m),
+    );
+
+    // No file is falsely skipped as an escaping symlink.
+    expect(warnings.some((w) => w.includes('symlink'))).toBe(false);
+    // Every remote file is queued for restore, and kept in the write map.
+    expect(drift).toHaveLength(1);
+    const part = drift[0].partsDrift[0];
+    expect(part.fileDiffs).toContainEqual({ filePath: 'scripts/grade.sh', status: 'added' });
+    expect(part.fileDiffs).toContainEqual({ filePath: 'notebooks/lab.py', status: 'added' });
+    expect(Object.keys(part.remoteFiles).sort()).toEqual(['notebooks/lab.py', 'scripts/grade.sh']);
+  });
+});
+
+describe('applyPull — scaffolds configured empty directories with .gitkeep on content restore', () => {
+  let workspaceRoot: string;
+
+  beforeEach(async () => {
+    workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'vocgit-apply-'));
+  });
+  afterEach(async () => {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    vi.clearAllMocks();
+  });
+
+  it('creates configured-but-empty dirs (.gitkeep) while dirs that received content get none', async () => {
+    const events = new CollectingEventSink();
+    const config = {
+      vocareum: { course_id: 'C1', api_base_url: 'https://api.vocareum.com' },
+      assignments: [],
+    } as unknown as Config;
+    const ctx: PullContext = {
+      persistedConfig: config,
+      effectiveConfig: config,
+      configPath: `${workspaceRoot}/vocareum.yaml`,
+      workspaceRoot,
+      events,
+      prompter: new NonInteractivePrompter(),
+      client: {} as never,
+    };
+    const session: LockedSession = { applyConfigUpdate: vi.fn().mockResolvedValue(undefined) };
+    const req: PullRequest = { batch: false, verbose: false, skipContent: false };
+    const resolver = {
+      resolveOrphanAction: vi.fn().mockResolvedValue('skip'),
+      resolveStaleAction: vi.fn().mockResolvedValue('skip'),
+      resolveSettingsDriftAction: vi.fn().mockResolvedValue('skip'),
+      resolveContentDriftAction: vi.fn().mockResolvedValue('pull'),
+      resolveImportPath: vi.fn().mockImplementation((_i: unknown, s: string) => Promise.resolve(s)),
+    } as unknown as PullResolver;
+
+    const inspection: PullInspection = {
+      orphans: [],
+      stale: [],
+      settingsDrift: [],
+      contentDrift: [
+        {
+          assignmentId: 'A1',
+          assignmentName: 'AI Compass',
+          assignmentPath: 'ai-compass',
+          partsDrift: [
+            {
+              partId: 'P1',
+              partName: 'Part 1',
+              partPath: '.',
+              directories: ['scripts', 'docs', 'data'],
+              fileDiffs: [{ filePath: 'scripts/grade.sh', status: 'added' }],
+              remoteFiles: { 'scripts/grade.sh': Buffer.from('#!/bin/sh\n') },
+            },
+          ],
+        },
+      ],
+    };
+
+    await applyPull(session, ctx, req, inspection, resolver);
+
+    const base = path.join(workspaceRoot, 'ai-compass');
+    // The directory that received content is populated and has NO .gitkeep.
+    await expect(fs.readFile(path.join(base, 'scripts/grade.sh'), 'utf8')).resolves.toContain('#!/bin/sh');
+    await expect(fs.access(path.join(base, 'scripts/.gitkeep'))).rejects.toThrow();
+    // Configured-but-empty dirs are scaffolded with a .gitkeep (parity with import).
+    await expect(fs.readFile(path.join(base, 'docs/.gitkeep'), 'utf8')).resolves.toBe('');
+    await expect(fs.readFile(path.join(base, 'data/.gitkeep'), 'utf8')).resolves.toBe('');
   });
 });

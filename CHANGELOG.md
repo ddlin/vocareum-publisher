@@ -5,6 +5,26 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.6] — 2026-07-08
+
+### Fixed
+- **`pull --content` now restores an entirely-deleted assignment/part directory.**
+  When the whole part directory was gone, the per-file confinement check ran
+  `realpath()` on the missing base, threw `ENOENT`, and returned "not confined" —
+  so *every* remote file was mislabeled as an escaping symlink and skipped, and
+  nothing was restored (`writeFileUnderBase` had already worked around this same
+  ENOENT trap on the write side; the read/detection path had not). Detection now
+  recognizes a missing base — there are no local files or symlinks to read
+  through — and treats every remote file as a fresh add; apply recreates the base
+  and confines each individual write.
+
+### Added
+- **`pull --content` scaffolds the part's configured directories** after a content
+  restore, matching a fresh import: any declared directory that is empty on the
+  remote is recreated with a `.gitkeep`, while directories that received content
+  are left untouched. Note: deleting an *already-empty* subdirectory is not
+  restored, because it produces no content drift to trigger the pull.
+
 ## [1.3.5] — 2026-07-07
 
 ### Fixed

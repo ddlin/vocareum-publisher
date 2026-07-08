@@ -262,6 +262,8 @@ export interface PartContentDrift {
   partPath: string;
   fileDiffs: FileDiff[];
   remoteFiles: FileMap;
+  /** Configured directories for the part; scaffolded (with .gitkeep when empty) on apply. */
+  directories: DirectoryType[];
 }
 
 /** Represents content drift for an assignment */
@@ -830,6 +832,14 @@ export async function detectContentDrift(
         await assertConfinedToWorkspace(workspaceRoot, localBasePath);
         const localBaseAbs = path.resolve(workspaceRoot, localBasePath);
 
+        // When the whole part directory has been deleted, the base does not exist:
+        // there are no local files or symlinks to read through, so every remote
+        // file is a fresh add. Skip the per-file confinement/symlink checks in that
+        // case — otherwise isPathConfinedToBase's realpath(base) throws ENOENT and
+        // every file is falsely reported as an escaping symlink. apply recreates the
+        // base via writeFileUnderBase, which confines each individual write.
+        const baseExists = await pathExists(localBaseAbs);
+
         // Remote files whose local path is confined to the part directory. apply
         // writes this map verbatim through writeFileUnderBase (which THROWS on an
         // escape), so escaping entries are excluded here — otherwise apply would
@@ -839,32 +849,34 @@ export async function detectContentDrift(
         for (const [remotePath, remoteContent] of Object.entries(remoteFiles)) {
           validatePath(localBaseAbs, remotePath);
           const localPath = path.join(localBaseAbs, remotePath);
-          if (!await isPathConfinedToBase(localBaseAbs, localPath)) {
-            // A single escaping symlink must not abort drift detection for the
-            // whole assignment — skip just this file so the rest of the part
-            // (including locally-deleted directories that need restoring) is
-            // still compared. The write side keeps its own confinement, so
-            // nothing is ever materialized through the escaping symlink.
-            warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`);
-            continue;
-          }
-          // apply writes this file through writeFileUnderBase, which refuses to
-          // write through ANY final symlink target — even one pointing inside the
-          // part. Skip such files at detection time (lstat, so broken symlinks are
-          // caught too) so a single symlinked file can't abort the whole part's
-          // restore; the user resolves the symlink manually.
-          const fsp = await import('fs/promises');
-          let localIsSymlink = false;
-          try {
-            localIsSymlink = (await fsp.lstat(localPath)).isSymbolicLink();
-          } catch { /* ENOENT (e.g. locally-deleted path) → not a symlink */ }
-          if (localIsSymlink) {
-            warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": local path is a symlink and cannot be safely overwritten`);
-            continue;
+          if (baseExists) {
+            if (!await isPathConfinedToBase(localBaseAbs, localPath)) {
+              // A single escaping symlink must not abort drift detection for the
+              // whole assignment — skip just this file so the rest of the part
+              // (including locally-deleted directories that need restoring) is
+              // still compared. The write side keeps its own confinement, so
+              // nothing is ever materialized through the escaping symlink.
+              warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`);
+              continue;
+            }
+            // apply writes this file through writeFileUnderBase, which refuses to
+            // write through ANY final symlink target — even one pointing inside the
+            // part. Skip such files at detection time (lstat, so broken symlinks are
+            // caught too) so a single symlinked file can't abort the whole part's
+            // restore; the user resolves the symlink manually.
+            const fsp = await import('fs/promises');
+            let localIsSymlink = false;
+            try {
+              localIsSymlink = (await fsp.lstat(localPath)).isSymbolicLink();
+            } catch { /* ENOENT (e.g. locally-deleted path) → not a symlink */ }
+            if (localIsSymlink) {
+              warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": local path is a symlink and cannot be safely overwritten`);
+              continue;
+            }
           }
           safeRemoteFiles[remotePath] = remoteContent;
 
-          if (await pathExists(localPath)) {
+          if (baseExists && await pathExists(localPath)) {
             const fs = await import('fs/promises');
             const localContent = await fs.readFile(localPath);
             const remoteBuffer = Buffer.isBuffer(remoteContent)
@@ -920,6 +932,7 @@ export async function detectContentDrift(
             partPath: configPart.path,
             fileDiffs,
             remoteFiles: safeRemoteFiles,
+            directories: downloadPlan.directories,
           });
         }
       }
@@ -1246,6 +1259,18 @@ export async function applyPull(
               }
             }
           }
+
+          // Scaffold the part's configured directories (parity with import): any
+          // declared directory that is empty on the remote — so it received no
+          // files above — is created with a .gitkeep, matching what a fresh
+          // orphan-import produces. Dirs that received content are left untouched.
+          await ensurePartDirectories(
+            path.resolve(workspaceRoot, drift.assignmentPath),
+            partDrift.partPath,
+            partDrift.directories,
+            verbose,
+            events
+          );
 
           const excludePatterns = ['.gitkeep', '**/.gitkeep'];
           const directories = new Set<DirectoryType>();
