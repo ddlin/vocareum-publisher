@@ -5,6 +5,35 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.8] — 2026-09-02
+
+### Fixed
+- **`pull` now reaches locale-nested assets that were being silently dropped.**
+  The download walk capped recursion at 4 levels below a part directory, which
+  landed exactly one level short of the AWS Academy content layout: with the part
+  root at depth 0, `asnlib/public/docs/lang/<locale>` is listed at depth 4, so its
+  `images/` child needed a descent to depth 5 and was refused. The truncation was
+  invisible because of where it fell — the `README.md`/`README.html` beside those
+  directories were fetched normally, and the unrelated `asnlib/public/docs/images`
+  sibling sits at depth 3 — so pulls reported success while every per-locale image
+  directory in the course was missing. On one real course this left **all 138**
+  image references across 8 assignments and 11 locales pointing at files that had
+  never been downloaded. The cap is now 10, with headroom over the deepest known
+  layout; runaway recursion is bounded by the download budget (`maxFiles`,
+  `maxTotalBytes`), which is charged for every listed entry.
+
+### Changed
+- **Depth-cap truncation is now a warning instead of a debug message.** Skipping a
+  subtree drops files while the pull still reports success, so it is surfaced at
+  `warn` and names what was not downloaded. Previously this was only visible under
+  `--verbose`, which is why the truncation above went unnoticed.
+
+### Security
+- Bumped `axios` to 1.20.0 (NO_PROXY bypass for `0.0.0.0`; excessive recursion in
+  `formDataToJSON`) and `js-yaml` to 4.3.2 (CVE-2026-59870, quadratic CPU in
+  `!!omap` resolution). Both are lockfile-only updates within the existing semver
+  ranges; CI gates on `npm audit --omit=dev --audit-level=high`.
+
 ## [1.3.7] — 2026-07-08
 
 ### Security

@@ -430,8 +430,17 @@ export async function uploadContent(
  * Maximum subdirectory depth to descend into when `downloadContent` encounters
  * listed entries that aren't directly downloadable as files. Protects against
  * symlink loops and runaway recursion.
+ *
+ * Must clear the deepest layout we import. AWS Academy courses nest per-locale
+ * assets at `asnlib/public/docs/lang/<locale>/images/<file>` — the part root is
+ * depth 0, so `images/` needs a descent to depth 5. A previous value of 4 cut
+ * exactly there and dropped every locale's images while still fetching the
+ * READMEs beside them, so pulls looked complete. The real guard against
+ * runaway recursion is the download budget (maxFiles / maxTotalBytes), which
+ * is charged for every listed entry; this is secondary defense, so it carries
+ * headroom rather than hugging the known-deepest layout.
  */
-const MAX_DOWNLOAD_DEPTH = 4;
+const MAX_DOWNLOAD_DEPTH = 10;
 
 /**
  * Download all content from a part workspace
@@ -553,7 +562,16 @@ async function downloadDirectoryTree(
             directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict, budget
           );
         } else {
-          client.events.emit({ level: 'debug', message: `Max depth reached, skipping ${filemapKey}` });
+          // Truncating the walk drops files silently — the caller still sees a
+          // successful pull. Warn so it is visible without --verbose; a debug
+          // line here hid an entire course's nested assets until someone
+          // compared the workspace against the Vocareum UI by eye.
+          client.events.emit({
+            level: 'warn',
+            message:
+              `Directory nesting exceeds the ${MAX_DOWNLOAD_DEPTH}-level download limit, ` +
+              `skipping ${filemapKey} and anything below it — these files were NOT downloaded`,
+          });
         }
         continue;
       }

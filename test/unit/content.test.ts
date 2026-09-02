@@ -1078,43 +1078,34 @@ describe('downloadContent recursive directory handling', () => {
     expect(Buffer.from(result['scripts/run.sh']).length).toBe(0);
   });
 
-  it('should stop recursing after 4 levels of subdirectories', async () => {
-    // Level 0: list asnlib → [a]
-    requestMock.mockResolvedValueOnce({ files: [{ path: 'a', size: 0 }] });
-    requestMock.mockResolvedValueOnce({
-      status: 'error',
-      files: [{ filename: 'asnlib/a', download_url: 'specified file does not exist' }],
-    });
-    // Level 1: list asnlib/a → [b]
-    requestMock.mockResolvedValueOnce({ files: [{ path: 'b', size: 0 }] });
-    requestMock.mockResolvedValueOnce({
-      status: 'error',
-      files: [{ filename: 'asnlib/a/b', download_url: 'specified file does not exist' }],
-    });
-    // Level 2: list asnlib/a/b → [c]
-    requestMock.mockResolvedValueOnce({ files: [{ path: 'c', size: 0 }] });
-    requestMock.mockResolvedValueOnce({
-      status: 'error',
-      files: [{ filename: 'asnlib/a/b/c', download_url: 'specified file does not exist' }],
-    });
-    // Level 3: list asnlib/a/b/c → [d]
-    requestMock.mockResolvedValueOnce({ files: [{ path: 'd', size: 0 }] });
-    requestMock.mockResolvedValueOnce({
-      status: 'error',
-      files: [{ filename: 'asnlib/a/b/c/d', download_url: 'specified file does not exist' }],
-    });
-    // Level 4: list asnlib/a/b/c/d → [e] (final allowed level)
-    requestMock.mockResolvedValueOnce({ files: [{ path: 'e', size: 0 }] });
-    requestMock.mockResolvedValueOnce({
-      status: 'error',
-      files: [{ filename: 'asnlib/a/b/c/d/e', download_url: 'specified file does not exist' }],
-    });
-    // No further calls — recursion capped at depth 4
+  it('should stop recursing at MAX_DOWNLOAD_DEPTH', async () => {
+    // An unbounded chain of directories: every level lists exactly one entry,
+    // and every entry reports as a directory rather than a file. The walk must
+    // stop on its own. Depth is generated rather than hand-written so the cap's
+    // value lives in one place -- an earlier version of this test hard-coded a
+    // 4-level chain, which locked in the truncation that dropped AWS Academy's
+    // asnlib/public/docs/lang/<locale>/images (see content-depth.test.ts).
+    const MAX_DEPTH = 10;
+    const chain: string[] = [];
+    for (let level = 0; level <= MAX_DEPTH + 2; level++) {
+      chain.push(String.fromCharCode(97 + level));
+      requestMock.mockResolvedValueOnce({
+        files: [{ path: chain[chain.length - 1], size: 0 }],
+      });
+      requestMock.mockResolvedValueOnce({
+        status: 'error',
+        files: [{
+          filename: `asnlib/${chain.join('/')}`,
+          download_url: 'specified file does not exist',
+        }],
+      });
+    }
 
     const result = await downloadContent(mockClient, 'c1', 'a1', 'p1', ['asnlib']);
 
     expect(result).toEqual({});
-    // 5 list calls (levels 0-4) + 5 fetch-as-file calls = 10
-    expect(requestMock).toHaveBeenCalledTimes(10);
+    // Levels 0..MAX_DEPTH are listed and probed; the descent from MAX_DEPTH is
+    // refused. One list + one fetch-as-file per level.
+    expect(requestMock).toHaveBeenCalledTimes((MAX_DEPTH + 1) * 2);
   });
 });
