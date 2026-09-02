@@ -443,6 +443,32 @@ export async function uploadContent(
 const MAX_DOWNLOAD_DEPTH = 10;
 
 /**
+ * Number of consecutive identical path segments that marks a walk as cyclic.
+ *
+ * Vocareum workspaces carry escaping symlinks such as
+ * `publicdata -> /mnt/worktest/<course>/data` (see docs/vocareum-api-feedback.md).
+ * The files API lists the same child under every level of one, so the walk sees
+ * `lib/publicdata/publicdata/publicdata/...` without end and only stops when it
+ * runs out of depth budget. Real content never nests a directory inside two more
+ * of the same name, so three consecutive repeats identifies the cycle with room
+ * to spare.
+ */
+const CYCLE_REPEAT_THRESHOLD = 3;
+
+/**
+ * True when a relative path ends in CYCLE_REPEAT_THRESHOLD identical segments,
+ * i.e. the walk is going in circles rather than descending real content.
+ */
+function isCyclicPath(relativePath: string): boolean {
+  const segments = relativePath.split('/');
+  if (segments.length < CYCLE_REPEAT_THRESHOLD) {
+    return false;
+  }
+  const tail = segments.slice(-CYCLE_REPEAT_THRESHOLD);
+  return tail.every((segment) => segment === tail[0]);
+}
+
+/**
  * Download all content from a part workspace
  *
  * @param client - Vocareum API client
@@ -535,7 +561,7 @@ async function downloadDirectoryTree(
       // downloadable objects while also allowing the same path to be listed.
       // Prefer the directory contents in that case so paths like scripts/python
       // are imported recursively instead of as empty files.
-      if (isEmptyContent(content) && depth < MAX_DOWNLOAD_DEPTH) {
+      if (isEmptyContent(content) && depth < MAX_DOWNLOAD_DEPTH && !isCyclicPath(entryRelPath)) {
         const childApiDirPath = `${baseApiPath}/${entryRelPath}`;
         const childEntries = await listFilesByApiPath(
           client, courseId, assignmentId, partId, childApiDirPath
@@ -556,6 +582,16 @@ async function downloadDirectoryTree(
         throw error;
       }
       if (error instanceof NotAFileError) {
+        if (isCyclicPath(entryRelPath)) {
+          // A symlink cycle, not truncated content — there is nothing below it
+          // to lose, so this stays at debug. Reserve the warning below for a
+          // real subtree the limit cut off, or it gets tuned out.
+          client.events.emit({
+            level: 'debug',
+            message: `Skipping cyclic path ${filemapKey} (repeating directory name)`,
+          });
+          continue;
+        }
         if (depth < MAX_DOWNLOAD_DEPTH) {
           await downloadDirectoryTree(
             client, courseId, assignmentId, partId,

@@ -22,11 +22,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout; runaway recursion is bounded by the download budget (`maxFiles`,
   `maxTotalBytes`), which is charged for every listed entry.
 
+- **The download walk no longer grinds through symlink cycles.** Vocareum
+  workspaces carry escaping symlinks such as `publicdata -> /mnt/worktest/<course>/data`,
+  and the files API lists the same child under every level of one — so the walk
+  saw `lib/publicdata/publicdata/publicdata/…` without end and only stopped when
+  it exhausted the depth budget, spending roughly 22 API calls per part on a path
+  that holds nothing. A repeat of three identical consecutive path segments is now
+  recognized as a cycle and the descent stops there (a real file at such a path is
+  still downloaded; only the descent is refused). This was pre-existing, and
+  invisible while truncation was logged at `debug`.
+
 ### Changed
 - **Depth-cap truncation is now a warning instead of a debug message.** Skipping a
   subtree drops files while the pull still reports success, so it is surfaced at
   `warn` and names what was not downloaded. Previously this was only visible under
-  `--verbose`, which is why the truncation above went unnoticed.
+  `--verbose`, which is why the truncation above went unnoticed. Cycles are
+  deliberately *not* reported this way — nothing below them is lost, and mixing
+  them in would bury the real signal.
 
 ### Security
 - Bumped `axios` to 1.20.0 (NO_PROXY bypass for `0.0.0.0`; excessive recursion in

@@ -97,6 +97,32 @@ describe('downloadContent depth (AWS Academy locale-nested assets)', () => {
     ).toBe('PNG-BYTES');
   });
 
+  it('stops on a self-repeating path without crying data loss', async () => {
+    // Vocareum workspaces carry escaping symlinks such as
+    // `publicdata -> /mnt/worktest/<course>/data` (docs/vocareum-api-feedback.md).
+    // The files API happily lists the same child under every level of them, so
+    // the walk sees lib/publicdata/publicdata/publicdata/... forever. Nothing is
+    // below it to lose, so this must not surface as a truncation warning --
+    // otherwise the real signal is buried in false alarms.
+    for (let level = 0; level <= 12; level++) {
+      requestMock.mockResolvedValueOnce({ files: [{ path: 'publicdata', size: 0 }] });
+      requestMock.mockResolvedValueOnce(notAFile('lib/publicdata'));
+    }
+
+    await downloadContent(mockClient, 'c1', 'a1', 'p1', ['lib']);
+
+    const emit = vi.mocked(mockClient.events.emit);
+    const warnings = emit.mock.calls
+      .map((c) => c[0])
+      .filter((e) => e.level === 'warn');
+
+    expect(warnings.filter((w) => w.message.includes('were NOT downloaded'))).toHaveLength(0);
+
+    // And it must give up quickly rather than burning the full depth budget:
+    // one list + one fetch per level, stopping once the repeat is unambiguous.
+    expect(requestMock.mock.calls.length).toBeLessThanOrEqual(8);
+  });
+
   it('warns (not debug) when the depth cap truncates the walk', async () => {
     // A chain deep enough to hit the cap. Every entry reports as a directory.
     const chain: string[] = [];
