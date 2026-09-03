@@ -261,6 +261,21 @@ export function buildPartSettingsPayload(
   return full;
 }
 
+/**
+ * Keys present in `full` but missing from `reduced`.
+ *
+ * The settings fallback ladder in push silently narrows the payload on a 400.
+ * Callers use this to name what was given up, so a reduced write is never
+ * reported as an unqualified success.
+ */
+export function describeDroppedPartSettings(
+  full: PartSettingsPayload,
+  reduced: PartSettingsPayload,
+): string[] {
+  const kept = new Set(Object.keys(reduced));
+  return Object.keys(full).filter((k) => !kept.has(k)).sort();
+}
+
 export function collectSettingsState(config: Config): Record<string, unknown> {
   const state: Record<string, unknown> = {};
   for (const assignment of config.assignments) {

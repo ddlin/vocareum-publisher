@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isHttp400, describeApiError } from '../../src/core/payload-helpers';
+import { isHttp400, describeApiError, describeDroppedPartSettings } from '../../src/core/payload-helpers';
 import { APIError } from '../../src/api/client';
 
 describe('isHttp400', () => {
@@ -76,5 +76,28 @@ describe('describeApiError', () => {
   it('handles empty/absent detail gracefully', () => {
     expect(describeApiError(new APIError('', 400, {}))).toBe('no error detail');
     expect(describeApiError(null)).toBe('null');
+  });
+});
+
+describe('describeDroppedPartSettings', () => {
+  it('lists keys the reduced payload no longer carries, sorted', () => {
+    const full = {
+      name: 'cloud-lab',
+      session_length: '120',
+      labtype: 'Vocareum Notebook',
+      container_image: 'Jupyter v1.70',
+      lab_interface: { panels: ['Html'] },
+      max_points: '40',
+    } as never;
+    const reduced = { name: 'cloud-lab', session_length: '120' } as never;
+
+    expect(describeDroppedPartSettings(full, reduced)).toEqual([
+      'container_image', 'lab_interface', 'labtype', 'max_points',
+    ]);
+  });
+
+  it('returns an empty list when nothing was dropped', () => {
+    const p = { name: 'cloud-lab', session_length: '120' } as never;
+    expect(describeDroppedPartSettings(p, p)).toEqual([]);
   });
 });
