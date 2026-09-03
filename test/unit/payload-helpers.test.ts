@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isHttp400, describeApiError, describeDroppedPartSettings } from '../../src/core/payload-helpers';
+import { isHttp400, describeApiError, describeDroppedPartSettings, omitPlatformKeysForUpdate, buildPartSettingsPayload } from '../../src/core/payload-helpers';
 import { APIError } from '../../src/api/client';
 
 describe('isHttp400', () => {
@@ -99,5 +99,55 @@ describe('describeDroppedPartSettings', () => {
   it('returns an empty list when nothing was dropped', () => {
     const p = { name: 'cloud-lab', session_length: '120' } as never;
     expect(describeDroppedPartSettings(p, p)).toEqual([]);
+  });
+});
+
+describe('omitPlatformKeysForUpdate', () => {
+  it('removes both platform fields', () => {
+    const out = omitPlatformKeysForUpdate({
+      name: 'p', session_length: '120',
+      labtype: 'Vocareum Notebook', container_image: 'Jupyter v1.70',
+    } as never);
+    expect(out).toEqual({ name: 'p', session_length: '120' });
+  });
+
+  it('leaves a payload without them untouched', () => {
+    const payload = { name: 'p', session_length: '120' } as never;
+    expect(omitPlatformKeysForUpdate(payload)).toEqual(payload);
+  });
+
+  it('does not mutate its input', () => {
+    const payload = { name: 'p', labtype: 'Vocareum Notebook' } as never;
+    omitPlatformKeysForUpdate(payload);
+    expect((payload as Record<string, unknown>).labtype).toBe('Vocareum Notebook');
+  });
+
+  it('preserves the grading and interface settings that the safe fallback would have lost', () => {
+    const out = omitPlatformKeysForUpdate({
+      name: 'p', labtype: 'Vocareum Notebook', container_image: 'Jupyter v1.70',
+      lab_interface: { panels: ['Html'] }, tags: [], max_points: '40',
+    } as never) as Record<string, unknown>;
+    expect(out.max_points).toBe('40');
+    expect(out.lab_interface).toBeDefined();
+    expect(out.tags).toBeDefined();
+  });
+});
+
+describe('plan/execute payload agreement', () => {
+  it('produces an identical payload from the same settings at both sites', () => {
+    // planPush and executePush build this payload separately. If they drift,
+    // semanticFingerprint describes something executePush never sends, which is
+    // the facade fingerprint AGENTS.md #15 forbids.
+    const settings = {
+      session_length: '120', total_dollar: '10.00',
+      labtype: 'Vocareum Notebook', container_image: 'Jupyter v1.70',
+      _unknown_settings: { max_points: '40' },
+    } as never;
+
+    const asPlanned = omitPlatformKeysForUpdate(buildPartSettingsPayload('cloud-lab', settings, 'full'));
+    const asExecuted = omitPlatformKeysForUpdate(buildPartSettingsPayload('cloud-lab', settings, 'full'));
+    expect(asPlanned).toEqual(asExecuted);
+    expect(asPlanned).not.toHaveProperty('labtype');
+    expect(asPlanned).not.toHaveProperty('container_image');
   });
 });

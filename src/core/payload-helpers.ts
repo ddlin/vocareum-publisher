@@ -276,6 +276,29 @@ export function describeDroppedPartSettings(
   return Object.keys(full).filter((k) => !kept.has(k)).sort();
 }
 
+/** Fields that describe the part's platform rather than its pedagogy. */
+const PLATFORM_KEYS = ['labtype', 'container_image'] as const;
+
+/**
+ * Strip `labtype`/`container_image` from a part-settings UPDATE payload.
+ *
+ * `pull` returns these; sending them back is rejected
+ * (`400 Image <name> not found for <labtype>`), and that rejection drives the
+ * whole settings write into the lossy fallback ladder in push, costing
+ * max_points, lab_interface and tags. The API rejects `labtype` alone as well
+ * ("Latest Version could not be fetched"), so both go or neither does.
+ *
+ * Deliberately unconditional rather than diffing against remote: the payload is
+ * built in planPush, which has no remote part state, and PushIntent must
+ * describe what executePush actually sends (AGENTS.md #15). A pure function can
+ * be applied identically at both sites.
+ */
+export function omitPlatformKeysForUpdate(payload: PartSettingsPayload): PartSettingsPayload {
+  const out = { ...payload } as Record<string, unknown>;
+  for (const k of PLATFORM_KEYS) { delete out[k]; }
+  return out;
+}
+
 export function collectSettingsState(config: Config): Record<string, unknown> {
   const state: Record<string, unknown> = {};
   for (const assignment of config.assignments) {

@@ -112,6 +112,7 @@ import {
   hasSettingValue,
   pushSettingChange,
   buildPartSettingsPayload,
+  omitPlatformKeysForUpdate,
   collectSettingsState,
   withoutUndefined,
 } from '../payload-helpers';
@@ -317,10 +318,12 @@ export async function planPush(
         action.willCreate !== true &&
         shouldSyncPartSettings(workingConfig, action.assignment, partAction.part)
       ) {
-        partSettingsPayload = buildPartSettingsPayload(
-          partAction.part.name ?? partAction.part.path,
-          partAction.part.settings,
-          'full',
+        partSettingsPayload = omitPlatformKeysForUpdate(
+          buildPartSettingsPayload(
+            partAction.part.name ?? partAction.part.path,
+            partAction.part.settings,
+            'full',
+          ),
         );
       }
 
