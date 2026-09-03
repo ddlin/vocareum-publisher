@@ -4,6 +4,7 @@ import {
   resolveMaxChunkBytes,
   DEFAULT_MAX_CHUNK_BYTES,
   uploadContent,
+  PartialUploadError,
 } from '../../src/api/content';
 import { VocareumClient } from '../../src/api/client';
 
@@ -166,5 +167,62 @@ describe('uploadContent chunking', () => {
       .map((c) => c[0])
       .filter((e) => e.level === 'warn');
     expect(warnings).toHaveLength(0);
+  });
+});
+
+describe('multi-chunk failure reporting', () => {
+  it('reports which chunk failed and that the remote directory is now partial', async () => {
+    const requestMock = vi.fn()
+      .mockResolvedValueOnce({ status: 'success' })            // chunk 1 ok
+      .mockRejectedValueOnce(new Error('connection reset'));   // chunk 2 dies
+    const client = {
+      request: requestMock,
+      events: { emit: vi.fn() },
+    } as unknown as VocareumClient;
+
+    await expect(
+      uploadContent(client, 'c1', 'a1', 'p1', 'docs', {
+        a: Buffer.alloc(80, 1),
+        b: Buffer.alloc(80, 2),
+      }, { maxChunkBytes: 100 }),
+    ).rejects.toThrow(PartialUploadError);
+  });
+
+  it('does not wrap a single-chunk failure, which leaves no partial state', async () => {
+    const requestMock = vi.fn().mockRejectedValueOnce(new Error('connection reset'));
+    const client = {
+      request: requestMock,
+      events: { emit: vi.fn() },
+    } as unknown as VocareumClient;
+
+    // One chunk that fails is the old all-or-nothing behavior: reset:1 either
+    // landed with its content or the directory is untouched.
+    await expect(
+      uploadContent(client, 'c1', 'a1', 'p1', 'docs', { a: 'hello' }),
+    ).rejects.not.toThrow(PartialUploadError);
+  });
+
+  it('carries the chunk position in the message', async () => {
+    const requestMock = vi.fn()
+      .mockResolvedValueOnce({ status: 'success' })
+      .mockRejectedValueOnce(new Error('boom'));
+    const client = {
+      request: requestMock,
+      events: { emit: vi.fn() },
+    } as unknown as VocareumClient;
+
+    try {
+      await uploadContent(client, 'c1', 'a1', 'p1', 'docs', {
+        a: Buffer.alloc(80, 1),
+        b: Buffer.alloc(80, 2),
+      }, { maxChunkBytes: 100 });
+      expect.unreachable('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(PartialUploadError);
+      expect((e as PartialUploadError).chunkIndex).toBe(1);
+      expect((e as PartialUploadError).totalChunks).toBe(2);
+      expect((e as Error).message).toContain('PARTIALLY uploaded');
+      expect((e as Error).message).toContain('Re-run');
+    }
   });
 });

@@ -497,6 +497,40 @@ export async function waitForPartUpdateTransaction(
 }
 
 /**
+ * A multi-chunk upload failed partway through, so the remote directory holds
+ * some chunks but not all of it.
+ *
+ * Recovery is to re-run the same upload from the beginning: chunk 1 carries
+ * reset:1, so replaying the whole sequence clears whatever landed and rebuilds
+ * the directory. The FINAL STATE converges regardless of where the previous
+ * attempt died.
+ *
+ * That is a statement about state, not about timing. An immediate replay can
+ * still be refused with "The previous corresponding API request is not yet
+ * complete" if the aborted request is still executing server-side -- which is
+ * exactly the failure this work exists to address. Retry after a pause, and do
+ * not treat a collision on the retry as a new fault.
+ */
+export class PartialUploadError extends APIError {
+  constructor(
+    public chunkIndex: number,
+    public totalChunks: number,
+    public directory: string,
+    public partId: string,
+    cause: unknown,
+  ) {
+    super(
+      `Part ${partId} directory "${directory}" is PARTIALLY uploaded: chunk ` +
+      `${chunkIndex + 1} of ${totalChunks} failed (${cause instanceof Error ? cause.message : String(cause)}). ` +
+      `The remote directory now holds only the chunks before it. Re-run the ` +
+      `push to rebuild it from scratch -- the first chunk resets the directory, ` +
+      `so a full replay is safe.`,
+    );
+    this.name = 'PartialUploadError';
+  }
+}
+
+/**
  * Upload content to a Vocareum workspace directory
  *
  * CRITICAL: Uses part update endpoint with content[].zipcontent payload.
@@ -553,49 +587,66 @@ export async function uploadContent(
   }
 
   for (let i = 0; i < chunks.length; i++) {
-    const zipBase64 = createZipBuffer(chunks[i]).toString('base64');
-    const bodyBytes = Buffer.byteLength(zipBase64, 'utf8');
+    try {
+      const zipBase64 = createZipBuffer(chunks[i]).toString('base64');
+      const bodyBytes = Buffer.byteLength(zipBase64, 'utf8');
 
-    // Only the first chunk resets. reset:1 clears the target directory before
-    // applying the zip, so sending it on a later chunk would delete everything
-    // uploaded so far and leave only the final chunk. Keyed off the loop
-    // index, never off chunk contents: chunkFilesBySize emits an oversized
-    // file's chunk first, so chunk 0 need not be the alphabetically-first
-    // file, but it is always this loop's first iteration.
-    const reset = i === 0 ? 1 : 0;
+      // Only the first chunk resets. reset:1 clears the target directory before
+      // applying the zip, so sending it on a later chunk would delete everything
+      // uploaded so far and leave only the final chunk. Keyed off the loop
+      // index, never off chunk contents: chunkFilesBySize emits an oversized
+      // file's chunk first, so chunk 0 need not be the alphabetically-first
+      // file, but it is always this loop's first iteration.
+      const reset = i === 0 ? 1 : 0;
 
-    const response = await client.request<PartUpdateResponse>({
-      method: 'PUT',
-      url: `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
-      data: {
-        update: 1,
-        content: [{ target: directory, zipcontent: zipBase64, reset }],
-      },
-      timeout: uploadTimeoutForBytes(bodyBytes),
-    });
-
-    if (response.transactionid !== undefined && response.transactionid !== '') {
-      // Must complete before the next chunk: the server serialises part
-      // updates and rejects an overlapping one outright.
-      await waitForPartUpdateTransaction(client, response.transactionid, {
-        maxAttempts: pollAttemptsForBytes(bodyBytes),
+      const response = await client.request<PartUpdateResponse>({
+        method: 'PUT',
+        url: `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
+        data: {
+          update: 1,
+          content: [{ target: directory, zipcontent: zipBase64, reset }],
+        },
+        timeout: uploadTimeoutForBytes(bodyBytes),
       });
-    } else if (response.state === 'error' || response.state === 'failed') {
-      throw new APIError(
-        response.message ?? `Part update failed (part=${partId}, dir=${directory})`
-      );
-    } else if (isChunkedUpload) {
-      // No transactionid means we cannot confirm this chunk actually landed
-      // before the next PUT goes out -- the exact overlap this plan exists to
-      // prevent. Established single-response contract (tests mock
-      // {status:'success'} with no transactionid) is left alone; this only
-      // makes the gap visible rather than changing control flow.
-      client.events.emit({
-        level: 'warn',
-        message:
-          `Chunk ${i + 1} of ${chunks.length} for ${directory} returned no transaction id; ` +
-          `its completion could not be confirmed before the next chunk was sent.`,
-      });
+
+      if (response.transactionid !== undefined && response.transactionid !== '') {
+        // Must complete before the next chunk: the server serialises part
+        // updates and rejects an overlapping one outright.
+        await waitForPartUpdateTransaction(client, response.transactionid, {
+          maxAttempts: pollAttemptsForBytes(bodyBytes),
+        });
+      } else if (response.state === 'error' || response.state === 'failed') {
+        throw new APIError(
+          response.message ?? `Part update failed (part=${partId}, dir=${directory})`
+        );
+      } else if (isChunkedUpload) {
+        // No transactionid means we cannot confirm this chunk actually landed
+        // before the next PUT goes out -- the exact overlap this plan exists to
+        // prevent. Established single-response contract (tests mock
+        // {status:'success'} with no transactionid) is left alone; this only
+        // makes the gap visible rather than changing control flow.
+        client.events.emit({
+          level: 'warn',
+          message:
+            `Chunk ${i + 1} of ${chunks.length} for ${directory} returned no transaction id; ` +
+            `its completion could not be confirmed before the next chunk was sent.`,
+        });
+      }
+    } catch (error) {
+      // Any failure in a multi-chunk sequence is indeterminate, chunk 0
+      // included. A client-side abort does not tell us whether the server
+      // applied the request -- that indeterminacy is the whole premise of this
+      // work -- so a failed chunk 0 may well have executed its reset:1 and
+      // cleared the directory, or landed chunk 0 and nothing else. Both are
+      // partial states for a multi-chunk upload.
+      //
+      // A single-chunk upload is genuinely all-or-nothing: the directory ends
+      // up either as it was or as the new content, never a mix. Leave that
+      // unwrapped so today's error surface is unchanged.
+      if (chunks.length > 1) {
+        throw new PartialUploadError(i, chunks.length, directory, partId, error);
+      }
+      throw error;
     }
   }
 
