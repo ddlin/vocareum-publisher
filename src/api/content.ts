@@ -309,6 +309,82 @@ export function crc32(buffer: Buffer): number {
 }
 
 /**
+ * Target uncompressed bytes per upload chunk. 8 MB of files becomes roughly an
+ * 11 MB base64 body once zipped and encoded, which clears the scaled timeout
+ * with room to spare. Oversized single files are exempt (see chunkFilesBySize).
+ */
+// Also a best guess, not a measured optimum. 8 MB sits far below the size that
+// failed (108 MB) while keeping the chunk count low enough that per-chunk
+// round-trips do not dominate. No measurement backs the specific value. The env
+// override exists so it can be tuned against a real course without a release.
+export const DEFAULT_MAX_CHUNK_BYTES = 8 * 1024 * 1024;
+
+/** Mirrors the validate-and-throw style of resolveThrottle in src/api/throttle.ts. */
+export function resolveMaxChunkBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.VOCAREUM_MAX_UPLOAD_CHUNK_BYTES;
+  if (raw === undefined || raw === '') { return DEFAULT_MAX_CHUNK_BYTES; }
+  if (!/^\d+$/.test(raw.trim())) {
+    throw new Error(
+      `VOCAREUM_MAX_UPLOAD_CHUNK_BYTES must be a positive integer (got "${raw}").`,
+    );
+  }
+  const n = Number(raw.trim());
+  if (n < 1024 || n > 64 * 1024 * 1024) {
+    throw new Error(
+      `VOCAREUM_MAX_UPLOAD_CHUNK_BYTES must be between 1024 and ${64 * 1024 * 1024} (got "${raw}").`,
+    );
+  }
+  return n;
+}
+
+function contentByteLength(content: Buffer | string): number {
+  return Buffer.isBuffer(content) ? content.length : Buffer.byteLength(content, 'utf8');
+}
+
+/**
+ * Partition a FileMap into chunks whose uncompressed contents stay under
+ * `maxChunkBytes`.
+ *
+ * Paths are sorted so chunking is deterministic: a retry must reproduce the
+ * same boundaries, because chunk 1 is the one that carries `reset: 1`.
+ *
+ * A single file larger than the budget gets its own chunk. There is no
+ * sub-file granularity available -- the API accepts whole files inside a zip --
+ * so the alternative would be dropping it.
+ *
+ * An empty map yields one empty chunk so that createZipBuffer still throws
+ * 'Cannot create ZIP: no files provided' exactly as it does today. Returning an
+ * empty array instead would skip the loop entirely and turn that throw into a
+ * silent success. (No caller passes an empty map: uploadDirectory returns early
+ * for empty directories.)
+ */
+export function chunkFilesBySize(files: FileMap, maxChunkBytes: number): FileMap[] {
+  const paths = Object.keys(files).sort();
+  if (paths.length === 0) { return [{}]; }
+
+  const oversized = paths.filter((p) => contentByteLength(files[p]) > maxChunkBytes);
+  const regular = paths.filter((p) => contentByteLength(files[p]) <= maxChunkBytes);
+
+  const chunks: FileMap[] = oversized.map((p) => ({ [p]: files[p] }));
+
+  let current: FileMap = {};
+  let currentBytes = 0;
+  for (const p of regular) {
+    const size = contentByteLength(files[p]);
+    if (currentBytes > 0 && currentBytes + size > maxChunkBytes) {
+      chunks.push(current);
+      current = {};
+      currentBytes = 0;
+    }
+    current[p] = files[p];
+    currentBytes += size;
+  }
+  if (Object.keys(current).length > 0) { chunks.push(current); }
+
+  return chunks;
+}
+
+/**
  * Create a ZIP buffer from a map of files
  * @internal Exported for testing
  */
