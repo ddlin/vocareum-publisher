@@ -26,6 +26,56 @@ interface TransactionResponse {
 
 const PART_UPDATE_POLL_MAX_ATTEMPTS = 30;
 const PART_UPDATE_POLL_DELAY_MS = 1000;
+const PART_UPDATE_POLL_MAX_ATTEMPTS_CAP = 300;
+const PART_UPDATE_POLL_ATTEMPTS_PER_MB = 2;
+
+// These four numbers are DELIBERATE BEST GUESSES, not measurements. No
+// baseline for throughput to Vocareum or for server-side unzip time exists,
+// and none was available when this was written; rather than block on
+// instrumenting one, they are set for margin and revised when evidence
+// arrives. 4s/MB tolerates ~0.25 MB/s (2 Mbps) sustained -- well below any
+// plausible link, and far above the 0 s/MB the old fixed timeout effectively
+// allowed. The cap bounds a hung run. A1 is what turns these into informed
+// values; until it runs, treat them as arbitrary but safe.
+const UPLOAD_TIMEOUT_BASE_MS = 60_000;
+const UPLOAD_TIMEOUT_MS_PER_MB = 4_000;
+const UPLOAD_TIMEOUT_MAX_MS = 600_000;
+
+/**
+ * Request timeout for a part-content PUT.
+ *
+ * axios's timeout covers connect + body upload + server processing until the
+ * first response byte. A fixed 60s meant a ~144 MB body needed 2.4 MB/s
+ * sustained before the server did any work; in practice the client aborted
+ * while the server was still holding the request, and the next call for that
+ * part collided with it ("previous corresponding API request is not yet
+ * complete"). Budget ~4s per MB on top of the old floor, capped.
+ */
+export function uploadTimeoutForBytes(bodyBytes: number): number {
+  // Whole megabytes only: a sub-MB body must resolve to exactly the historical
+  // 60s floor, or existing callers and tests that pin 60000 start seeing 60001.
+  const mb = Math.floor(bodyBytes / (1024 * 1024));
+  return Math.min(
+    UPLOAD_TIMEOUT_MAX_MS,
+    UPLOAD_TIMEOUT_BASE_MS + mb * UPLOAD_TIMEOUT_MS_PER_MB,
+  );
+}
+
+/**
+ * Poll attempts to allow for the server-side unzip of a part update. Scales
+ * with payload size for the same reason as the timeout above; the old fixed
+ * 30s ceiling surfaced a large upload as a confusing "Timed out waiting for
+ * part update" rather than as slowness.
+ */
+export function pollAttemptsForBytes(bodyBytes: number): number {
+  // Whole megabytes, same reason as uploadTimeoutForBytes: a sub-MB body must
+  // yield exactly the historical 30 attempts.
+  const mb = Math.floor(bodyBytes / (1024 * 1024));
+  return Math.min(
+    PART_UPDATE_POLL_MAX_ATTEMPTS_CAP,
+    PART_UPDATE_POLL_MAX_ATTEMPTS + mb * PART_UPDATE_POLL_ATTEMPTS_PER_MB,
+  );
+}
 
 export interface DownloadContentLimits {
   maxFiles: number;
@@ -394,6 +444,7 @@ export async function uploadContent(
   const filePaths = Object.keys(files);
   const zipBuffer = createZipBuffer(files);
   const zipBase64 = zipBuffer.toString('base64');
+  const bodyBytes = Buffer.byteLength(zipBase64, 'utf8');
 
   const response = await client.request<PartUpdateResponse>({
     method: 'PUT',
@@ -408,11 +459,13 @@ export async function uploadContent(
         },
       ],
     },
-    timeout: 60000,
+    timeout: uploadTimeoutForBytes(bodyBytes),
   });
 
   if (response.transactionid !== undefined && response.transactionid !== '') {
-    await waitForPartUpdateTransaction(client, response.transactionid);
+    await waitForPartUpdateTransaction(client, response.transactionid, {
+      maxAttempts: pollAttemptsForBytes(bodyBytes),
+    });
   } else if (response.state === 'error' || response.state === 'failed') {
     throw new APIError(
       response.message ?? `Part update failed (part=${partId}, dir=${directory})`
