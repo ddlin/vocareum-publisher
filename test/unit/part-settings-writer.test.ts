@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { writePartSettingsWithFallback } from '../../src/core/services/part-settings-writer';
-import { buildPartSettingsPayload } from '../../src/core/payload-helpers';
+import { buildPartSettingsPayload, omitPlatformKeysForUpdate } from '../../src/core/payload-helpers';
 
 const http400 = () => Object.assign(new Error('Bad Request'), {
   isAxiosError: true,
@@ -96,5 +96,49 @@ describe('writePartSettingsWithFallback', () => {
 
     const warned = events.emit.mock.calls.map((c) => c[0]).filter((e) => e.level === 'warn');
     expect(warned.some((w) => w.message.includes('max_points'))).toBe(true);
+  });
+
+  it('skips the without-platform rung when the full payload was already stripped upstream', async () => {
+    // Simulates planPush, which already strips labtype/container_image before
+    // the ladder ever sees the payload (push-service.ts:321 and :895). The
+    // without-platform rung would then be byte-identical to full, so it must
+    // be skipped rather than sent as a guaranteed-duplicate request.
+    const update = vi.fn()
+      .mockRejectedValueOnce(http400())   // full rejected
+      .mockResolvedValueOnce(undefined);  // safe accepted
+    const full = omitPlatformKeysForUpdate(buildPartSettingsPayload('cloud-lab', settings, 'full'));
+
+    const r = await writePartSettingsWithFallback(update, 'cloud-lab', settings, full, sink() as never);
+
+    // Exactly two calls: full, then safe. without-platform was skipped, not sent.
+    expect(update).toHaveBeenCalledTimes(2);
+    // The outcome names the rung that actually succeeded (safe), never the
+    // skipped one (without-platform).
+    expect(r.outcome).toBe('safe');
+
+    const firstPayload = update.mock.calls[0][0] as Record<string, unknown>;
+    const secondPayload = update.mock.calls[1][0] as Record<string, unknown>;
+    expect(firstPayload).not.toEqual(secondPayload);
+    expect(secondPayload.max_points).toBeUndefined();
+    expect(secondPayload.lab_interface).toBeUndefined();
+  });
+
+  it('still exercises the without-platform rung, unskipped, when the payload was not pre-stripped', async () => {
+    const update = vi.fn()
+      .mockRejectedValueOnce(http400())   // full rejected
+      .mockRejectedValueOnce(http400())   // without-platform: distinct payload, also rejected
+      .mockResolvedValueOnce(undefined);  // safe accepted
+    const full = buildPartSettingsPayload('cloud-lab', settings, 'full');
+
+    const r = await writePartSettingsWithFallback(update, 'cloud-lab', settings, full, sink() as never);
+
+    expect(update).toHaveBeenCalledTimes(3);
+    const secondPayload = update.mock.calls[1][0] as Record<string, unknown>;
+    expect(secondPayload.labtype).toBeUndefined();
+    expect(secondPayload.container_image).toBeUndefined();
+    // Grading settings still present on the without-platform rung, even
+    // though this attempt is ultimately also rejected.
+    expect(secondPayload.max_points).toBe('40');
+    expect(r.outcome).toBe('safe');
   });
 });

@@ -482,15 +482,19 @@ describe('publish', () => {
       staleInConfig: [],
     };
     reconcileMock.mockResolvedValue(plan);
+    // Only 2 calls: this fixture has no labtype/container_image, so the
+    // without-platform rung would be byte-identical to full and is skipped
+    // automatically (round 1 fix — the ladder now skips a rung whose payload
+    // deep-equals the one just attempted, rather than re-sending a guaranteed
+    // duplicate). The effective ladder here is full -> safe.
     updatePartMock
-      .mockRejectedValueOnce({ response: { status: 400 } }) // full
-      .mockRejectedValueOnce({ response: { status: 400 } }) // without-platform (no labtype/container_image here, so identical to full)
-      .mockResolvedValueOnce(undefined); // safe
+      .mockRejectedValueOnce({ response: { status: 400 } })
+      .mockResolvedValueOnce(undefined);
 
     const result = await publish(config, client, baseOptions);
 
     expect(result.success).toBe(true);
-    expect(updatePartMock).toHaveBeenCalledTimes(3);
+    expect(updatePartMock).toHaveBeenCalledTimes(2);
     expect(updatePartMock.mock.calls[0][4]).toMatchObject({
       name: 'Part 1',
       cloud_labs: false,
@@ -501,15 +505,7 @@ describe('publish', () => {
         list: undefined,
       },
     });
-    // The without-platform rung has no labtype/container_image to strip in this
-    // fixture, so it still carries cloud_labs — that's the point of Task 3's new
-    // rung: it does NOT discard grading/interface settings on its own.
     expect(updatePartMock.mock.calls[1][4]).toMatchObject({
-      name: 'Part 1',
-      cloud_labs: false,
-      session_length: '3600',
-    });
-    expect(updatePartMock.mock.calls[2][4]).toMatchObject({
       name: 'Part 1',
       session_length: '3600',
       submission_filters: {
@@ -518,7 +514,7 @@ describe('publish', () => {
         list: undefined,
       },
     });
-    expect(updatePartMock.mock.calls[2][4].cloud_labs).toBeUndefined();
+    expect(updatePartMock.mock.calls[1][4].cloud_labs).toBeUndefined();
   });
 
   it('should retry part settings update when error uses statusCode=400 shape', async () => {
@@ -630,16 +626,18 @@ describe('publish', () => {
       staleInConfig: [],
     };
     reconcileMock.mockResolvedValue(plan);
+    // Only 3 calls: this fixture has no labtype/container_image, so the
+    // without-platform rung is skipped as a guaranteed duplicate of full
+    // (round 1 fix). Effective ladder here is full -> safe -> name-only.
     updatePartMock
-      .mockRejectedValueOnce({ response: { status: 400 } }) // full
-      .mockRejectedValueOnce({ response: { status: 400 } }) // without-platform
-      .mockRejectedValueOnce({ response: { status: 400 } }) // safe
-      .mockRejectedValueOnce({ response: { status: 400 } }); // name-only
+      .mockRejectedValueOnce({ response: { status: 400 } })
+      .mockRejectedValueOnce({ response: { status: 400 } })
+      .mockRejectedValueOnce({ response: { status: 400 } });
 
     const result = await publish(config, client, baseOptions);
 
-    expect(updatePartMock).toHaveBeenCalledTimes(4);
-    expect(updatePartMock.mock.calls[3][4]).toEqual({ name: 'Part 1' });
+    expect(updatePartMock).toHaveBeenCalledTimes(3);
+    expect(updatePartMock.mock.calls[2][4]).toEqual({ name: 'Part 1' });
     expect(result.failed).toHaveLength(0);
     expect(result.success).toBe(true);
   });
@@ -920,9 +918,11 @@ describe('part update full→safe ladder with _unknown_settings (integration-sty
     updateConfigMock.mockResolvedValue(undefined);
 
     const http400 = Object.assign(new Error('rejected'), { response: { status: 400 } });
+    // Only 2 calls: this fixture has no labtype/container_image, so the
+    // without-platform rung is skipped as a guaranteed duplicate of full
+    // (round 1 fix). Effective ladder here is full -> safe.
     updatePartMock
       .mockRejectedValueOnce(http400)   // full attempt
-      .mockRejectedValueOnce(http400)   // without-platform retry (no labtype/container_image here)
       .mockResolvedValueOnce(undefined); // safe retry
 
     const baseOptions: PublishOperationOptions = {
@@ -935,25 +935,19 @@ describe('part update full→safe ladder with _unknown_settings (integration-sty
 
     await publish(localConfig, {} as VocareumClient, baseOptions);
 
-    expect(updatePartMock).toHaveBeenCalledTimes(3);
+    expect(updatePartMock).toHaveBeenCalledTimes(2);
     const firstSettings = updatePartMock.mock.calls[0][4] as Record<string, unknown>;
     const secondSettings = updatePartMock.mock.calls[1][4] as Record<string, unknown>;
-    const thirdSettings = updatePartMock.mock.calls[2][4] as Record<string, unknown>;
     // First call = full payload: includes both known + spread unknown fields
     expect(firstSettings.session_length).toBe('60');
     expect(firstSettings.vendor_flag).toBe(true);
-    // Second call = without-platform payload: this fixture has no
-    // labtype/container_image to strip, so it is unchanged from full —
-    // unknown settings and grading/interface fields still survive this rung.
-    expect(secondSettings.session_length).toBe('60');
-    expect(secondSettings.vendor_flag).toBe(true);
-    // Third call = safe payload: includes known fields but NOT unknown spread,
+    // Second call = safe payload: includes known fields but NOT unknown spread,
     // AND NOT full-only fields like labtype / endlab / cloud_labs
-    expect(thirdSettings.session_length).toBe('60');
-    expect(thirdSettings.vendor_flag).toBeUndefined();
-    expect(thirdSettings.labtype).toBeUndefined();
-    expect(thirdSettings.endlab).toBeUndefined();
-    expect(thirdSettings.cloud_labs).toBeUndefined();
+    expect(secondSettings.session_length).toBe('60');
+    expect(secondSettings.vendor_flag).toBeUndefined();
+    expect(secondSettings.labtype).toBeUndefined();
+    expect(secondSettings.endlab).toBeUndefined();
+    expect(secondSettings.cloud_labs).toBeUndefined();
 
     // updateConfig should not have been called with a payload that strips
     // _unknown_settings. If updateConfigMock was called for any reason, check

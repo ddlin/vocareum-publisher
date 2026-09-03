@@ -21,6 +21,7 @@
 import type { EventSink } from './event-sink';
 import type { PartSettings } from '../../types/config';
 import type { PartSettingsPayload } from '../../types/api';
+import { deepEqual } from '../../utils/deep-equal';
 import {
   buildPartSettingsPayload,
   describeDroppedPartSettings,
@@ -55,6 +56,15 @@ export interface PartSettingsWriteResult {
  *
  * Every degradation is reported through `events` naming exactly what was not
  * sent. A reduced write must never read as an unqualified success.
+ *
+ * A rung whose payload is deep-equal to the one just attempted is skipped
+ * silently (no `update` call, no warning): it isn't a further degradation,
+ * it's the same request the API already rejected, and re-sending it would
+ * just be a guaranteed-duplicate round-trip. This commonly happens when the
+ * caller already stripped labtype/container_image before ever reaching this
+ * ladder (planPush does), which makes `full` and `without-platform`
+ * identical — the rung still exists so this module stays correct on its own
+ * when a caller passes an unstripped payload.
  */
 export async function writePartSettingsWithFallback(
   update: (payload: PartSettingsPayload) => Promise<void>,
@@ -70,8 +80,17 @@ export async function writePartSettingsWithFallback(
     { outcome: 'name-only', payload: { name: partName } },
   ];
 
+  let lastAttemptedPayload: PartSettingsPayload | undefined;
+
   for (let i = 0; i < rungs.length; i++) {
     const { outcome, payload } = rungs[i];
+
+    if (lastAttemptedPayload !== undefined && deepEqual(payload, lastAttemptedPayload)) {
+      // Same request the API just rejected — skip it, not a degradation.
+      continue;
+    }
+    lastAttemptedPayload = payload;
+
     try {
       await update(payload);
       const dropped = describeDroppedPartSettings(fullPayload, payload);
@@ -88,8 +107,13 @@ export async function writePartSettingsWithFallback(
       // Only a 400 means "this payload is unacceptable". Anything else is a
       // real failure and degrading the payload would just hide it.
       if (!isHttp400(error)) { throw error; }
-      const hasNext = i + 1 < rungs.length;
-      const next = hasNext ? rungs[i + 1] : undefined;
+      // Look ahead past any rung(s) that will be skipped (identical payload)
+      // so the message names the rung that will actually be attempted next.
+      let nextIndex = i + 1;
+      while (nextIndex < rungs.length && deepEqual(rungs[nextIndex].payload, payload)) {
+        nextIndex++;
+      }
+      const next = nextIndex < rungs.length ? rungs[nextIndex] : undefined;
       events.emit({
         level: 'warn',
         message:
