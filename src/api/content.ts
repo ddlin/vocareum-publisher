@@ -528,18 +528,27 @@ export async function uploadContent(
   // that a test-sized value would otherwise trip.
   const chunks = chunkFilesBySize(files, options?.maxChunkBytes ?? resolveMaxChunkBytes());
 
-  if (chunks.length > 1) {
+  const isChunkedUpload = chunks.length > 1;
+
+  if (isChunkedUpload) {
     // Say this out loud. A single PUT was effectively atomic from a viewer's
     // side; a chunk sequence is not. Between chunk 1's reset and the last
     // chunk landing, the remote directory is genuinely incomplete and students
     // looking at the course see it that way. That window is new behavior and
     // is not something the chunking can avoid -- there is no staged-swap
     // primitive in the API -- so the operator has to know it exists.
+    //
+    // It also is not undoable partway through. Chunk 1's reset:1 has already
+    // erased the previous contents before chunk 2 is ever sent, and there is
+    // no rollback: an abort at chunk 5 of 14 leaves the directory holding
+    // only chunks 1-4 permanently, until a re-run completes the rest.
     client.events.emit({
       level: 'warn',
       message:
         `Uploading ${filePaths.length} files to ${directory} in ${chunks.length} chunks. ` +
-        `This directory will be incomplete in Vocareum until all chunks land.`,
+        `This directory will be incomplete in Vocareum until all chunks land. ` +
+        `If this upload fails partway, the directory is left holding only the ` +
+        `chunks that landed; re-run to restore it.`,
     });
   }
 
@@ -549,7 +558,10 @@ export async function uploadContent(
 
     // Only the first chunk resets. reset:1 clears the target directory before
     // applying the zip, so sending it on a later chunk would delete everything
-    // uploaded so far and leave only the final chunk.
+    // uploaded so far and leave only the final chunk. Keyed off the loop
+    // index, never off chunk contents: chunkFilesBySize emits an oversized
+    // file's chunk first, so chunk 0 need not be the alphabetically-first
+    // file, but it is always this loop's first iteration.
     const reset = i === 0 ? 1 : 0;
 
     const response = await client.request<PartUpdateResponse>({
@@ -572,6 +584,18 @@ export async function uploadContent(
       throw new APIError(
         response.message ?? `Part update failed (part=${partId}, dir=${directory})`
       );
+    } else if (isChunkedUpload) {
+      // No transactionid means we cannot confirm this chunk actually landed
+      // before the next PUT goes out -- the exact overlap this plan exists to
+      // prevent. Established single-response contract (tests mock
+      // {status:'success'} with no transactionid) is left alone; this only
+      // makes the gap visible rather than changing control flow.
+      client.events.emit({
+        level: 'warn',
+        message:
+          `Chunk ${i + 1} of ${chunks.length} for ${directory} returned no transaction id; ` +
+          `its completion could not be confirmed before the next chunk was sent.`,
+      });
     }
   }
 

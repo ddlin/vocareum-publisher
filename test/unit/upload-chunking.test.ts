@@ -126,4 +126,45 @@ describe('uploadContent chunking', () => {
     // "previous corresponding API request is not yet complete".
     expect(order).toEqual(['put', 'poll', 'put', 'poll']);
   });
+
+  it('gives reset:1 to chunk 0 even when chunk 0 is an oversized file out of sort order', async () => {
+    await uploadContent(mockClient, 'c1', 'a1', 'p1', 'docs', {
+      zbig: Buffer.alloc(300, 1), // oversized -> emitted as chunk 0 despite sorting last
+      a: Buffer.alloc(80, 2),
+      b: Buffer.alloc(80, 3),
+    }, { maxChunkBytes: 100 });
+    const contents = requestMock.mock.calls.map((c) => c[0].data.content[0]);
+    expect(contents.map((c) => c.reset)).toEqual([1, 0, 0]);
+    // chunk 0 must BE the oversized file and must still carry the reset
+    expect(Buffer.from(contents[0].zipcontent, 'base64').toString('latin1')).toContain('zbig');
+  });
+
+  it('warns when a chunk in a multi-chunk upload returns no transaction id', async () => {
+    const emitMock = mockClient.events.emit as ReturnType<typeof vi.fn>;
+    requestMock.mockResolvedValue({ status: 'success' }); // no transactionid
+
+    await uploadContent(mockClient, 'c1', 'a1', 'p1', 'docs', {
+      a: Buffer.alloc(80, 1),
+      b: Buffer.alloc(80, 2),
+    }, { maxChunkBytes: 100 });
+
+    const warnings = emitMock.mock.calls
+      .map((c) => c[0])
+      .filter((e) => e.level === 'warn' && /transaction id/.test(e.message));
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0].message).toContain('Chunk 1 of 2');
+    expect(warnings[1].message).toContain('Chunk 2 of 2');
+  });
+
+  it('does not warn about a missing transaction id for a single-chunk upload', async () => {
+    const emitMock = mockClient.events.emit as ReturnType<typeof vi.fn>;
+    requestMock.mockResolvedValue({ status: 'success' }); // no transactionid
+
+    await uploadContent(mockClient, 'c1', 'a1', 'p1', 'docs', { a: 'hello' });
+
+    const warnings = emitMock.mock.calls
+      .map((c) => c[0])
+      .filter((e) => e.level === 'warn');
+    expect(warnings).toHaveLength(0);
+  });
 });
