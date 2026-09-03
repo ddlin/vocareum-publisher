@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   chunkFilesBySize,
   resolveMaxChunkBytes,
   DEFAULT_MAX_CHUNK_BYTES,
+  uploadContent,
 } from '../../src/api/content';
+import { VocareumClient } from '../../src/api/client';
 
 const buf = (n: number) => Buffer.alloc(n, 0x61);
 
@@ -58,5 +60,70 @@ describe('resolveMaxChunkBytes', () => {
 
   it('throws on a non-integer rather than silently clamping', () => {
     expect(() => resolveMaxChunkBytes({ VOCAREUM_MAX_UPLOAD_CHUNK_BYTES: 'big' })).toThrow();
+  });
+});
+
+describe('uploadContent chunking', () => {
+  let mockClient: VocareumClient;
+  let requestMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    requestMock = vi.fn().mockResolvedValue({ status: 'success' });
+    mockClient = {
+      request: requestMock,
+      events: { emit: vi.fn() },
+    } as unknown as VocareumClient;
+  });
+
+  it('sends reset:1 on the first chunk and reset:0 on every later chunk', async () => {
+    // Three chunks at a 100-byte budget.
+    const files = {
+      a: Buffer.alloc(80, 1),
+      b: Buffer.alloc(80, 2),
+      c: Buffer.alloc(80, 3),
+    };
+    await uploadContent(mockClient, 'c1', 'a1', 'p1', 'docs', files, { maxChunkBytes: 100 });
+
+    expect(requestMock).toHaveBeenCalledTimes(3);
+    const resets = requestMock.mock.calls.map((c) => c[0].data.content[0].reset);
+    // Anything other than [1,0,0] deletes earlier chunks: reset:1 clears the
+    // target directory before applying the zip.
+    expect(resets).toEqual([1, 0, 0]);
+  });
+
+  it('still sends a single reset:1 PUT when everything fits in one chunk', async () => {
+    await uploadContent(mockClient, 'c1', 'a1', 'p1', 'docs', { a: 'hello' });
+    expect(requestMock).toHaveBeenCalledTimes(1);
+    expect(requestMock.mock.calls[0][0].data.content[0].reset).toBe(1);
+  });
+
+  it('reports every file across all chunks as succeeded', async () => {
+    const result = await uploadContent(mockClient, 'c1', 'a1', 'p1', 'docs', {
+      a: Buffer.alloc(80, 1),
+      b: Buffer.alloc(80, 2),
+    }, { maxChunkBytes: 100 });
+    expect(result.succeeded.sort()).toEqual(['a', 'b']);
+    expect(result.failed).toEqual([]);
+  });
+
+  it('waits for each chunk transaction before sending the next', async () => {
+    const order: string[] = [];
+    requestMock.mockImplementation(async (cfg: { method: string; url: string }) => {
+      if (cfg.method === 'PUT') {
+        order.push('put');
+        return { status: 'success', transactionid: 't1' };
+      }
+      order.push('poll');
+      return { state: 'success' };
+    });
+
+    await uploadContent(mockClient, 'c1', 'a1', 'p1', 'docs', {
+      a: Buffer.alloc(80, 1),
+      b: Buffer.alloc(80, 2),
+    }, { maxChunkBytes: 100 });
+
+    // Vocareum serialises part updates; overlapping them is what produced
+    // "previous corresponding API request is not yet complete".
+    expect(order).toEqual(['put', 'poll', 'put', 'poll']);
   });
 });

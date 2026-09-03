@@ -507,6 +507,10 @@ export async function waitForPartUpdateTransaction(
  * @param partId - Part ID (string!)
  * @param directory - Directory type (startercode, scripts, docs, data)
  * @param files - Map of relative paths to file contents
+ * @param options.maxChunkBytes - Overrides the resolved chunk-size budget
+ *   (env var, then default). Large directories are split into sequential
+ *   chunks; chunk 1 sends reset:1 to clear the target, later chunks send
+ *   reset:0 to append.
  * @returns Upload result with succeeded/failed files
  */
 export async function uploadContent(
@@ -515,37 +519,60 @@ export async function uploadContent(
   assignmentId: string,
   partId: string,
   directory: DirectoryType,
-  files: FileMap
+  files: FileMap,
+  options?: { maxChunkBytes?: number }
 ): Promise<UploadResult> {
   const filePaths = Object.keys(files);
-  const zipBuffer = createZipBuffer(files);
-  const zipBase64 = zipBuffer.toString('base64');
-  const bodyBytes = Buffer.byteLength(zipBase64, 'utf8');
+  // Explicit override wins over the env var, which wins over the default. Tests
+  // pass a tiny override directly; resolveMaxChunkBytes enforces a 1 KB floor
+  // that a test-sized value would otherwise trip.
+  const chunks = chunkFilesBySize(files, options?.maxChunkBytes ?? resolveMaxChunkBytes());
 
-  const response = await client.request<PartUpdateResponse>({
-    method: 'PUT',
-    url: `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
-    data: {
-      update: 1,
-      content: [
-        {
-          target: directory,
-          zipcontent: zipBase64,
-          reset: 1, // Clear directory before upload to ensure exact Git state
-        },
-      ],
-    },
-    timeout: uploadTimeoutForBytes(bodyBytes),
-  });
-
-  if (response.transactionid !== undefined && response.transactionid !== '') {
-    await waitForPartUpdateTransaction(client, response.transactionid, {
-      maxAttempts: pollAttemptsForBytes(bodyBytes),
+  if (chunks.length > 1) {
+    // Say this out loud. A single PUT was effectively atomic from a viewer's
+    // side; a chunk sequence is not. Between chunk 1's reset and the last
+    // chunk landing, the remote directory is genuinely incomplete and students
+    // looking at the course see it that way. That window is new behavior and
+    // is not something the chunking can avoid -- there is no staged-swap
+    // primitive in the API -- so the operator has to know it exists.
+    client.events.emit({
+      level: 'warn',
+      message:
+        `Uploading ${filePaths.length} files to ${directory} in ${chunks.length} chunks. ` +
+        `This directory will be incomplete in Vocareum until all chunks land.`,
     });
-  } else if (response.state === 'error' || response.state === 'failed') {
-    throw new APIError(
-      response.message ?? `Part update failed (part=${partId}, dir=${directory})`
-    );
+  }
+
+  for (let i = 0; i < chunks.length; i++) {
+    const zipBase64 = createZipBuffer(chunks[i]).toString('base64');
+    const bodyBytes = Buffer.byteLength(zipBase64, 'utf8');
+
+    // Only the first chunk resets. reset:1 clears the target directory before
+    // applying the zip, so sending it on a later chunk would delete everything
+    // uploaded so far and leave only the final chunk.
+    const reset = i === 0 ? 1 : 0;
+
+    const response = await client.request<PartUpdateResponse>({
+      method: 'PUT',
+      url: `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
+      data: {
+        update: 1,
+        content: [{ target: directory, zipcontent: zipBase64, reset }],
+      },
+      timeout: uploadTimeoutForBytes(bodyBytes),
+    });
+
+    if (response.transactionid !== undefined && response.transactionid !== '') {
+      // Must complete before the next chunk: the server serialises part
+      // updates and rejects an overlapping one outright.
+      await waitForPartUpdateTransaction(client, response.transactionid, {
+        maxAttempts: pollAttemptsForBytes(bodyBytes),
+      });
+    } else if (response.state === 'error' || response.state === 'failed') {
+      throw new APIError(
+        response.message ?? `Part update failed (part=${partId}, dir=${directory})`
+      );
+    }
   }
 
   return {
