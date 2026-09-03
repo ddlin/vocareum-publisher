@@ -5,6 +5,36 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Large content directories now upload.** `uploadContent` zipped an entire
+  directory into a single base64 `PUT`; a 108 MB `docs/` became a ~144 MB body
+  against a fixed 60s timeout. Such uploads failed repeatedly with
+  `The previous corresponding API request is not yet complete` — consistent
+  with the client abandoning a request the server was still processing, though
+  the precise sequence was not instrumented. Uploads are
+  now split into sequential size-bounded chunks — the first carrying `reset: 1`
+  to clear the target, the rest `reset: 0` to append — and the request timeout
+  and transaction poll ceiling scale with payload size. The zip, base64 string
+  and request body are now bounded by the chunk size rather than the directory
+  size. (The input `FileMap` is still read whole by `uploadDirectory`, so total
+  peak memory falls but is not itself bounded by the chunk size.)
+- **Part settings are no longer silently discarded.** `pull` returns
+  `container_image`, `push` echoed it back, and the write API rejected it —
+  sending the part into a fallback that kept only name, filters, session length
+  and budget while dropping `max_points`, `lab_interface`, `instant_aws_access`
+  and `tags`, and still reporting a green "Updated part". The platform pair is
+  now sent only when it actually differs from Vocareum, a rejection retries by
+  removing just those two fields, and any settings still given up are named at
+  `warn`.
+
+### Added
+- `VOCAREUM_MAX_UPLOAD_CHUNK_BYTES` to tune the upload chunk size
+  (default 8 MB, range 1 KB–64 MB).
+- `PartialUploadError`, raised when a multi-chunk upload fails partway, naming
+  the chunk position and stating that a re-run rebuilds the directory.
+
 ## [1.3.8] — 2026-09-02
 
 ### Fixed
