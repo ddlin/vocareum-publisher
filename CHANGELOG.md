@@ -24,10 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `container_image`, `push` echoed it back, and the write API rejected it —
   sending the part into a fallback that kept only name, filters, session length
   and budget while dropping `max_points`, `lab_interface`, `instant_aws_access`
-  and `tags`, and still reporting a green "Updated part". The platform pair is
-  now sent only when it actually differs from Vocareum, a rejection retries by
-  removing just those two fields, and any settings still given up are named at
-  `warn`.
+  and `tags`, and still reporting a green "Updated part". `labtype` and
+  `container_image` are now stripped from every part-settings update
+  unconditionally, not compared against remote state and omitted only when
+  unchanged — the API rejected them in every combination tested, and the
+  omission has to be deterministic so the payload `push` plans matches the one
+  it sends. One consequence: changing a part's lab type or container image
+  through `push` is no longer possible. In practice this is not a loss of a
+  working path — the API rejected the round-tripped value regardless — but it
+  is a capability gap worth knowing about. A rejection on the remaining fields
+  still retries by removing just those two, and any settings still given up
+  are named at `warn`.
 
 ### Added
 - `VOCAREUM_MAX_UPLOAD_CHUNK_BYTES` to tune the upload chunk size
