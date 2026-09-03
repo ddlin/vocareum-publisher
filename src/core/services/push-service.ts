@@ -15,7 +15,6 @@ import type { Config, PublishHistory, PartSettings, DirectoryType } from '../../
 import { normalizeSubmissionFilters, nullToUndefined } from '../../types/config';
 import type {
   AssignmentSettingsPayload,
-  PartSettingsPayload,
   VocareumAssignmentResponse,
   VocareumPartResponse,
 } from '../../types/api';
@@ -116,6 +115,7 @@ import {
   collectSettingsState,
   withoutUndefined,
 } from '../payload-helpers';
+import { writePartSettingsWithFallback } from './part-settings-writer';
 
 // ---------------------------------------------------------------------------
 // planPush — READ-ONLY
@@ -892,31 +892,21 @@ export async function executePush(
             }
           }
 
-          const fullPayload = partIntent.settingsPayload as PartSettingsPayload;
-          try {
-            await updatePart(ctx.client, workingConfig.vocareum.course_id, assignmentId, partId, fullPayload);
-          } catch (error) {
-            if (!isHttp400(error)) { throw error; }
-            events.emit({ level: 'warn', message: `Part settings update rejected (400) for ${partId} [API: ${describeApiError(error)}]; retrying with safe subset` });
-            const safePayload = buildPartSettingsPayload(partName, partSettings, 'safe', events);
-            try {
-              await updatePart(ctx.client, workingConfig.vocareum.course_id, assignmentId, partId, safePayload);
-            } catch (retryError) {
-              if (!isHttp400(retryError)) { throw retryError; }
-              events.emit({ level: 'warn', message: `Safe part settings update rejected (400) for ${partId} [API: ${describeApiError(retryError)}]; retrying with name only` });
-              try {
-                await updatePart(ctx.client, workingConfig.vocareum.course_id, assignmentId, partId, { name: partName });
-              } catch (nameOnlyError) {
-                if (!isHttp400(nameOnlyError)) { throw nameOnlyError; }
-                metadataUpdated = false;
-                events.emit({ level: 'warn', message: `Skipping part metadata update for ${partId}: API rejected update payload (400) [API: ${describeApiError(nameOnlyError)}]` });
-                result.skipped.push({
-                  type: 'part',
-                  id: partId,
-                  reason: 'Settings update rejected by Vocareum API (400)',
-                });
-              }
-            }
+          const fullPayload = omitPlatformKeysForUpdate(partIntent.settingsPayload);
+          const writeResult = await writePartSettingsWithFallback(
+            (payload) => updatePart(ctx.client, workingConfig.vocareum.course_id, assignmentId, partId, payload),
+            partName,
+            partSettings,
+            fullPayload,
+            events,
+          );
+          if (writeResult.outcome === 'none') {
+            metadataUpdated = false;
+            result.skipped.push({
+              type: 'part',
+              id: partId,
+              reason: 'Settings update rejected by Vocareum API (400)',
+            });
           }
           if (metadataUpdated) {
             events.emit({ level: 'success', message: `Updated part ${partName}` });
