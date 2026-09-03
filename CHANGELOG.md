@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `VOCAREUM_MAX_UPLOAD_CHUNK_BYTES` to tune the upload chunk size
-  (default 8 MB, range 1 KB–64 MB).
+  (default 32 MB, range 1 KB–64 MB).
 - `PartialUploadError`, raised when a multi-chunk upload fails partway, naming
   the chunk position and stating that a re-run rebuilds the directory.
 

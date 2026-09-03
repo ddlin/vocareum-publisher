@@ -672,6 +672,7 @@ Store credentials as repository secrets (`VOCAREUM_OAUTH_CLIENT_ID`, `VOCAREUM_O
 | `VOCAREUM_MAX_CONCURRENCY` | Override `vocareum.throttle.max_concurrency` (1–5) |
 | `VOCAREUM_MIN_REQUEST_INTERVAL_MS` | Override `vocareum.throttle.min_interval_ms` (0–60000 ms) |
 | `VOCAREUM_THROTTLE_JITTER` | Override `vocareum.throttle.jitter` (`true` / `false`) |
+| `VOCAREUM_MAX_UPLOAD_CHUNK_BYTES` | Upload chunk size in bytes (default: 33554432, range: 1024–67108864) |
 | `VOCAREUM_LOG_LEVEL` | Log level: ERROR, WARN, INFO, DEBUG, TRACE |
 
 ## License

@@ -112,6 +112,7 @@ import {
   pushSettingChange,
   buildPartSettingsPayload,
   omitPlatformKeysForUpdate,
+  findPlatformFieldDrift,
   collectSettingsState,
   withoutUndefined,
 } from '../payload-helpers';
@@ -890,6 +891,21 @@ export async function executePush(
                 to: toValue,
               });
             }
+          }
+
+          // labtype/container_image are stripped from update payloads because the
+          // write API rejects them. The reconciler still sees the drift, so without
+          // this the user gets a green "Updated part" for a write that changed
+          // nothing, forever. Say so instead.
+          for (const drift of findPlatformFieldDrift(toPartSettings, remotePart)) {
+            events.emit({
+              level: 'warn',
+              message:
+                `Part ${partName}: ${drift.key} differs from Vocareum ` +
+                `("${drift.remote}" -> "${drift.desired}") but is never sent on ` +
+                `updates — the write API rejects it. Change it in the Vocareum UI, or run ` +
+                `\`vocgit pull\` to adopt the remote value.`,
+            });
           }
 
           const fullPayload = omitPlatformKeysForUpdate(partIntent.settingsPayload);

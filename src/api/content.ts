@@ -309,15 +309,17 @@ export function crc32(buffer: Buffer): number {
 }
 
 /**
- * Target uncompressed bytes per upload chunk. 8 MB of files becomes roughly an
- * 11 MB base64 body once zipped and encoded, which clears the scaled timeout
+ * Target uncompressed bytes per upload chunk. 32 MB of files becomes roughly a
+ * 43 MB base64 body once zipped and encoded, which clears the scaled timeout
  * with room to spare. Oversized single files are exempt (see chunkFilesBySize).
  */
-// Also a best guess, not a measured optimum. 8 MB sits far below the size that
-// failed (108 MB) while keeping the chunk count low enough that per-chunk
-// round-trips do not dominate. No measurement backs the specific value. The env
-// override exists so it can be tuned against a real course without a release.
-export const DEFAULT_MAX_CHUNK_BYTES = 8 * 1024 * 1024;
+// Also a best guess, not a measured optimum. 32 MB sits below both observed
+// failures (74 MB and 108 MB) while keeping directories smaller than that on
+// the single-PUT atomic path they use today. Nothing in the evidence shows a
+// 10-20 MB directory failing, so chunking one is all risk and no demonstrated
+// benefit. No measurement backs the specific value. The env override exists so
+// it can be tuned against a real course without a release.
+export const DEFAULT_MAX_CHUNK_BYTES = 32 * 1024 * 1024;
 
 /** Mirrors the validate-and-throw style of resolveThrottle in src/api/throttle.ts. */
 export function resolveMaxChunkBytes(env: NodeJS.ProcessEnv = process.env): number {
@@ -522,9 +524,14 @@ export class PartialUploadError extends APIError {
     super(
       `Part ${partId} directory "${directory}" is PARTIALLY uploaded: chunk ` +
       `${chunkIndex + 1} of ${totalChunks} failed (${cause instanceof Error ? cause.message : String(cause)}). ` +
-      `The remote directory now holds only the chunks before it. Re-run the ` +
-      `push to rebuild it from scratch -- the first chunk resets the directory, ` +
+      (chunkIndex === 0
+        ? `Chunk 1's own outcome is unknown -- its reset:1 may or may not have executed, ` +
+          `so the directory may now be empty, untouched, or still holding its old content. `
+        : `The remote directory now holds only the chunks before it. `) +
+      `Re-run the push to rebuild it from scratch -- the first chunk resets the directory, ` +
       `so a full replay is safe.`,
+      undefined,
+      cause,
     );
     this.name = 'PartialUploadError';
   }
@@ -586,8 +593,22 @@ export async function uploadContent(
     });
   }
 
+  // Fires at most once per uploadContent call, on whichever chunk hits it
+  // first. Without this a 14-chunk upload against a server that never returns
+  // a transaction id would emit the same warning 14 times.
+  let missingTransactionWarned = false;
+
   for (let i = 0; i < chunks.length; i++) {
     try {
+      if (isChunkedUpload) {
+        client.events.emit({
+          level: 'info',
+          message:
+            `Uploading chunk ${i + 1} of ${chunks.length} to ${directory} ` +
+            `(${Object.keys(chunks[i]).length} files)`,
+        });
+      }
+
       const zipBase64 = createZipBuffer(chunks[i]).toString('base64');
       const bodyBytes = Buffer.byteLength(zipBase64, 'utf8');
 
@@ -619,17 +640,24 @@ export async function uploadContent(
         throw new APIError(
           response.message ?? `Part update failed (part=${partId}, dir=${directory})`
         );
-      } else if (isChunkedUpload) {
+      } else if (isChunkedUpload && !missingTransactionWarned) {
         // No transactionid means we cannot confirm this chunk actually landed
         // before the next PUT goes out -- the exact overlap this plan exists to
         // prevent. Established single-response contract (tests mock
         // {status:'success'} with no transactionid) is left alone; this only
         // makes the gap visible rather than changing control flow.
+        //
+        // Emitted only once per upload: if the server never returns a
+        // transaction id, every remaining chunk would hit this same branch, and
+        // a warning repeated once per chunk is noise, not information.
+        missingTransactionWarned = true;
         client.events.emit({
           level: 'warn',
           message:
             `Chunk ${i + 1} of ${chunks.length} for ${directory} returned no transaction id; ` +
-            `its completion could not be confirmed before the next chunk was sent.`,
+            `its completion could not be confirmed before the next chunk was sent. This server ` +
+            `does not appear to return transaction ids for this upload, so no further chunks ` +
+            `will be confirmed either -- this warning will not repeat for the rest of it.`,
         });
       }
     } catch (error) {

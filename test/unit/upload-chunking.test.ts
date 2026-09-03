@@ -140,21 +140,52 @@ describe('uploadContent chunking', () => {
     expect(Buffer.from(contents[0].zipcontent, 'base64').toString('latin1')).toContain('zbig');
   });
 
-  it('warns when a chunk in a multi-chunk upload returns no transaction id', async () => {
+  it('warns exactly once when every chunk in a multi-chunk upload returns no transaction id', async () => {
     const emitMock = mockClient.events.emit as ReturnType<typeof vi.fn>;
-    requestMock.mockResolvedValue({ status: 'success' }); // no transactionid
+    requestMock.mockResolvedValue({ status: 'success' }); // no transactionid, every chunk
 
     await uploadContent(mockClient, 'c1', 'a1', 'p1', 'docs', {
       a: Buffer.alloc(80, 1),
       b: Buffer.alloc(80, 2),
     }, { maxChunkBytes: 100 });
 
+    // A server that never returns a transaction id would otherwise repeat this
+    // warning once per chunk; it must fire only for the first occurrence.
     const warnings = emitMock.mock.calls
       .map((c) => c[0])
       .filter((e) => e.level === 'warn' && /transaction id/.test(e.message));
-    expect(warnings).toHaveLength(2);
+    expect(warnings).toHaveLength(1);
     expect(warnings[0].message).toContain('Chunk 1 of 2');
-    expect(warnings[1].message).toContain('Chunk 2 of 2');
+  });
+
+  it('emits per-chunk progress for a multi-chunk upload, naming position and file count', async () => {
+    const emitMock = mockClient.events.emit as ReturnType<typeof vi.fn>;
+
+    await uploadContent(mockClient, 'c1', 'a1', 'p1', 'docs', {
+      a: Buffer.alloc(80, 1),
+      b: Buffer.alloc(80, 2),
+      c: Buffer.alloc(80, 3),
+    }, { maxChunkBytes: 100 });
+
+    const progress = emitMock.mock.calls
+      .map((c) => c[0])
+      .filter((e) => e.level === 'info' && /^Uploading chunk/.test(e.message));
+    expect(progress.map((e) => e.message)).toEqual([
+      'Uploading chunk 1 of 3 to docs (1 files)',
+      'Uploading chunk 2 of 3 to docs (1 files)',
+      'Uploading chunk 3 of 3 to docs (1 files)',
+    ]);
+  });
+
+  it('emits no per-chunk progress line for a single-chunk upload', async () => {
+    const emitMock = mockClient.events.emit as ReturnType<typeof vi.fn>;
+
+    await uploadContent(mockClient, 'c1', 'a1', 'p1', 'docs', { a: 'hello' });
+
+    const progress = emitMock.mock.calls
+      .map((c) => c[0])
+      .filter((e) => /^Uploading chunk/.test(e.message));
+    expect(progress).toHaveLength(0);
   });
 
   it('does not warn about a missing transaction id for a single-chunk upload', async () => {
@@ -200,6 +231,48 @@ describe('multi-chunk failure reporting', () => {
     await expect(
       uploadContent(client, 'c1', 'a1', 'p1', 'docs', { a: 'hello' }),
     ).rejects.not.toThrow(PartialUploadError);
+  });
+
+  it('preserves the original cause as `details` rather than discarding it', async () => {
+    const cause = new Error('connection reset');
+    const requestMock = vi.fn()
+      .mockResolvedValueOnce({ status: 'success' })
+      .mockRejectedValueOnce(cause);
+    const client = {
+      request: requestMock,
+      events: { emit: vi.fn() },
+    } as unknown as VocareumClient;
+
+    try {
+      await uploadContent(client, 'c1', 'a1', 'p1', 'docs', {
+        a: Buffer.alloc(80, 1),
+        b: Buffer.alloc(80, 2),
+      }, { maxChunkBytes: 100 });
+      expect.unreachable('should have thrown');
+    } catch (e) {
+      expect((e as PartialUploadError).details).toBe(cause);
+    }
+  });
+
+  it('describes a chunk-0 failure without claiming a chunk landed before it', async () => {
+    const requestMock = vi.fn().mockRejectedValueOnce(new Error('boom'));
+    const client = {
+      request: requestMock,
+      events: { emit: vi.fn() },
+    } as unknown as VocareumClient;
+
+    try {
+      await uploadContent(client, 'c1', 'a1', 'p1', 'docs', {
+        a: Buffer.alloc(80, 1),
+        b: Buffer.alloc(80, 2),
+      }, { maxChunkBytes: 100 });
+      expect.unreachable('should have thrown');
+    } catch (e) {
+      const message = (e as Error).message;
+      // Chunk 0 has no chunks before it -- the old wording was wrong here.
+      expect(message).not.toContain('holds only the chunks before it');
+      expect(message).toContain('Re-run');
+    }
   });
 
   it('carries the chunk position in the message', async () => {

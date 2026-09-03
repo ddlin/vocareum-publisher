@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isHttp400, describeApiError, describeDroppedPartSettings, omitPlatformKeysForUpdate, buildPartSettingsPayload } from '../../src/core/payload-helpers';
+import { isHttp400, describeApiError, describeDroppedPartSettings, omitPlatformKeysForUpdate, buildPartSettingsPayload, findPlatformFieldDrift } from '../../src/core/payload-helpers';
 import { APIError } from '../../src/api/client';
 
 describe('isHttp400', () => {
@@ -149,5 +149,66 @@ describe('plan/execute payload agreement', () => {
     expect(asPlanned).toEqual(asExecuted);
     expect(asPlanned).not.toHaveProperty('labtype');
     expect(asPlanned).not.toHaveProperty('container_image');
+  });
+});
+
+describe('findPlatformFieldDrift', () => {
+  // labtype/container_image are stripped from every update payload
+  // (omitPlatformKeysForUpdate) because the write API rejects them. A real
+  // difference here can never be resolved by push, so it must be surfaced
+  // rather than silently planning and "succeeding" at a no-op update forever.
+
+  it('flags labtype when the desired value differs from what Vocareum reports', () => {
+    const drift = findPlatformFieldDrift(
+      { labtype: 'Vocareum Notebook' } as never,
+      { labtype: 'JupyterLab' },
+    );
+    expect(drift).toEqual([
+      { key: 'labtype', desired: 'Vocareum Notebook', remote: 'JupyterLab' },
+    ]);
+  });
+
+  it('flags container_image independently of labtype', () => {
+    const drift = findPlatformFieldDrift(
+      { container_image: 'Jupyter v1.70' } as never,
+      { container_image: 'Jupyter v1.60' },
+    );
+    expect(drift).toEqual([
+      { key: 'container_image', desired: 'Jupyter v1.70', remote: 'Jupyter v1.60' },
+    ]);
+  });
+
+  it('flags both keys when both differ', () => {
+    const drift = findPlatformFieldDrift(
+      { labtype: 'Vocareum Notebook', container_image: 'Jupyter v1.70' } as never,
+      { labtype: 'JupyterLab', container_image: 'Jupyter v1.60' },
+    );
+    expect(drift.map((d) => d.key).sort()).toEqual(['container_image', 'labtype']);
+  });
+
+  it('does not fire when the desired value matches remote', () => {
+    const drift = findPlatformFieldDrift(
+      { labtype: 'Vocareum Notebook', container_image: 'Jupyter v1.70' } as never,
+      { labtype: 'Vocareum Notebook', container_image: 'Jupyter v1.70' },
+    );
+    expect(drift).toEqual([]);
+  });
+
+  it('does not fire when no local value is desired (undefined/null)', () => {
+    expect(findPlatformFieldDrift(undefined, { labtype: 'JupyterLab' })).toEqual([]);
+    expect(findPlatformFieldDrift(
+      { labtype: null } as never,
+      { labtype: 'JupyterLab' },
+    )).toEqual([]);
+  });
+
+  it('treats a missing remote value as empty string rather than throwing', () => {
+    const drift = findPlatformFieldDrift(
+      { labtype: 'Vocareum Notebook' } as never,
+      {},
+    );
+    expect(drift).toEqual([
+      { key: 'labtype', desired: 'Vocareum Notebook', remote: '' },
+    ]);
   });
 });

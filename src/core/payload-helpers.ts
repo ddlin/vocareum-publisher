@@ -299,6 +299,41 @@ export function omitPlatformKeysForUpdate(payload: PartSettingsPayload): PartSet
   return out;
 }
 
+/** One platform field (`labtype`/`container_image`) whose desired value differs from Vocareum's. */
+export interface PlatformFieldDrift {
+  key: (typeof PLATFORM_KEYS)[number];
+  desired: string;
+  remote: string;
+}
+
+/**
+ * Find desired platform-field (`labtype`/`container_image`) values that differ
+ * from what Vocareum currently reports for the part.
+ *
+ * These fields are unconditionally stripped from every update payload by
+ * `omitPlatformKeysForUpdate` because the write API rejects them. That means a
+ * real difference here can never be resolved by push: the reconciler still
+ * sees it as drift on every run, push still plans an update, the payload still
+ * has the keys removed before it is sent, and the API still reports success —
+ * a write that changes nothing, forever, with no indication anything is
+ * wrong. Callers use this to surface that instead of staying silent.
+ */
+export function findPlatformFieldDrift(
+  toPartSettings: PartSettings | undefined,
+  remotePart: Partial<Record<(typeof PLATFORM_KEYS)[number], string>>,
+): PlatformFieldDrift[] {
+  const drift: PlatformFieldDrift[] = [];
+  for (const key of PLATFORM_KEYS) {
+    const desired = toPartSettings?.[key];
+    if (!hasSettingValue(desired)) { continue; }
+    const remote = remotePart[key] ?? '';
+    if (String(desired) !== remote) {
+      drift.push({ key, desired: String(desired), remote });
+    }
+  }
+  return drift;
+}
+
 export function collectSettingsState(config: Config): Record<string, unknown> {
   const state: Record<string, unknown> = {};
   for (const assignment of config.assignments) {
