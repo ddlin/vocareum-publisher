@@ -289,6 +289,37 @@ export const PartSettingsSchema = z
 export type PartSettings = z.infer<typeof PartSettingsSchema>;
 
 /**
+ * A single rubric criterion, as stored in vocareum.yaml.
+ *
+ * CRITICAL: seqnum and maxscore are strings — they are strings in the API and
+ * are never arithmetic here.
+ *
+ * The server-assigned rubric `id` is deliberately absent: it is course-scoped
+ * and must not travel between courses during a migration. See
+ * docs/superpowers/plans/2026-09-04-rubrics-pull-support.md.
+ */
+export const RubricSchema = z.object({
+  /** Criterion text shown to graders */
+  name: z.string(),
+  /** Ordering within the part; sort with parseInt */
+  seqnum: z.string(),
+  /** Points this criterion contributes */
+  maxscore: z.string(),
+  /** Whether the criterion is auto-graded */
+  auto: z.boolean().optional(),
+  /** Whether the criterion is excluded from the total */
+  exclude: z.boolean().optional(),
+});
+// Deliberately NOT .passthrough(), unlike PartSchema. Zod's default is strip, so a
+// hand-added key — `id` above all — is dropped at parse time. With passthrough it would
+// survive: nothing writes it, but nothing removes it either, and rubricsEqual compares
+// only the five known fields, so pull would never self-heal it. That is exactly the
+// reserved-name case AGENTS.md "Feature Development Discipline" item 2 asks to defend.
+// There is no forward-compatibility cost: this shape is ours, not the server's.
+
+export type Rubric = z.infer<typeof RubricSchema>;
+
+/**
  * Part configuration
  * CRITICAL: part_id is string | null, never a number
  */
@@ -299,6 +330,9 @@ export const PartSchema = z.object({
   /** Override settings sync for this part. Defaults to assignment/global setting. */
   sync_settings: z.boolean().optional(),
   directories: z.array(DirectoryTypeSchema).optional(),
+  /** Grading rubric criteria, seqnum-ordered. Read-only in this release:
+   *  pull records them; push does not send them. */
+  rubrics: z.array(RubricSchema).optional(),
   settings: PartSettingsSchema,
 }).passthrough();
 
