@@ -172,7 +172,8 @@ const emptyFileList = { files: [] };
 
 /**
  * Enqueue the responses for one orphan's importAssignment call.
- * Sequence: getAssignment, listParts, getPart, then 7x listFiles (one per DEFAULT_PART_DIRECTORY).
+ * Sequence: getAssignment, listParts, getPart, then 7x listFiles (one per
+ * DEFAULT_PART_DIRECTORY), then listRubrics.
  */
 function enqueueImportOrphan(
   rec: RecordingClient,
@@ -188,6 +189,7 @@ function enqueueImportOrphan(
   for (let i = 0; i < 7; i++) {
     rec.enqueue(emptyFileList);
   }
+  rec.enqueue({ status: 'success', rubrics: [], total_records: 0 }); // listRubrics
 }
 
 // ── CMD_OPTS shared ───────────────────────────────────────────────────────────

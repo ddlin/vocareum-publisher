@@ -819,3 +819,83 @@ describe('applyPull — rubrics', () => {
     expect(part.settings!.session_length).toBe('120');
   });
 });
+
+/**
+ * Import ORPHAN_1 (one assignment, one part — via enqueueImportResponses)
+ * through applyPull, with the rubric fetch for that part resolving to
+ * `remoteRubrics`. Returns the config update handed to
+ * `session.applyConfigUpdate`.
+ */
+async function importOrphanWithRubrics(
+  remoteRubrics: VocareumRubricResponse[]
+): Promise<{ configUpdates: ConfigUpdates }> {
+  const { ctx } = makeCtx();
+  const { session, applyConfigUpdate } = makeSession();
+  const clientMock = { request: vi.fn() };
+  (ctx as PullContext & { client: typeof clientMock }).client = clientMock as never;
+
+  enqueueImportResponses(clientMock);
+  mockListRubrics.mockResolvedValueOnce(remoteRubrics);
+
+  const resolver = makeStubResolver({
+    resolveOrphanAction: vi.fn<[PullIssueOrphan], Promise<OrphanAction>>().mockResolvedValue('import'),
+  });
+
+  const inspection: PullInspection = { orphans: [ORPHAN_1], stale: [], settingsDrift: [], contentDrift: [] };
+  const req: PullRequest = { batch: false, verbose: false, skipContent: false };
+  await applyPull(session, ctx, req, inspection, resolver);
+
+  return { configUpdates: applyConfigUpdate.mock.calls[0][0] as ConfigUpdates };
+}
+
+/** Same as `importOrphanWithRubrics`, but the rubric fetch is forbidden. */
+async function importOrphanWithForbiddenRubrics(): Promise<{ configUpdates: ConfigUpdates }> {
+  const { ctx } = makeCtx();
+  const { session, applyConfigUpdate } = makeSession();
+  const clientMock = { request: vi.fn() };
+  (ctx as PullContext & { client: typeof clientMock }).client = clientMock as never;
+
+  enqueueImportResponses(clientMock);
+  mockListRubrics.mockRejectedValueOnce(new ForbiddenError('Access Forbidden', 'part'));
+
+  const resolver = makeStubResolver({
+    resolveOrphanAction: vi.fn<[PullIssueOrphan], Promise<OrphanAction>>().mockResolvedValue('import'),
+  });
+
+  const inspection: PullInspection = { orphans: [ORPHAN_1], stale: [], settingsDrift: [], contentDrift: [] };
+  const req: PullRequest = { batch: false, verbose: false, skipContent: false };
+  await applyPull(session, ctx, req, inspection, resolver);
+
+  return { configUpdates: applyConfigUpdate.mock.calls[0][0] as ConfigUpdates };
+}
+
+describe('importAssignment — rubrics', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('records each part\'s rubrics on import', async () => {
+    const { configUpdates } = await importOrphanWithRubrics([
+      { id: '1', name: 'Prompts were run', seqnum: '1', maxscore: '10', auto: true, exclude: false },
+      { id: '2', name: 'Models compared', seqnum: '2', maxscore: '5', auto: true, exclude: false },
+    ]);
+
+    expect(configUpdates.assignments![0].parts![0].rubrics).toEqual([
+      { name: 'Prompts were run', seqnum: '1', maxscore: '10', auto: true, exclude: false },
+      { name: 'Models compared', seqnum: '2', maxscore: '5', auto: true, exclude: false },
+    ]);
+  });
+
+  it('omits the rubrics key for a part with none', async () => {
+    const { configUpdates } = await importOrphanWithRubrics([]);
+
+    expect(configUpdates.assignments![0].parts![0]).not.toHaveProperty('rubrics');
+  });
+
+  it('imports successfully when rubrics are forbidden', async () => {
+    const { configUpdates } = await importOrphanWithForbiddenRubrics();
+
+    expect(configUpdates.assignments![0].parts![0].part_id).toBeDefined();
+    expect(configUpdates.assignments![0].parts![0]).not.toHaveProperty('rubrics');
+  });
+});

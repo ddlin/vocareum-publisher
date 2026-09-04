@@ -555,7 +555,8 @@ async function importAssignment(
   skipContent: boolean,
   reporter: UnknownFieldReporter | undefined,
   workspaceRoot: string,
-  events: EventSink
+  events: EventSink,
+  rubricFetcher?: RubricFetcher
 ): Promise<ImportResult> {
   const assignmentId = orphan.id;
   // localPath is user-typed at the import prompt — confine it before any writes.
@@ -631,6 +632,16 @@ async function importAssignment(
       directories,
       settings: partSettings,
     };
+
+    // The migration path: an empty target imports through here, so rubrics must
+    // be captured at import, not only on later drift detection.
+    const rubrics = await rubricFetcher?.fetch(assignmentId, part.id);
+    if (rubrics !== undefined && rubrics.length > 0) {
+      configPart.rubrics = rubrics;
+      if (verbose) {
+        events.emit({ level: 'debug', message: `Imported ${rubrics.length} rubric criteria for part ${part.name}` });
+      }
+    }
 
     configParts.push(configPart);
 
@@ -1066,6 +1077,12 @@ export async function applyPull(
   const { effectiveConfig: config, client, workspaceRoot, events } = ctx;
   const verbose = req.verbose ?? false;
   const skipContent = req.skipContent ?? false;
+  const rubricFetcher = createRubricFetcher(
+    client,
+    config.vocareum.course_id,
+    config.publish_options?.sync_rubrics ?? true,
+    (msg: string) => events.emit({ level: 'warn', message: msg })
+  );
 
   const result: PullResult = {
     imported: 0,
@@ -1124,7 +1141,8 @@ export async function applyPull(
             skipContent,
             reporter,
             workspaceRoot,
-            events
+            events,
+            rubricFetcher
           );
 
           newAssignments.push(assignment);
