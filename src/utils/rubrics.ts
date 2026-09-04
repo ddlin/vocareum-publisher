@@ -177,13 +177,38 @@ export function planRubricSync(local: Rubric[], remote: RemoteRubric[]): RubricS
  * Shown in the push confirmation because "your points will go from 25 to 30" is the
  * sentence that makes the rename hazard legible; "1 orphan" is not. It is a projection
  * from plan-time remote state, not a promise — see the design spec §7b.
+ *
+ * Non-finite maxscores (from hand-edited vocareum.yaml like "N/A" or "") contribute 0
+ * to the totals and are listed in `unparseable`. A non-empty unparseable list means the
+ * totals are incomplete and should not be shown as a point projection.
  */
 export function projectedPoints(
   remote: RemoteRubric[],
   plan: RubricSyncPlan
-): { before: number; after: number } {
-  const score = (maxscore: string, exclude: boolean | undefined): number =>
-    flag(exclude) ? 0 : Number(maxscore);
+): { before: number; after: number; unparseable: string[] } {
+  const unparseable = new Set<string>();
+
+  const isValidMaxscore = (maxscore: string): boolean => {
+    if (maxscore === '' || maxscore.trim() === '') { return false; }
+    const num = Number(maxscore);
+    return Number.isFinite(num);
+  };
+
+  const score = (maxscore: string, exclude: boolean | undefined): number => {
+    if (flag(exclude)) { return 0; }
+    if (!isValidMaxscore(maxscore)) { return 0; }
+    return Number(maxscore);
+  };
+
+  // Check remote for unparseable maxscores
+  for (const r of remote) {
+    if (!isValidMaxscore(r.maxscore)) { unparseable.add(r.name); }
+  }
+
+  // Check plan creates for unparseable maxscores
+  for (const c of plan.creates) {
+    if (!isValidMaxscore(c.maxscore)) { unparseable.add(c.name); }
+  }
 
   const before = remote.reduce((sum, r) => sum + score(r.maxscore, r.exclude), 0);
 
@@ -194,5 +219,5 @@ export function projectedPoints(
   }, 0);
   const afterCreates = plan.creates.reduce((sum, c) => sum + score(c.maxscore, c.exclude), 0);
 
-  return { before, after: afterExisting + afterCreates };
+  return { before, after: afterExisting + afterCreates, unparseable: [...unparseable].sort() };
 }

@@ -259,18 +259,68 @@ describe('projectedPoints', () => {
     const plan = { creates: [{ name: 'B', maxscore: '5' }], updates: [], orphans: [], duplicateNames: [] };
 
     // before: 10 (X excluded).  after: 10 + 5.
-    expect(projectedPoints(remote, plan)).toEqual({ before: 10, after: 15 });
+    expect(projectedPoints(remote, plan)).toEqual({ before: 10, after: 15, unparseable: [] });
   });
 
   it('counts an update as replacing the matched row value', () => {
     const remote = [{ id: 'r1', name: 'A', seqnum: '1', maxscore: '10', auto: false, exclude: false }];
     const plan = { creates: [], updates: [{ id: 'r1', maxscore: '12' }], orphans: [], duplicateNames: [] };
 
-    expect(projectedPoints(remote, plan)).toEqual({ before: 10, after: 12 });
+    expect(projectedPoints(remote, plan)).toEqual({ before: 10, after: 12, unparseable: [] });
   });
 
   it('excludes a create marked exclude:true from the projection', () => {
     const plan = { creates: [{ name: 'B', maxscore: '5', exclude: true }], updates: [], orphans: [], duplicateNames: [] };
-    expect(projectedPoints([], plan)).toEqual({ before: 0, after: 0 });
+    expect(projectedPoints([], plan)).toEqual({ before: 0, after: 0, unparseable: [] });
+  });
+
+  it('counts an update that flips exclude from false to true', () => {
+    const remote = [{ id: 'r1', name: 'A', seqnum: '1', maxscore: '10', auto: false, exclude: false }];
+    const plan = { creates: [], updates: [{ id: 'r1', exclude: true }], orphans: [], duplicateNames: [] };
+
+    // before: 10 (A counted).  after: 0 (A now excluded).
+    expect(projectedPoints(remote, plan)).toEqual({ before: 10, after: 0, unparseable: [] });
+  });
+
+  it('counts an update that flips exclude from true to false', () => {
+    const remote = [{ id: 'r1', name: 'A', seqnum: '1', maxscore: '10', auto: false, exclude: true }];
+    const plan = { creates: [], updates: [{ id: 'r1', exclude: false }], orphans: [], duplicateNames: [] };
+
+    // before: 0 (A excluded).  after: 10 (A now counted).
+    expect(projectedPoints(remote, plan)).toEqual({ before: 0, after: 10, unparseable: [] });
+  });
+
+  it('flags a remote criterion with unparseable maxscore as unparseable and contributes 0', () => {
+    const remote = [
+      { id: 'r1', name: 'Valid', seqnum: '1', maxscore: '10', auto: false, exclude: false },
+      { id: 'r2', name: 'BadScore', seqnum: '2', maxscore: 'N/A', auto: false, exclude: false },
+    ];
+    const plan = { creates: [], updates: [], orphans: [], duplicateNames: [] };
+
+    // before: 10 (BadScore contributes 0).  after: same.
+    expect(projectedPoints(remote, plan)).toEqual({ before: 10, after: 10, unparseable: ['BadScore'] });
+  });
+
+  it('flags a create with unparseable maxscore as unparseable and contributes 0', () => {
+    const plan = { creates: [{ name: 'EmptyScore', maxscore: '' }], updates: [], orphans: [], duplicateNames: [] };
+
+    expect(projectedPoints([], plan)).toEqual({ before: 0, after: 0, unparseable: ['EmptyScore'] });
+  });
+
+  it('does NOT flag maxscore "0" as unparseable', () => {
+    const remote = [{ id: 'r1', name: 'Zero', seqnum: '1', maxscore: '0', auto: false, exclude: false }];
+    const plan = { creates: [{ name: 'AlsoZero', maxscore: '0' }], updates: [], orphans: [], duplicateNames: [] };
+
+    expect(projectedPoints(remote, plan)).toEqual({ before: 0, after: 0, unparseable: [] });
+  });
+
+  it('deduplicates and sorts unparseable names', () => {
+    const remote = [
+      { id: 'r1', name: 'Z-Bad', seqnum: '1', maxscore: 'N/A', auto: false, exclude: false },
+      { id: 'r2', name: 'A-Bad', seqnum: '2', maxscore: 'N/A', auto: false, exclude: false },
+    ];
+    const plan = { creates: [{ name: 'A-Bad', maxscore: '' }], updates: [], orphans: [], duplicateNames: [] };
+
+    expect(projectedPoints(remote, plan)).toEqual({ before: 0, after: 0, unparseable: ['A-Bad', 'Z-Bad'] });
   });
 });
