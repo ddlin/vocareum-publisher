@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { listRubrics } from '../../src/api/rubrics';
+import { listRubrics, createRubrics, updateRubrics } from '../../src/api/rubrics';
 import { VocareumClient } from '../../src/api/client';
 
 describe('listRubrics', () => {
@@ -182,5 +182,92 @@ describe('listRubrics', () => {
 
     const result = await listRubrics(mockClient, 'c', 'a', 'p');
     expect(result).toHaveLength(1);
+  });
+});
+
+describe('createRubrics', () => {
+  let mockClient: VocareumClient;
+  let requestMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    requestMock = vi.fn();
+    mockClient = { request: requestMock } as unknown as VocareumClient;
+  });
+
+  it('POSTs a wrapped array to the collection URL and never sends seqnum', async () => {
+    requestMock.mockResolvedValueOnce({ status: 'success', rubrics: [], total_records: 0 });
+
+    await createRubrics(mockClient, 'c', 'a', 'p', [
+      { name: 'A', maxscore: '7' },
+      { name: 'B', maxscore: '3', auto: true },
+    ]);
+
+    expect(requestMock).toHaveBeenCalledWith({
+      method: 'POST',
+      url: '/courses/c/assignments/a/parts/p/rubrics',
+      data: { rubrics: [{ name: 'A', maxscore: '7' }, { name: 'B', maxscore: '3', auto: true }] },
+    });
+    const sent = requestMock.mock.calls[0][0].data.rubrics;
+    for (const row of sent) { expect(row).not.toHaveProperty('seqnum'); }
+  });
+
+  it('coerces numeric id and seqnum from the response back to strings', async () => {
+    // Observed twice live: POST returns numbers where GET returns strings.
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      rubrics: [{ id: 11597034, name: 'A', seqnum: 3, maxscore: '7', exclude: false, auto: false }],
+      total_records: 1,
+    });
+
+    const [row] = await createRubrics(mockClient, 'c', 'a', 'p', [{ name: 'A', maxscore: '7' }]);
+
+    expect(row.id).toBe('11597034');
+    expect(row.seqnum).toBe('3');
+    expect(typeof row.id).toBe('string');
+    expect(typeof row.seqnum).toBe('string');
+  });
+
+  it('throws when the body reports a non-success status', async () => {
+    requestMock.mockResolvedValueOnce({ status: 'error', message: 'nope' });
+    await expect(createRubrics(mockClient, 'c', 'a', 'p', [{ name: 'A', maxscore: '1' }]))
+      .rejects.toThrow();
+  });
+
+  it('makes no request for an empty list', async () => {
+    expect(await createRubrics(mockClient, 'c', 'a', 'p', [])).toEqual([]);
+    expect(requestMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('updateRubrics', () => {
+  let mockClient: VocareumClient;
+  let requestMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    requestMock = vi.fn();
+    mockClient = { request: requestMock } as unknown as VocareumClient;
+  });
+
+  it('PUTs a wrapped array keyed by id to the collection URL', async () => {
+    requestMock.mockResolvedValueOnce({ status: 'success', rubrics: [], total_records: 0 });
+
+    await updateRubrics(mockClient, 'c', 'a', 'p', [{ id: '11597034', maxscore: '9' }]);
+
+    expect(requestMock).toHaveBeenCalledWith({
+      method: 'PUT',
+      url: '/courses/c/assignments/a/parts/p/rubrics',
+      data: { rubrics: [{ id: '11597034', maxscore: '9' }] },
+    });
+  });
+
+  it('never sends seqnum, which the API accepts and ignores', async () => {
+    requestMock.mockResolvedValueOnce({ status: 'success', rubrics: [], total_records: 0 });
+
+    await updateRubrics(mockClient, 'c', 'a', 'p', [{ id: '1', maxscore: '9' }]);
+
+    expect(requestMock.mock.calls[0][0].data.rubrics[0]).not.toHaveProperty('seqnum');
+  });
+
+  it('makes no request for an empty list', async () => {
+    expect(await updateRubrics(mockClient, 'c', 'a', 'p', [])).toEqual([]);
+    expect(requestMock).not.toHaveBeenCalled();
   });
 });

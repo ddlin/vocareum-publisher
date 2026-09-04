@@ -162,6 +162,26 @@ export interface RubricsListResponse {
   total_records?: number | string;
 }
 
+/** Body row for POST .../rubrics. `seqnum` is deliberately absent — the API rejects it
+ *  (400 "Invalid attribure post rubric request: seqnum") and assigns it by append order. */
+export interface RubricCreate {
+  name: string;
+  maxscore: string;
+  auto?: boolean;
+  exclude?: boolean;
+}
+
+/** Body row for PUT .../rubrics. Partial: sending only `maxscore` preserves `name`.
+ *  `seqnum` is absent because PUT accepts and silently ignores it — criterion order is
+ *  create-order and cannot be changed. */
+export interface RubricUpdate {
+  id: string;
+  name?: string;
+  maxscore?: string;
+  auto?: boolean;
+  exclude?: boolean;
+}
+
 /**
  * Assignments list API response
  */
