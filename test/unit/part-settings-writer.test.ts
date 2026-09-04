@@ -14,7 +14,7 @@ const settings = {
   container_image: 'Jupyter v1.70',
   lab_interface: { panels: ['Html'], controls: [], information: [] },
   tags: [],
-  _unknown_settings: { max_points: '40' },
+  _unknown_settings: { cleanup_time: '40' },
 } as never;
 
 const sink = () => ({ emit: vi.fn() });
@@ -45,7 +45,7 @@ describe('writePartSettingsWithFallback', () => {
 
     // The whole point: grading and interface settings survive this rung.
     const secondPayload = update.mock.calls[1][0] as Record<string, unknown>;
-    expect(secondPayload.max_points).toBe('40');
+    expect(secondPayload.cleanup_time).toBe('40');
     expect(secondPayload.lab_interface).toBeDefined();
   });
 
@@ -60,7 +60,7 @@ describe('writePartSettingsWithFallback', () => {
 
     expect(update).toHaveBeenCalledTimes(3);
     expect(r.outcome).toBe('safe');
-    expect(r.dropped).toContain('max_points');
+    expect(r.dropped).toContain('cleanup_time');
   });
 
   it('reports name-only, then none, as the last rungs', async () => {
@@ -95,7 +95,7 @@ describe('writePartSettingsWithFallback', () => {
     await writePartSettingsWithFallback(update, 'cloud-lab', settings, full, events as never);
 
     const warned = events.emit.mock.calls.map((c) => c[0]).filter((e) => e.level === 'warn');
-    expect(warned.some((w) => w.message.includes('max_points'))).toBe(true);
+    expect(warned.some((w) => w.message.includes('cleanup_time'))).toBe(true);
   });
 
   it('skips the without-platform rung when the full payload was already stripped upstream', async () => {
@@ -119,7 +119,7 @@ describe('writePartSettingsWithFallback', () => {
     const firstPayload = update.mock.calls[0][0] as Record<string, unknown>;
     const secondPayload = update.mock.calls[1][0] as Record<string, unknown>;
     expect(firstPayload).not.toEqual(secondPayload);
-    expect(secondPayload.max_points).toBeUndefined();
+    expect(secondPayload.cleanup_time).toBeUndefined();
     expect(secondPayload.lab_interface).toBeUndefined();
   });
 
@@ -138,7 +138,7 @@ describe('writePartSettingsWithFallback', () => {
     expect(secondPayload.container_image).toBeUndefined();
     // Grading settings still present on the without-platform rung, even
     // though this attempt is ultimately also rejected.
-    expect(secondPayload.max_points).toBe('40');
+    expect(secondPayload.cleanup_time).toBe('40');
     expect(r.outcome).toBe('safe');
   });
 });

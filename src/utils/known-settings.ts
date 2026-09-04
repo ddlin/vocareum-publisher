@@ -36,6 +36,9 @@ export const KNOWN_ASSIGNMENT_SETTING_KEYS: ReadonlySet<string> = new Set([
 
 export const OBSERVED_ASSIGNMENT_SETTING_KEYS: ReadonlySet<string> = new Set([
   'description',
+  // Derived from the parts' max_points, which derive from rubric maxscore. Not storable —
+  // an assignment PUT setting it is rejected outright. Observed, never written.
+  'total_points',
   'copy_startercode',
   'uncompressupload',
   'send_webhook',
@@ -86,6 +89,11 @@ export const KNOWN_PART_SETTING_KEYS: ReadonlySet<string> = new Set([
 
 export const OBSERVED_PART_SETTING_KEYS: ReadonlySet<string> = new Set([
   'description',
+  // Derived: Σ rubric maxscore where exclude !== true. Accepted on a part PUT and silently
+  // discarded (VOC-4003) because there is no such stored field. Observed, never written.
+  // Membership here also makes it reserved, so _unknown_settings.max_points cannot smuggle
+  // it back into an outgoing payload.
+  'max_points',
 ]);
 
 export const NON_SETTING_FIELDS_PART: ReadonlySet<string> = new Set([

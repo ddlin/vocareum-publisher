@@ -80,6 +80,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   visible as a wrong prefix. It fires only for directories a part declares, not
   for the walk's speculative probes.
 
+### Changed
+- **Point totals are no longer round-tripped as unknown settings.** A part's `max_points`
+  and an assignment's `total_points` are derived by Vocareum from rubric criteria — the sum
+  of each criterion's `maxscore` where `exclude` is not true — and are not storable. Probing
+  confirmed both halves: a part `PUT` setting `max_points` returns a successful
+  *"Part updated"* transaction and changes nothing, and an assignment `PUT` setting
+  `total_points` is rejected with *"No valid parameters to update the assignment"*. That is
+  the whole of Vocareum VOC-4003 — the field was never there to write.
+
+  vocgit previously captured both under `_unknown_settings`, sent them on every part-settings
+  update that ran for other reasons, had them ignored, and nagged you to file an enhancement
+  request for them. They now land in `_observed_settings` instead: still visible in
+  `vocareum.yaml` so you can read a part's point total, never sent, and no longer reported as
+  unsupported. `_unknown_settings.max_points` is now refused with a warning rather than
+  quietly added to the payload.
+
+  Existing configs migrate themselves — the next `pull` reports the change as settings drift
+  and rewrites both fields into `_observed_settings`.
+
+  To change a course's points, change its rubric criteria. vocgit reads rubrics but does not
+  yet write them, so that remains a Vocareum UI operation for now.
+
 ### Added
 - `VOCAREUM_MAX_UPLOAD_CHUNK_BYTES` to tune the upload chunk size
   (default 32 MB, range 1 KB–64 MB).

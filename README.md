@@ -185,6 +185,13 @@ Because Vocareum's API treats fields inconsistently — some are writable, some 
 
 - **Top-level settings** (e.g. `nosubmit`, `session_length`, `submission_filters`) — fields vocgit both reads and writes. Edit these to change behavior on Vocareum.
 - **`_observed_settings`** — fields Vocareum reports on read but does **not** accept on write (or that only apply at create time). vocgit records them so your config reflects the real server state, but it never pushes them. Informational only.
+
+  This is where point totals live. A part's **`max_points`** and an assignment's
+  **`total_points`** are *derived* by Vocareum from the part's rubric criteria — the sum of
+  each criterion's `maxscore` where `exclude` is not true — and are not storable. Setting
+  `max_points` on a part is accepted and silently discarded; setting `total_points` on an
+  assignment is rejected outright. **To change a course's points, change its rubric
+  criteria** (today, in the Vocareum UI — vocgit's rubric support is read-only).
 - **`_unknown_settings`** — fields vocgit doesn't recognize yet (typically new Vocareum features). vocgit preserves them verbatim and passes them back through unchanged on the next push, so nothing is silently lost. When these appear, vocgit prints an end-of-run notice asking you to [file an issue](https://github.com/ddlin/vocareum-publisher/issues/new) so the field can be promoted to a supported setting.
 
 **"Accepted but not confirmed" fields.** Some writable fields (e.g. `exam_mode`, `exam_duration`, `deadlinedate`, `late_penalty_percent`) are accepted by the API on write but are not echoed back on read. vocgit writes them and trusts the success response — it just can't read them back to confirm the value applied, so it won't report drift on them.

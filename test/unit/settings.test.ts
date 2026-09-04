@@ -339,3 +339,39 @@ describe('mapPartSettings — submission_filters normalization', () => {
     expect(result.submission_filters).toBeUndefined();
   });
 });
+
+// ── Derived point fields ─────────────────────────────────────────────────────
+// max_points (part) and total_points (assignment) are computed by Vocareum from
+// rubric maxscore and are not storable: a part PUT setting max_points returns a
+// successful "Part updated" transaction and changes nothing, and an assignment PUT
+// is rejected outright with "No valid parameters to update the assignment"
+// (docs/vocareum-api-rubrics-findings.md §3). They belong in _observed_settings —
+// recorded for the reader, never sent back.
+describe('derived point fields are observed, not written', () => {
+  it('mapPartSettings puts max_points under _observed_settings, not _unknown_settings', () => {
+    const result = mapPartSettings({
+      id: 'p1', courseid: 'c', assignmentid: 'a', name: 'Part 1', seqnum: '0', deleted: '0',
+      max_points: '25',
+    } as never);
+
+    expect(result._observed_settings).toMatchObject({ max_points: '25' });
+    expect(result._unknown_settings ?? {}).not.toHaveProperty('max_points');
+  });
+
+  it('mapAssignmentSettings puts total_points under _observed_settings, not _unknown_settings', () => {
+    const result = mapAssignmentSettings({
+      id: 'a1', courseid: 'c', name: 'Lab 1', total_points: '25',
+    } as never);
+
+    expect(result._observed_settings).toMatchObject({ total_points: '25' });
+    expect(result._unknown_settings ?? {}).not.toHaveProperty('total_points');
+  });
+
+  it('omits max_points entirely when the API does not return it', () => {
+    const result = mapPartSettings({
+      id: 'p1', courseid: 'c', assignmentid: 'a', name: 'Part 1', seqnum: '0', deleted: '0',
+    } as never);
+
+    expect(result._observed_settings ?? {}).not.toHaveProperty('max_points');
+  });
+});

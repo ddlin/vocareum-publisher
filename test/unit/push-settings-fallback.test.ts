@@ -12,7 +12,7 @@ describe('safe-mode fallback loss', () => {
       container_image: 'Jupyter v1.70',
       lab_interface: { panels: ['Html'], controls: [], information: [] },
       tags: [],
-      _unknown_settings: { max_points: '40', cleanup_time: '0' },
+      _unknown_settings: { cleanup_time: '0' },
     } as never;
 
     const full = buildPartSettingsPayload('cloud-lab', settings, 'full');
@@ -21,7 +21,7 @@ describe('safe-mode fallback loss', () => {
 
     // The grading weight is the one that matters most: a silently zeroed
     // max_points changes what students are scored out of.
-    expect(dropped).toContain('max_points');
+    expect(dropped).toContain('cleanup_time');
     expect(dropped).toContain('lab_interface');
     expect(dropped).toContain('container_image');
     expect(dropped).toContain('labtype');

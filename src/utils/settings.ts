@@ -77,6 +77,7 @@ export function mapAssignmentSettings(
 
   // Only include fields that have values
   addObservedSetting(observedSettings, 'description', apiResponse.description);
+  addObservedSetting(observedSettings, 'total_points', apiResponse.total_points);
   if (apiResponse.nosubmit !== undefined) { settings.nosubmit = apiResponse.nosubmit; }
   if (apiResponse.publish !== undefined) { settings.publish = apiResponse.publish; }
   const publishGrades = apiResponse.publish_grades ?? apiResponse.gradespublished;
@@ -199,6 +200,7 @@ export function mapPartSettings(
   if (apiResponse.total_dollar !== undefined) { settings.total_dollar = apiResponse.total_dollar; }
 
   addObservedSetting(observedSettings, 'description', apiResponse.description);
+  addObservedSetting(observedSettings, 'max_points', apiResponse.max_points);
   if (apiResponse.late_penalty_percent !== undefined) { settings.late_penalty_percent = apiResponse.late_penalty_percent; }
   if (apiResponse.late_penalty_percent_rule !== undefined) { settings.late_penalty_percent_rule = apiResponse.late_penalty_percent_rule; }
   if (apiResponse.deadlinedate !== undefined) { settings.deadlinedate = apiResponse.deadlinedate; }

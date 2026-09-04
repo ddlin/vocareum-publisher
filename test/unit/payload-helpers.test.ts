@@ -265,3 +265,34 @@ describe('findPlatformFieldDrift', () => {
     ]);
   });
 });
+
+describe('derived point fields never reach an outgoing payload', () => {
+  it('drops _unknown_settings.max_points and warns, rather than sending it', () => {
+    // max_points is derived from rubric maxscore and is accepted-then-discarded by the
+    // part PUT (VOC-4003). It is a reserved part key, so a hand-written or legacy
+    // _unknown_settings entry must not smuggle it into the payload.
+    const events = { emit: vi.fn() };
+    const payload = buildPartSettingsPayload(
+      'Part 1',
+      { session_length: '120', _unknown_settings: { max_points: '40' } } as never,
+      'full',
+      events as never,
+    );
+
+    expect(payload).not.toHaveProperty('max_points');
+    expect(payload.session_length).toBe('120');
+    expect(events.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ level: 'warn', message: expect.stringContaining('max_points') }),
+    );
+  });
+
+  it('still passes through a genuinely unknown part field', () => {
+    const payload = buildPartSettingsPayload(
+      'Part 1',
+      { session_length: '120', _unknown_settings: { cleanup_time: '0' } } as never,
+      'full',
+    );
+
+    expect(payload).toMatchObject({ cleanup_time: '0' });
+  });
+});

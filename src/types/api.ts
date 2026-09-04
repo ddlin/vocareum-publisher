@@ -35,6 +35,11 @@ export interface VocareumAssignmentResponse {
   name: string;
   description?: string;
   due_date?: string;
+  /** DERIVED, not storable: the sum of this assignment's parts' `max_points`, which are
+   *  themselves summed from rubric maxscore. An assignment PUT setting it is rejected with
+   *  "No valid parameters to update the assignment". Recorded under _observed_settings;
+   *  never sent. See docs/vocareum-api-rubrics-findings.md §3. */
+  total_points?: string;
   points?: string;
   published?: string; // "0" or "1"
   deleted: string; // "0" or "1"
@@ -74,6 +79,11 @@ export interface VocareumPartResponse {
   description?: string;
   seqnum: string; // Sequence number as string: "0", "1", "2"
   deleted: string; // "0" or "1"
+  /** DERIVED, not storable: Vocareum computes this as the sum of the part's rubric
+   *  `maxscore` over criteria where `exclude !== true`. A part PUT setting it returns a
+   *  successful "Part updated" transaction and changes nothing (VOC-4003). Recorded under
+   *  _observed_settings; never sent. See docs/vocareum-api-rubrics-findings.md §3. */
+  max_points?: string;
   part_url?: string;
   // Cloud/AWS settings
   cloud_labs?: boolean;
