@@ -78,45 +78,96 @@ async function probePagination(http, c, a, p) {
   }, null, 2));
 }
 
-// PROBE 2 — write shape. Scratch course only.
+// PROBE 2 — write shapes. Scratch course only.
+//
+// These shapes are not guesses. They were established live on 2026-09-04 and are recorded
+// in docs/vocareum-api-rubrics-findings.md. The known-rejected variants are kept on purpose,
+// as a regression check that the contract has not shifted.
 async function probeWrite(http, c, a, p) {
-  const bodies = [
-    { label: 'bare-object', body: { name: 'vocgit probe A', seqnum: '99', maxscore: '3' } },
-    { label: 'wrapped-array', body: { rubrics: [{ name: 'vocgit probe B', seqnum: '98', maxscore: '2' }] } },
-    { label: 'with-flags', body: { name: 'vocgit probe C', seqnum: '97', maxscore: '1', auto: true, exclude: false } },
+  const rejected = [
+    { label: 'bare-object (expect 400: missing rubrics array)',
+      body: { name: 'vocgit probe rejected A', maxscore: '3' } },
+    { label: 'wrapped-array WITH seqnum (expect 400: Invalid attribure post rubric request: seqnum)',
+      body: { rubrics: [{ name: 'vocgit probe rejected B', seqnum: '98', maxscore: '2' }] } },
   ];
-  const created = [];
-  for (const { label, body } of bodies) {
+  for (const { label, body } of rejected) {
     const res = await http.post(rubricsUrl(c, a, p), body);
-    console.log(JSON.stringify({ probe: 'POST', label, status: res.status, data: res.data }, null, 2));
-    for (const r of res.data?.rubrics ?? []) { created.push(r.id); }
-    if (res.data?.id) { created.push(res.data.id); }
+    console.log(JSON.stringify({ probe: 'POST-rejected', label, status: res.status, data: res.data }, null, 2));
+    if (res.status === 200) { console.log('!! CONTRACT CHANGED: a previously rejected POST shape now succeeds.'); }
   }
-  const after = await http.get(rubricsUrl(c, a, p));
-  console.log(JSON.stringify({ probe: 'POST-readback', rubrics: after.data?.rubrics }, null, 2));
 
-  for (const id of created) {
-    const put = await http.put(`${rubricsUrl(c, a, p)}/${id}`, { maxscore: '7' });
-    console.log(JSON.stringify({ probe: 'PUT', id, status: put.status, data: put.data }, null, 2));
-  }
-  const afterPut = await http.get(rubricsUrl(c, a, p));
-  console.log(JSON.stringify({ probe: 'PUT-readback', rubrics: afterPut.data?.rubrics }, null, 2));
+  // Known-GOOD: wrapped array, NO seqnum (server assigns it by append order).
+  const good = await http.post(rubricsUrl(c, a, p), { rubrics: [
+    { name: 'vocgit probe A', maxscore: '7' },
+    { name: 'vocgit probe B auto', maxscore: '3', auto: true },
+    { name: 'vocgit probe C excluded', maxscore: '4', exclude: true },
+  ] });
+  console.log(JSON.stringify({ probe: 'POST', label: 'wrapped-array, no seqnum', status: good.status, data: good.data }, null, 2));
+  // NOTE: POST responses type `id`/`seqnum` as NUMBERS; GET returns them as strings.
+  const created = (good.data?.rubrics ?? []).map((r) => String(r.id));
 
-  for (const id of created) {
-    const del = await http.delete(`${rubricsUrl(c, a, p)}/${id}`);
-    console.log(JSON.stringify({ probe: 'DELETE', id, status: del.status, data: del.data }, null, 2));
+  console.log(JSON.stringify({ probe: 'POST-readback', rubrics: (await http.get(rubricsUrl(c, a, p))).data?.rubrics }, null, 2));
+
+  // PUT is COLLECTION-scoped and partial; /rubrics/{id} returns 400 "missing rubrics array".
+  const putById = await http.put(`${rubricsUrl(c, a, p)}/${created[0]}`, { maxscore: '9' });
+  console.log(JSON.stringify({ probe: 'PUT-by-id (expect 400)', status: putById.status, data: putById.data }, null, 2));
+  const put = await http.put(rubricsUrl(c, a, p), { rubrics: [{ id: created[0], maxscore: '9' }] });
+  console.log(JSON.stringify({ probe: 'PUT-collection', status: put.status, data: put.data }, null, 2));
+
+  // Reordering: a single-row seqnum was accepted-and-ignored on 2026-09-04.
+  // UNRESOLVED then: whether sending the FULL array in the desired order reorders. Tested here.
+  const one = await http.put(rubricsUrl(c, a, p), { rubrics: [{ id: created[2], seqnum: '1' }] });
+  console.log(JSON.stringify({ probe: 'PUT-seqnum-single', status: one.status, data: one.data }, null, 2));
+
+  const rows = ((await http.get(rubricsUrl(c, a, p))).data?.rubrics ?? []).map((r) => String(r.id)).reverse();
+  const all = await http.put(rubricsUrl(c, a, p), { rubrics: rows.map((id, i) => ({ id, seqnum: String(i + 1) })) });
+  console.log(JSON.stringify({ probe: 'PUT-seqnum-full-array', sentOrder: rows, status: all.status, data: all.data }, null, 2));
+  console.log(JSON.stringify({ probe: 'PUT-seqnum-full-array-readback', rubrics: (await http.get(rubricsUrl(c, a, p))).data?.rubrics }, null, 2));
+
+  // DELETE was 403 on 2026-09-04 with a GET/POST/PUT-only token — shape still unverified.
+  for (const [label, req] of [
+    ['DELETE-by-id', () => http.delete(`${rubricsUrl(c, a, p)}/${created[0]}`)],
+    ['DELETE-collection', () => http.delete(rubricsUrl(c, a, p), { data: { rubrics: [{ id: created[0] }] } })],
+  ]) {
+    const del = await req();
+    console.log(JSON.stringify({ probe: label, status: del.status, data: del.data }, null, 2));
+    if (del.status === 403) { console.log('   (403 = token lacks the rubrics DELETE scope, not a wrong shape)'); }
   }
 }
 
-// PROBE 3 — does creating rubric rows move the part's max_points?
+// PROBE 3 — is max_points derived from rubric maxscore?
+//
+// Reads max_points and the rubric total before, after adding a criterion, and after
+// excluding that same criterion. The exclude step is the control that separates
+// "derived from all rows" from "derived from non-excluded rows" — without it, a single
+// add only shows the two move together.
 async function probeMaxPoints(http, c, a, p) {
-  const before = await http.get(`/courses/${c}/assignments/${a}/parts/${p}`);
-  console.log(JSON.stringify({ probe: 'max_points-before', max_points: before.data?.parts?.[0]?.max_points }, null, 2));
-  const res = await http.post(rubricsUrl(c, a, p), { name: 'vocgit points probe', seqnum: '96', maxscore: '13' });
+  const readPoints = async (label) => {
+    const r = await http.get(`/courses/${c}/assignments/${a}/parts`);
+    const part = (r.data?.parts ?? []).find((x) => String(x.id) === String(p));
+    console.log(JSON.stringify({ probe: `max_points-${label}`, max_points: part?.max_points }, null, 2));
+  };
+  const rubricTotal = async (label) => {
+    const rows = (await http.get(rubricsUrl(c, a, p))).data?.rubrics ?? [];
+    const sumAll = rows.reduce((s, x) => s + Number(x.maxscore || 0), 0);
+    const sumIncluded = rows.filter((x) => x.exclude !== true).reduce((s, x) => s + Number(x.maxscore || 0), 0);
+    console.log(JSON.stringify({ probe: `rubric-total-${label}`, rows: rows.length, sumAll, sumIncluded }, null, 2));
+  };
+
+  await readPoints('before'); await rubricTotal('before');
+
+  const res = await http.post(rubricsUrl(c, a, p), { rubrics: [{ name: 'vocgit points probe', maxscore: '13' }] });
   console.log(JSON.stringify({ probe: 'max_points-create', status: res.status, data: res.data }, null, 2));
-  const after = await http.get(`/courses/${c}/assignments/${a}/parts/${p}`);
-  console.log(JSON.stringify({ probe: 'max_points-after', max_points: after.data?.parts?.[0]?.max_points }, null, 2));
-  console.log('NOTE: delete the probe row by hand or re-run --write to clean up.');
+  const id = String((res.data?.rubrics ?? [])[0]?.id ?? '');
+  await readPoints('after-add'); await rubricTotal('after-add');
+
+  if (id) {
+    const ex = await http.put(rubricsUrl(c, a, p), { rubrics: [{ id, exclude: true }] });
+    console.log(JSON.stringify({ probe: 'max_points-exclude', status: ex.status, data: ex.data }, null, 2));
+    await readPoints('after-exclude'); await rubricTotal('after-exclude');
+  }
+
+  console.log('NOTE: this probe leaves a criterion behind; remove it by hand (DELETE scope permitting).');
 }
 
 const c = argValue('--course');
