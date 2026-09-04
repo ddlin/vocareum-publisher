@@ -784,7 +784,7 @@ interface ApplyPullRubricOptions {
  */
 async function applyPullWithRubricDrift(
   opts: ApplyPullRubricOptions
-): Promise<{ configUpdates: ConfigUpdates | undefined }> {
+): Promise<{ configUpdates: ConfigUpdates | undefined; events: CollectingEventSink }> {
   const remoteRubrics: VocareumRubricResponse[] = opts.remote.map((r, i) => ({
     id: r.id ?? `rubric-${i}`,
     ...r,
@@ -809,7 +809,17 @@ async function applyPullWithRubricDrift(
 
   await applyPull(session, ctx, req, inspection, resolver);
 
-  return { configUpdates: applyConfigUpdate.mock.calls[0]?.[0] as ConfigUpdates | undefined };
+  return {
+    configUpdates: applyConfigUpdate.mock.calls[0]?.[0] as ConfigUpdates | undefined,
+    events: ctx.events as CollectingEventSink,
+  };
+}
+
+/** Messages emitted by a CollectingEventSink, in order. */
+function messagesOf(events: CollectingEventSink): string[] {
+  const messages: string[] = [];
+  events.flushTo({ emit: (e) => { if (e.message) { messages.push(e.message); } } });
+  return messages;
 }
 
 describe('applyPull — rubrics', () => {
@@ -875,6 +885,39 @@ describe('applyPull — rubrics', () => {
     const part = configUpdates!.assignments![0].parts![0];
     expect(part.rubrics).toEqual(DEFAULT_LOCAL_RUBRICS);
     expect(part.settings!.session_length).toBe('120');
+  });
+
+  it('qualifies the keep message when the drift was rubric-only (FIX E)', async () => {
+    // The keep-result message must not unconditionally promise a push that
+    // will happen: rubrics are read-only, so push will never send this
+    // part's rubric drift regardless of "keep".
+    const { events } = await applyPullWithRubricDrift({
+      local: [{ name: 'A', seqnum: '1', maxscore: '10' }],
+      remote: [{ name: 'A', seqnum: '1', maxscore: '99' }],
+      action: 'keep',
+    });
+
+    const messages = messagesOf(events);
+    expect(messages.some((m) =>
+      m.includes('Keeping local settings') &&
+      m.includes('rubric changes are read-only') &&
+      m.includes('will not be pushed')
+    )).toBe(true);
+  });
+
+  it('does not append the rubric qualifier when the drift is settings-only (FIX E)', async () => {
+    const { events } = await applyPullWithRubricDrift({
+      local: DEFAULT_LOCAL_RUBRICS,
+      remote: [{ name: 'A', seqnum: '1', maxscore: '10', auto: true, exclude: false }],
+      remoteSettings: { session_length: '120' },
+      action: 'keep',
+    });
+
+    const messages = messagesOf(events);
+    const keepMessage = messages.find((m) => m.includes('Keeping local settings'));
+    expect(keepMessage).toBeDefined();
+    expect(keepMessage).not.toContain('rubric changes are read-only');
+    expect(keepMessage).toBe('  Keeping local settings (will push to Vocareum on next publish)');
   });
 });
 

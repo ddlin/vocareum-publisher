@@ -161,7 +161,7 @@ publish_options:
   on_missing_id: "skip"
   auto_commit: false
   sync_settings: true                # Set false to sync files only, not settings
-  sync_rubrics: true                 # Set false to skip fetching rubrics on pull (one extra API call per part)
+  sync_rubrics: true                 # Set false to skip fetching rubrics on pull (at least one extra API call per part)
   sync_deletes: false
 
 publish_history:
@@ -212,7 +212,7 @@ When settings sync is disabled for an assignment or part, vocgit skips both push
 
 `vocgit pull` also fetches each part's grading rubric and records it under `parts[].rubrics` in `vocareum.yaml`, reporting drift the same way it does for settings. **Rubrics are read-only in this release**: `push` never creates, updates, or deletes rubric rows on Vocareum, so a course migrated with vocgit still needs its rubrics entered by hand. The server-assigned rubric ID is deliberately not stored — it's course-scoped and must not be reused if the rubric is later recreated in a different course.
 
-Fetching rubrics costs one extra API call per part visited. Set `publish_options.sync_rubrics: false` to skip it on courses where that matters:
+Fetching rubrics costs one API call per part visited (more if a part has over 100 criteria, since `listRubrics` paginates at 100 rows per page). Set `publish_options.sync_rubrics: false` to skip it on courses where that matters:
 
 ```yaml
 publish_options:
@@ -322,7 +322,7 @@ unexpectedly large or malformed remote file listings.
 
 **For settings drift** (local settings differ from Vocareum):
 - **Pull**: Update local config with settings from Vocareum
-- **Keep**: Keep local settings (will overwrite Vocareum on next push)
+- **Keep**: Keep local settings (will overwrite Vocareum on next push; if the drift included rubrics, the rubric changes are read-only and are not part of that push — see [Rubrics (read-only)](#rubrics-read-only))
 - **Skip**: Do nothing for now
 
 Set `publish_options.sync_settings: false` to skip course, assignment, and part settings sync while still syncing files. Assignments and parts can override this with their own `sync_settings` value; part settings take precedence over assignment settings, which take precedence over the global publish option. Disabled settings remain in `vocareum.yaml` but are ignored for drift detection and push updates.

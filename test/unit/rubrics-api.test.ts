@@ -121,4 +121,66 @@ describe('listRubrics', () => {
     expect(result).toHaveLength(1);
     expect(requestMock).toHaveBeenCalledTimes(1);
   });
+
+  it('throws when a later page reports a smaller total_records than an earlier page (FIX A)', async () => {
+    // Concrete failure this guards against: page 0 returns 100 rows and says
+    // total_records: 150 (more still due). Page 1 returns zero new rows and
+    // says total_records: 100 — a shrinking total. Comparing only against the
+    // LAST page's total (100) would let 100 accumulated rows sail past
+    // `all.length < totalRecords` (100 < 100 is false) and return as though
+    // complete, when 50 rows are actually missing. The guard must compare
+    // against the highest total_records seen across the walk (150), not the
+    // most recent one.
+    const page0Rubrics = Array.from({ length: 100 }, (_, i) => ({
+      id: `${i}`, name: `criterion-${i}`, seqnum: `${i}`, maxscore: '1',
+    }));
+
+    requestMock
+      .mockResolvedValueOnce({ status: 'success', rubrics: page0Rubrics, total_records: 150 })
+      .mockResolvedValueOnce({ status: 'success', rubrics: [], total_records: 100 });
+
+    await expect(listRubrics(mockClient, 'c', 'a', 'p')).rejects.toThrow(/100 of 150/);
+    expect(requestMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws when a later page reports total_records: 0, defeating a naive last-page-only check (FIX A)', async () => {
+    requestMock
+      .mockResolvedValueOnce({
+        status: 'success',
+        rubrics: [{ id: '1', name: 'a', seqnum: '1', maxscore: '5' }],
+        total_records: 3,
+      })
+      .mockResolvedValueOnce({ status: 'success', rubrics: [], total_records: 0 });
+
+    await expect(listRubrics(mockClient, 'c', 'a', 'p')).rejects.toThrow(/1 of 3/);
+    expect(requestMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws on an unparseable total_records rather than letting NaN comparisons defeat the guard (FIX B)', async () => {
+    // Number("not-a-number") is NaN, and every comparison with NaN is false —
+    // so both the `more` check and the post-loop shortfall check would
+    // silently pass, returning [] as though it were the complete, authoritative
+    // list and deleting the user's local rubrics.
+    requestMock.mockResolvedValueOnce({ status: 'success', rubrics: [], total_records: 'not-a-number' });
+
+    await expect(listRubrics(mockClient, 'c', 'a', 'p')).rejects.toThrow(/malformed total_records/);
+    expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws on a negative total_records', async () => {
+    requestMock.mockResolvedValueOnce({ status: 'success', rubrics: [], total_records: -5 });
+
+    await expect(listRubrics(mockClient, 'c', 'a', 'p')).rejects.toThrow(/malformed total_records/);
+  });
+
+  it('accepts a numeric-string total_records, the documented real API shape', async () => {
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      rubrics: [{ id: '1', name: 'a', seqnum: '1', maxscore: '5' }],
+      total_records: '1',
+    });
+
+    const result = await listRubrics(mockClient, 'c', 'a', 'p');
+    expect(result).toHaveLength(1);
+  });
 });

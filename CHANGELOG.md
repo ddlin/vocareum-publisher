@@ -102,8 +102,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   logs a warning and pull continues normally — settings and content drift are
   unaffected. There are two independent fetchers (drift detection and orphan
   import), so a single run can log this at most twice. Set
-  `publish_options.sync_rubrics: false` to skip the fetch entirely (it costs one
-  API call per part); `sync_settings: false` skips it too during drift detection,
+  `publish_options.sync_rubrics: false` to skip the fetch entirely (it costs at
+  least one API call per part — more if a part has over 100 criteria);
+  `sync_settings: false` skips it too during drift detection,
   since rubrics are read during the settings pass — orphan import still records
   rubrics whenever `sync_rubrics` is on, the same way it records settings.
 
