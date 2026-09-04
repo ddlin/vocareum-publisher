@@ -3,6 +3,7 @@ import {
   shouldSyncAssignmentSettings,
   shouldSyncCourseSettings,
   shouldSyncPartSettings,
+  shouldSyncRubrics,
 } from '../../src/utils/settings-sync';
 
 describe('settings sync precedence', () => {
@@ -49,5 +50,22 @@ describe('settings sync precedence', () => {
         { publish_options: global === undefined ? undefined : { sync_settings: global } }
       )
     ).toBe(expected);
+  });
+});
+
+describe('shouldSyncRubrics', () => {
+  it('defaults to true when unset', () => {
+    expect(shouldSyncRubrics({})).toBe(true);
+    expect(shouldSyncRubrics({ publish_options: {} })).toBe(true);
+  });
+
+  it('honours an explicit false', () => {
+    expect(shouldSyncRubrics({ publish_options: { sync_rubrics: false } })).toBe(false);
+  });
+
+  it('returns true on its own when only sync_settings is disabled', () => {
+    // shouldSyncRubrics answers "is the rubric option on", not "will rubrics be
+    // fetched". sync_settings is the outer gate — see the traversal test below.
+    expect(shouldSyncRubrics({ publish_options: { sync_settings: false } })).toBe(true);
   });
 });

@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { isHttp400, describeApiError, describeDroppedPartSettings, omitPlatformKeysForUpdate, buildPartSettingsPayload, findPlatformFieldDrift } from '../../src/core/payload-helpers';
+import {
+  isHttp400, describeApiError, describeDroppedPartSettings, omitPlatformKeysForUpdate,
+  buildPartSettingsPayload, findPlatformFieldDrift, filterUnknownSettingsForPayload,
+  RESERVED_PART_KEYS,
+} from '../../src/core/payload-helpers';
 import { APIError } from '../../src/api/client';
+import { CollectingEventSink } from '../../src/core/services/event-sink';
 
 describe('isHttp400', () => {
   it('detects APIError statusCode 400', () => {
@@ -130,6 +135,54 @@ describe('omitPlatformKeysForUpdate', () => {
     expect(out.max_points).toBe('40');
     expect(out.lab_interface).toBeDefined();
     expect(out.tags).toBeDefined();
+  });
+});
+
+describe('rubrics are reserved against _unknown_settings pass-through (FIX D)', () => {
+  // Rubrics are part-scoped config, but they're stored at part.rubrics and
+  // written through the dedicated rubrics endpoint — never through the
+  // part-settings PUT this payload feeds. `rubrics` must therefore be in
+  // RESERVED_PART_KEYS (via NON_SETTING_FIELDS_PART) so neither a
+  // hand-written `_unknown_settings.rubrics` nor a future server-sent
+  // `rubrics` key (captured into _unknown_settings by mapPartSettings) can
+  // sneak into the outgoing part payload and risk 400ing the request.
+
+  it('RESERVED_PART_KEYS includes rubrics', () => {
+    expect(RESERVED_PART_KEYS.has('rubrics')).toBe(true);
+  });
+
+  it('filterUnknownSettingsForPayload drops a rubrics key and warns', () => {
+    const events = new CollectingEventSink();
+    const filtered = filterUnknownSettingsForPayload(
+      { rubrics: [{ name: 'A', seqnum: '1', maxscore: '10' }], some_future_flag: '5' },
+      RESERVED_PART_KEYS,
+      'part',
+      'cloud-lab',
+      events,
+    );
+
+    expect(filtered).not.toHaveProperty('rubrics');
+    expect(filtered).toEqual({ some_future_flag: '5' });
+
+    const warnings: string[] = [];
+    events.flushTo({ emit: (e) => { if (e.message) { warnings.push(e.message); } } });
+    expect(warnings.some((m) => m.includes('rubrics') && m.includes('cloud-lab'))).toBe(true);
+  });
+
+  it('buildPartSettingsPayload drops _unknown_settings.rubrics from the built payload and warns', () => {
+    const events = new CollectingEventSink();
+    const settings = {
+      session_length: '120',
+      _unknown_settings: { rubrics: [{ name: 'A', seqnum: '1', maxscore: '10' }] },
+    } as never;
+
+    const payload = buildPartSettingsPayload('cloud-lab', settings, 'full', events);
+
+    expect(payload).not.toHaveProperty('rubrics');
+
+    const warnings: string[] = [];
+    events.flushTo({ emit: (e) => { if (e.message) { warnings.push(e.message); } } });
+    expect(warnings.some((m) => m.includes('_unknown_settings.rubrics'))).toBe(true);
   });
 });
 

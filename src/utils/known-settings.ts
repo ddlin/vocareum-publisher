@@ -100,6 +100,16 @@ export const NON_SETTING_FIELDS_PART: ReadonlySet<string> = new Set([
   // Classified from a real pull report (v1.0.20).
   'create_method',  // how the part was created
   'masterid',       // reference to the template/master it was copied from
+  // Rubrics are part-scoped config, but they are stored at `part.rubrics` and
+  // written through the dedicated rubrics endpoint (src/api/rubrics.ts), never
+  // through this part-settings PUT. Listing it here keeps it out of both
+  // directions of the _unknown_settings pass-through: it lands in
+  // RESERVED_PART_KEYS (payload-helpers.ts) so a hand-written
+  // `_unknown_settings.rubrics` can't sneak into the outgoing payload, and it
+  // stops mapPartSettings from ever capturing a future server-sent `rubrics`
+  // key into `_unknown_settings` in the first place (partitionApiResponse
+  // treats NON_SETTING_FIELDS_* as excluded before the unknown-field split).
+  'rubrics',
 ]);
 
 export interface PartitionResult {

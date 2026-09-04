@@ -70,6 +70,7 @@ Summary:
     "GET /courses/course-pull-golden/assignments/asn-orphan-1/parts/part-alpha-1/files",
     "GET /courses/course-pull-golden/assignments/asn-orphan-1/parts/part-alpha-1/files",
     "GET /courses/course-pull-golden/assignments/asn-orphan-1/parts/part-alpha-1/files",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-1/parts/part-alpha-1/rubrics",
     "GET /courses/course-pull-golden/assignments/asn-orphan-2",
     "GET /courses/course-pull-golden/assignments/asn-orphan-2/parts",
     "GET /courses/course-pull-golden/assignments/asn-orphan-2/parts/part-beta-1",
@@ -80,6 +81,7 @@ Summary:
     "GET /courses/course-pull-golden/assignments/asn-orphan-2/parts/part-beta-1/files",
     "GET /courses/course-pull-golden/assignments/asn-orphan-2/parts/part-beta-1/files",
     "GET /courses/course-pull-golden/assignments/asn-orphan-2/parts/part-beta-1/files",
+    "GET /courses/course-pull-golden/assignments/asn-orphan-2/parts/part-beta-1/rubrics",
   ],
 }
 `;

@@ -12,6 +12,7 @@
     "dev": "tsx src/index.ts",
     "probe:api": "node scripts/probe-vocareum-api.mjs",
     "probe:v3": "node scripts/probe-v3-oauth.mjs",
+    "probe:rubrics": "node scripts/probe-rubrics.mjs",
     "test": "npm run build && vitest",
     "test:coverage": "vitest --coverage",
     "lint": "eslint src --ext .ts",

@@ -26,7 +26,7 @@ import {
   CONTAINER_DIRECTORIES,
   resolveArchitecture,
 } from '../../types/config';
-import type { Assignment, Part, DirectoryType, AssignmentSettings, PartSettings, SubmissionFilters } from '../../types/config';
+import type { Assignment, Part, DirectoryType, AssignmentSettings, PartSettings, SubmissionFilters, Rubric } from '../../types/config';
 import type { OrphanedEntity, StaleAssignment } from '../../types/state';
 import type { FileMap } from '../../types/api';
 import type { EventSink } from './event-sink';
@@ -41,7 +41,10 @@ import {
 import {
   shouldSyncAssignmentSettings,
   shouldSyncPartSettings,
+  shouldSyncRubrics,
 } from '../../utils/settings-sync';
+import { rubricsEqual, describeRubricChanges, type RubricChangeSummary } from '../../utils/rubrics';
+import { createRubricFetcher, type RubricFetcher } from './rubric-fetcher';
 
 // ── Re-exported helpers (used by pull.ts resolver) ──────────────────────────
 
@@ -222,6 +225,14 @@ interface SettingDiff {
   remoteValue: unknown;
 }
 
+/** Rubric differences for a part. Read-only: remote always wins on pull. */
+export interface RubricsDrift {
+  local: Rubric[];
+  remote: Rubric[];
+  /** Name-keyed breakdown, for display only — nothing acts on it. */
+  changes: RubricChangeSummary;
+}
+
 /** Represents settings drift for a part */
 export interface PartSettingsDrift {
   partId: string;
@@ -231,6 +242,8 @@ export interface PartSettingsDrift {
   remoteSettings: NonNullable<PartSettings>;
   unknownsChanged: boolean;
   observedChanged: boolean;
+  /** Present only when the part's rubrics differ from config. */
+  rubricsDrift?: RubricsDrift;
 }
 
 /** Represents settings drift for an assignment */
@@ -543,7 +556,8 @@ async function importAssignment(
   skipContent: boolean,
   reporter: UnknownFieldReporter | undefined,
   workspaceRoot: string,
-  events: EventSink
+  events: EventSink,
+  rubricFetcher?: RubricFetcher
 ): Promise<ImportResult> {
   const assignmentId = orphan.id;
   // localPath is user-typed at the import prompt — confine it before any writes.
@@ -620,6 +634,16 @@ async function importAssignment(
       settings: partSettings,
     };
 
+    // The migration path: an empty target imports through here, so rubrics must
+    // be captured at import, not only on later drift detection.
+    const rubrics = await rubricFetcher?.fetch(assignmentId, part.id);
+    if (rubrics !== undefined && rubrics.length > 0) {
+      configPart.rubrics = rubrics;
+      if (verbose) {
+        events.emit({ level: 'debug', message: `Imported ${rubrics.length} rubric criteria for part ${part.name}` });
+      }
+    }
+
     configParts.push(configPart);
 
     if (usedExistingContent) {
@@ -680,7 +704,8 @@ async function detectSettingsDrift(
   client: VocareumClient,
   skipAssignmentIds: Set<string>,
   warnFn: (msg: string) => void,
-  reporter?: UnknownFieldReporter
+  reporter?: UnknownFieldReporter,
+  rubricFetcher?: RubricFetcher
 ): Promise<AssignmentSettingsDrift[]> {
   const driftList: AssignmentSettingsDrift[] = [];
   const excludedIds = new Set(config.vocareum.excluded_assignments ?? []);
@@ -738,6 +763,23 @@ async function detectSettingsDrift(
           const fullRemotePart = await getPart(client, config.vocareum.course_id, assignment.assignment_id, configPart.part_id);
           const remotePartSettings = mapPartSettings(fullRemotePart, reporter, fullRemotePart.id);
 
+          // Rubrics live behind their own endpoint and their own optional token
+          // scope. The fetcher returns undefined rather than throwing — a throw
+          // here would be swallowed by this function's per-assignment catch and
+          // would silently discard the assignment's settings drift too.
+          let rubricsDrift: RubricsDrift | undefined;
+          const remoteRubrics = await rubricFetcher?.fetch(assignment.assignment_id, configPart.part_id);
+          if (remoteRubrics !== undefined) {
+            const localRubrics = configPart.rubrics ?? [];
+            if (!rubricsEqual(localRubrics, remoteRubrics)) {
+              rubricsDrift = {
+                local: localRubrics,
+                remote: remoteRubrics,
+                changes: describeRubricChanges(localRubrics, remoteRubrics),
+              };
+            }
+          }
+
           const partDiffs = comparePartSettings(configPart.settings, remotePartSettings);
 
           const localPartUnknowns = configPart.settings?._unknown_settings ?? {};
@@ -757,7 +799,8 @@ async function detectSettingsDrift(
             OBSERVED_PART_SETTING_KEYS
           );
 
-          if (partDiffs.length > 0 || partUnknownsChanged || partObservedChanged || partHasLegacyObservedTopLevel) {
+          if (partDiffs.length > 0 || partUnknownsChanged || partObservedChanged ||
+              partHasLegacyObservedTopLevel || rubricsDrift !== undefined) {
             partsDrift.push({
               partId: configPart.part_id,
               partName: configPart.name ?? remotePart.name,
@@ -766,6 +809,7 @@ async function detectSettingsDrift(
               remoteSettings: remotePartSettings,
               unknownsChanged: partUnknownsChanged,
               observedChanged: partObservedChanged,
+              rubricsDrift,
             });
           }
         }
@@ -986,7 +1030,13 @@ export async function inspectPull(
   const plan = await reconcile(config, client, undefined, { workspaceRoot, events });
 
   const staleAssignmentIds = new Set(plan.staleInConfig.map(s => s.assignment_id));
-  const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds, warnFn, reporter);
+  const rubricFetcher = createRubricFetcher(
+    client,
+    config.vocareum.course_id,
+    shouldSyncRubrics(config),
+    warnFn
+  );
+  const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds, warnFn, reporter, rubricFetcher);
 
   let contentDrift: AssignmentContentDrift[] = [];
   if (req.content) {
@@ -1028,6 +1078,12 @@ export async function applyPull(
   const { effectiveConfig: config, client, workspaceRoot, events } = ctx;
   const verbose = req.verbose ?? false;
   const skipContent = req.skipContent ?? false;
+  const rubricFetcher = createRubricFetcher(
+    client,
+    config.vocareum.course_id,
+    shouldSyncRubrics(config),
+    (msg: string) => events.emit({ level: 'warn', message: msg })
+  );
 
   const result: PullResult = {
     imported: 0,
@@ -1043,7 +1099,11 @@ export async function applyPull(
   const newExclusions: string[] = [];
   const assignmentsToRemove: string[] = [];
   const assignmentsToReset: string[] = [];
-  const settingsUpdates: Map<string, { assignmentSettings?: NonNullable<AssignmentSettings>; partSettings?: Map<string, NonNullable<PartSettings>> }> = new Map();
+  const settingsUpdates: Map<string, {
+    assignmentSettings?: NonNullable<AssignmentSettings>;
+    partSettings?: Map<string, NonNullable<PartSettings>>;
+    partRubrics?: Map<string, Rubric[]>;
+  }> = new Map();
   const importedContentState: Record<string, string> = {};
 
   // ── Process orphaned assignments ──────────────────────────────────────────
@@ -1082,7 +1142,8 @@ export async function applyPull(
             skipContent,
             reporter,
             workspaceRoot,
-            events
+            events,
+            rubricFetcher
           );
 
           newAssignments.push(assignment);
@@ -1177,6 +1238,30 @@ export async function applyPull(
         if (partDrift.observedChanged) {
           events.emit({ level: 'plain', message: `  Part "${partDrift.partName}" observed read-only settings changed` });
         }
+        if (partDrift.rubricsDrift) {
+          const { changes, local, remote } = partDrift.rubricsDrift;
+          events.emit({
+            level: 'plain',
+            message: `  Part "${partDrift.partName}" rubrics changed (${local.length} local → ${remote.length} remote):`,
+          });
+          for (const name of changes.added) {
+            events.emit({ level: 'plain', message: `    + ${name} (new on remote)` });
+          }
+          for (const name of changes.changed) {
+            events.emit({ level: 'plain', message: `    ~ ${name} (changed)` });
+          }
+          for (const name of changes.removed) {
+            events.emit({ level: 'plain', message: `    - ${name} (not on remote)` });
+          }
+          // rubricsEqual compares positionally, so a hand-reordered local list
+          // with the same criteria differs by comparison but leaves every
+          // describeRubricChanges bucket empty — without this, the header
+          // above would be followed by no lines at all.
+          if (changes.added.length === 0 && changes.changed.length === 0 && changes.removed.length === 0) {
+            events.emit({ level: 'plain', message: '    (order differs)' });
+          }
+          events.emit({ level: 'plain', message: '    (rubrics are read-only: push will not send these to Vocareum)' });
+        }
       }
 
       const action = await resolver.resolveSettingsDriftAction(issue);
@@ -1189,17 +1274,34 @@ export async function applyPull(
           }
         }
 
+        const partRubricsMap = new Map<string, Rubric[]>();
+        for (const partDrift of drift.partsDrift) {
+          if (partDrift.rubricsDrift) {
+            partRubricsMap.set(partDrift.partPath, partDrift.rubricsDrift.remote);
+          }
+        }
+
         settingsUpdates.set(drift.assignmentPath, {
           assignmentSettings: (drift.assignmentDiffs.length > 0 || drift.unknownsChanged || drift.observedChanged)
             ? drift.remoteAssignmentSettings
             : undefined,
           partSettings: partSettingsMap.size > 0 ? partSettingsMap : undefined,
+          partRubrics: partRubricsMap.size > 0 ? partRubricsMap : undefined,
         });
 
         result.settingsPulled++;
         events.emit({ level: 'success', message: `Will update local settings for "${drift.assignmentName}"` });
       } else if (action === 'keep') {
-        events.emit({ level: 'plain', message: '  Keeping local settings (will push to Vocareum on next publish)' });
+        // If any part's drift included rubrics, the unqualified message below is
+        // false for that part: push never sends rubrics regardless of this
+        // choice (rubrics are read-only, see the display line emitted above).
+        // Left unconditional, "keep" is the last thing a user sees for a
+        // rubric-only-drift part and it promises a push that will not happen.
+        const hasRubricsDrift = drift.partsDrift.some((partDrift) => partDrift.rubricsDrift !== undefined);
+        const keepMessage = hasRubricsDrift
+          ? '  Keeping local settings (will push to Vocareum on next publish; rubric changes are read-only and will not be pushed)'
+          : '  Keeping local settings (will push to Vocareum on next publish)';
+        events.emit({ level: 'plain', message: keepMessage });
       } else {
         result.skipped++;
         events.emit({ level: 'plain', message: '  Skipped' });
@@ -1373,8 +1475,13 @@ export async function applyPull(
         assignmentUpdate.settings = mergedSettings;
       }
 
-      if (updates.partSettings && updates.partSettings.size > 0) {
+      const hasPartUpdates =
+        (updates.partSettings?.size ?? 0) > 0 || (updates.partRubrics?.size ?? 0) > 0;
+
+      if (hasPartUpdates) {
         assignmentUpdate.parts = existingAssignment.parts.map(part => {
+          let nextPart = part;
+
           const newPartSettings = updates.partSettings?.get(part.path);
           if (newPartSettings) {
             const mergedPartSettings = {
@@ -1388,12 +1495,31 @@ export async function applyPull(
             if (newPartSettings._observed_settings === undefined) {
               delete mergedPartSettings._observed_settings;
             }
-            return {
-              ...part,
-              settings: mergedPartSettings,
-            };
+            nextPart = { ...nextPart, settings: mergedPartSettings };
           }
-          return part;
+
+          // An absent map entry means "no rubric drift for this part" (leave
+          // it untouched); a present-but-empty array means "remote has none",
+          // so the key is removed rather than replaced with [].
+          const newRubrics = updates.partRubrics?.get(part.path);
+          if (newRubrics) {
+            if (newRubrics.length > 0) {
+              // Remote is authoritative on pull: replace wholesale, never merge.
+              // A merge would resurrect criteria deleted in the Vocareum UI.
+              nextPart = { ...nextPart, rubrics: newRubrics };
+            } else {
+              // Delete on a copy rather than destructuring off a rest sibling:
+              // .eslintrc.js sets no-unused-vars with argsIgnorePattern only, which
+              // does not cover variables, and ignoreRestSiblings defaults to false —
+              // `const { rubrics: _x, ...rest }` would fail `npm run lint`. This also
+              // matches how the settings branch above clears keys.
+              const partWithoutRubrics = { ...nextPart };
+              delete partWithoutRubrics.rubrics;
+              nextPart = partWithoutRubrics;
+            }
+          }
+
+          return nextPart;
         });
       }
 

@@ -85,6 +85,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (default 32 MB, range 1 KB–64 MB).
 - `PartialUploadError`, raised when a multi-chunk upload fails partway, naming
   the chunk position and stating that a re-run rebuilds the directory.
+- **`pull` now records grading rubrics.** Each part's rubric criteria are fetched
+  from `/courses/{c}/assignments/{a}/parts/{p}/rubrics` and stored under
+  `parts[].rubrics` in `vocareum.yaml`, with drift reported alongside part settings
+  and captured on orphan import. Previously rubrics were invisible to vocgit
+  entirely: a pull reported success and wrote nothing, and nothing warned that
+  rubric data existed. In one migration this meant 425 criteria carrying 2,448
+  points did not reach the target courses.
+
+  Rubrics remain **read-only**: `push` does not create, update or delete rubric
+  rows, so a migrated course still needs its rubrics entered by hand. The write
+  API's payload shape is unverified and is being probed before push support is
+  designed.
+
+  The rubrics token permission is optional at token creation. A token without it
+  logs a warning and pull continues normally — settings and content drift are
+  unaffected. There are two independent fetchers (drift detection and orphan
+  import), so a single run can log this at most twice. Set
+  `publish_options.sync_rubrics: false` to skip the fetch entirely (it costs at
+  least one API call per part — more if a part has over 100 criteria);
+  `sync_settings: false` skips it too during drift detection,
+  since rubrics are read during the settings pass — orphan import still records
+  rubrics whenever `sync_rubrics` is on, the same way it records settings.
 
 ## [1.3.8] — 2026-09-02
 

@@ -121,6 +121,38 @@ export interface PartsListResponse {
 }
 
 /**
+ * A single rubric criterion.
+ *
+ * CRITICAL: every field is a string, including `seqnum` and `maxscore`.
+ * `id` is server-assigned and course-scoped — it must not be copied between
+ * courses, and is deliberately not persisted to vocareum.yaml.
+ */
+export interface VocareumRubricResponse {
+  id: string;
+  name: string;
+  seqnum: string;   // ordering, as a string: "1", "2", "10"
+  maxscore: string; // per-criterion points, as a string
+  exclude?: boolean;
+  auto?: boolean;
+}
+
+/**
+ * Rubrics list API response. Part-scoped: the assignment-level and
+ * collection-level variants of this endpoint return `Invalid Request`.
+ *
+ * NOTE: Vocareum may encode failures in the response body with a 200 status line
+ * (see src/api/content.ts:257 for the same pattern). The `status` field is widened
+ * to `string` to allow runtime guards to reject non-success responses before treating
+ * them as empty results.
+ */
+export interface RubricsListResponse {
+  status: string;
+  parent?: { courseid: string; assignmentid: string; partid: string };
+  rubrics?: VocareumRubricResponse[];
+  total_records?: number | string;
+}
+
+/**
  * Assignments list API response
  */
 export interface AssignmentsListResponse {

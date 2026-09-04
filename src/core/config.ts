@@ -192,6 +192,7 @@ export async function updateConfig(configPath: string, updates: ConfigUpdates): 
       auto_commit: false,
       abort_on_error: false,
       sync_settings: true,
+      sync_rubrics: true,
       sync_deletes: false,
       exclude_patterns: [] as string[]
     };
