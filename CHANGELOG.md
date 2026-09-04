@@ -5,6 +5,36 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`pull` no longer silently skips `scripts/` and `startercode/` on Elite
+  courses.** `toApiDirPath` accepted an `architecture` argument and ignored it,
+  routing only `asnlib`/`lib` to `/resource` and everything else to `/voc`.
+  Elite workspaces have no `/voc` at all — their root is `['resource', 'work']` —
+  so those directories were requested at paths that cannot exist, the API
+  answered `"doesn't exist"`, and the missing-optional-directory branch turned
+  that into an empty listing. Pulls reported success, wrote a `.gitkeep` into the
+  empty local directory, and exited 0. On one course this left every
+  `build.sh`/`grade.sh`/`run.sh`/`submit.sh` across 9 assignments on the server.
+  Container courses are unaffected — their mapping is unchanged.
+- **`push` now derives workspace architecture from `labtype` when the config does
+  not set it**, matching what `pull` already did. `vocareum.architecture` is
+  optional and in practice unset, so every Elite course was treated as Container
+  on push: the `--sync-deletes` listing asked for `/voc/…`, got an empty result,
+  and planned no deletions. Not destructive, but inert on exactly the courses the
+  path fix targets. Both paths now share one `resolveArchitecture()` so they
+  cannot drift apart again.
+
+### Changed
+- **A declared directory that the API reports absent is now a warning rather than
+  silence.** Returning an empty listing stays correct — throwing would make
+  `pull` read the absence as remote deletions — but the silence is what hid both
+  this bug and the 1.3.8 depth truncation, each of which lost content with exit
+  code 0. The warning names the exact path requested, so a wrong prefix is
+  visible as a wrong prefix. It fires only for directories a part declares, not
+  for the walk's speculative probes.
+
 ## [1.3.8] — 2026-09-02
 
 ### Fixed
