@@ -157,11 +157,28 @@ export async function listRubrics(
  * Normalize one API rubric row to the string-typed shape the rest of vocgit assumes.
  *
  * POST responses have been observed returning `id` and `seqnum` as NUMBERS while GET
- * returns both as strings (two observations, 2026-09-04 — not a universal contract, which
- * is exactly why this coerces whatever arrives rather than trusting either shape).
- * AGENTS.md constraint 1 requires ids to be strings everywhere downstream.
+ * returns both as strings. This function coerces numbers and numeric strings to strings,
+ * but throws APIError if either field is missing, null, or undefined — those are genuine
+ * API anomalies, not shape variations. AGENTS.md constraint 1 requires ids to be strings
+ * everywhere downstream; a fabricated "undefined" id would silently flow into the config.
+ *
+ * @throws APIError if `id` or `seqnum` is missing, null, or undefined
  */
 function normalizeRubricRow(row: VocareumRubricResponse): VocareumRubricResponse {
+  if (row.id === null || row.id === undefined) {
+    throw new APIError(
+      'Rubrics response row missing or null id',
+      undefined,
+      row
+    );
+  }
+  if (row.seqnum === null || row.seqnum === undefined) {
+    throw new APIError(
+      'Rubrics response row missing or null seqnum',
+      undefined,
+      row
+    );
+  }
   return { ...row, id: String(row.id), seqnum: String(row.seqnum) };
 }
 

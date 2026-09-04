@@ -270,4 +270,85 @@ describe('updateRubrics', () => {
     expect(await updateRubrics(mockClient, 'c', 'a', 'p', [])).toEqual([]);
     expect(requestMock).not.toHaveBeenCalled();
   });
+
+  it('throws when the body reports a non-success status', async () => {
+    requestMock.mockResolvedValueOnce({ status: 'error', message: 'nope' });
+    await expect(updateRubrics(mockClient, 'c', 'a', 'p', [{ id: '1', maxscore: '5' }]))
+      .rejects.toThrow();
+  });
+});
+
+describe('normalizeRubricRow (shared by createRubrics and updateRubrics)', () => {
+  let mockClient: VocareumClient;
+  let requestMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    requestMock = vi.fn();
+    mockClient = { request: requestMock } as unknown as VocareumClient;
+  });
+
+  it('createRubrics throws when a response row has null id', async () => {
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      rubrics: [{ id: null as any, name: 'A', seqnum: '1', maxscore: '7' }],
+      total_records: 1,
+    });
+
+    const promise = createRubrics(mockClient, 'c', 'a', 'p', [{ name: 'A', maxscore: '7' }]);
+    await expect(promise).rejects.toThrow(/missing or null id/);
+  });
+
+  it('createRubrics throws when a response row has undefined id', async () => {
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      rubrics: [{ name: 'A', seqnum: '1', maxscore: '7' } as any],
+      total_records: 1,
+    });
+
+    const promise = createRubrics(mockClient, 'c', 'a', 'p', [{ name: 'A', maxscore: '7' }]);
+    await expect(promise).rejects.toThrow(/missing or null id/);
+  });
+
+  it('createRubrics throws when a response row has null seqnum', async () => {
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      rubrics: [{ id: '1', name: 'A', seqnum: null as any, maxscore: '7' }],
+      total_records: 1,
+    });
+
+    const promise = createRubrics(mockClient, 'c', 'a', 'p', [{ name: 'A', maxscore: '7' }]);
+    await expect(promise).rejects.toThrow(/missing or null seqnum/);
+  });
+
+  it('createRubrics throws when a response row has undefined seqnum', async () => {
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      rubrics: [{ id: '1', name: 'A', maxscore: '7' } as any],
+      total_records: 1,
+    });
+
+    const promise = createRubrics(mockClient, 'c', 'a', 'p', [{ name: 'A', maxscore: '7' }]);
+    await expect(promise).rejects.toThrow(/missing or null seqnum/);
+  });
+
+  it('updateRubrics throws when a response row has null id', async () => {
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      rubrics: [{ id: null as any, name: 'A', seqnum: '1', maxscore: '7' }],
+      total_records: 1,
+    });
+
+    const promise = updateRubrics(mockClient, 'c', 'a', 'p', [{ id: '1', maxscore: '9' }]);
+    await expect(promise).rejects.toThrow(/missing or null id/);
+  });
+
+  it('updateRubrics throws when a response row has undefined seqnum', async () => {
+    requestMock.mockResolvedValueOnce({
+      status: 'success',
+      rubrics: [{ id: '1', name: 'A', maxscore: '7' } as any],
+      total_records: 1,
+    });
+
+    const promise = updateRubrics(mockClient, 'c', 'a', 'p', [{ id: '1', maxscore: '9' }]);
+    await expect(promise).rejects.toThrow(/missing or null seqnum/);
+  });
 });
