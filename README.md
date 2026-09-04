@@ -219,9 +219,9 @@ publish_options:
   sync_rubrics: false          # Skip fetching rubrics during pull
 ```
 
-`sync_rubrics` is nested inside the settings-sync pass, not a separate one — `sync_settings: false` skips rubrics too, regardless of `sync_rubrics`. There's no independent rubric-only traversal, so if you manage settings by hand in the Vocareum UI but still want rubrics pulled into Git, that combination isn't supported yet.
+`sync_rubrics` is nested inside the settings-sync pass, not a separate one — `sync_settings: false` skips rubrics too during drift detection, regardless of `sync_rubrics`. There's no independent rubric-only traversal, so if you manage settings by hand in the Vocareum UI but still want rubrics drift-checked from Git, that combination isn't supported yet. This only affects drift detection: importing an orphaned assignment records its rubrics whenever `sync_rubrics` is on, the same way it records settings, regardless of `sync_settings`.
 
-The rubrics token permission (see [Generating a Token](#generating-a-token)) is optional: a token without it logs one warning per run and pull continues normally, with settings and content drift unaffected.
+The rubrics token permission (see [Generating a Token](#generating-a-token)) is optional: a token without it logs a warning and pull continues normally, with settings and content drift unaffected. There are two independent fetchers (drift detection and orphan import), each warning at most once, so a single run can log this at most twice.
 
 ## CLI Commands
 

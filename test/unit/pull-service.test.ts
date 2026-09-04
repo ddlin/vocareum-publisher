@@ -858,6 +858,24 @@ describe('applyPull — rubrics', () => {
     expect(part.rubrics).toHaveLength(1);
     expect(part.settings!.session_length).toBe('120');
   });
+
+  it('preserves existing rubrics when only settings drift (no rubric drift) is pulled', async () => {
+    // Local and remote rubrics match exactly, so there is no rubricsDrift for
+    // this part — updates.partRubrics has no entry for it. Only the settings
+    // diff (remoteSessionLength) should be written; the part's existing
+    // rubrics must survive untouched (via the `{ ...nextPart, settings }`
+    // spread), not be dropped because a settings-only update was applied.
+    const { configUpdates } = await applyPullWithRubricDrift({
+      local: DEFAULT_LOCAL_RUBRICS,
+      remote: [{ name: 'A', seqnum: '1', maxscore: '10', auto: true, exclude: false }],
+      remoteSettings: { session_length: '120' },
+      action: 'pull',
+    });
+
+    const part = configUpdates!.assignments![0].parts![0];
+    expect(part.rubrics).toEqual(DEFAULT_LOCAL_RUBRICS);
+    expect(part.settings!.session_length).toBe('120');
+  });
 });
 
 /**

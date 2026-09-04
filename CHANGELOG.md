@@ -99,10 +99,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   designed.
 
   The rubrics token permission is optional at token creation. A token without it
-  logs one warning per run and pull continues normally — settings and content
-  drift are unaffected. Set `publish_options.sync_rubrics: false` to skip the
-  fetch entirely (it costs one API call per part); `sync_settings: false` skips it
-  too, since rubrics are read during the settings pass.
+  logs a warning and pull continues normally — settings and content drift are
+  unaffected. There are two independent fetchers (drift detection and orphan
+  import), so a single run can log this at most twice. Set
+  `publish_options.sync_rubrics: false` to skip the fetch entirely (it costs one
+  API call per part); `sync_settings: false` skips it too during drift detection,
+  since rubrics are read during the settings pass — orphan import still records
+  rubrics whenever `sync_rubrics` is on, the same way it records settings.
 
 ## [1.3.8] — 2026-09-02
 

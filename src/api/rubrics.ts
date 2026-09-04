@@ -36,6 +36,9 @@ import type { VocareumRubricResponse, RubricsListResponse } from '../types/api';
  * @returns Rubric criteria sorted by parseInt(seqnum)
  * @throws ForbiddenError if the token lacks the rubrics scope
  * @throws APIError if the response body reports a non-success status
+ * @throws APIError if fewer rows were received than `total_records` reported
+ *   (unless `total_records` is 0, the genuine-empty case) — a short read must
+ *   never be mistaken for a complete list, see the shortfall check below
  */
 export async function listRubrics(
   client: VocareumClient,
@@ -47,6 +50,7 @@ export async function listRubrics(
   const seen = new Set<string>();
   let page = 0;
   let more = true;
+  let totalRecords = 0;
 
   while (more) {
     const response = await client.request<RubricsListResponse>({
@@ -78,9 +82,28 @@ export async function listRubrics(
       added++;
     }
 
-    const totalRecords = Number(response.total_records ?? 0);
+    totalRecords = Number(response.total_records ?? 0);
     more = all.length < totalRecords && added > 0;
     page += 1;
+  }
+
+  // A short list is never safe to treat as authoritative here: the pull apply
+  // path deletes a part's local rubrics when the remote list is empty, and
+  // replaces it wholesale otherwise. This pagination has never been exercised
+  // against the live API — the zero-based `page` param is an inference from
+  // listAssignments, not a verified fact — so a short read (an empty
+  // `status: 'success'` page against a nonzero total_records, a one-based
+  // endpoint returning nothing for page=0, or the seen-id guard tripping
+  // before total_records was reached) must throw rather than return fewer
+  // rows than the server reported. `totalRecords === 0` is the one case where
+  // a short (empty) list is the genuine, complete answer.
+  if (all.length < totalRecords) {
+    throw new APIError(
+      `Rubrics request for part ${partId} returned ${all.length} of ${totalRecords} ` +
+      'reported rows; refusing to treat a short read as the complete list',
+      undefined,
+      { partId, received: all.length, totalRecords }
+    );
   }
 
   return all.sort((a, b) => parseInt(a.seqnum, 10) - parseInt(b.seqnum, 10));

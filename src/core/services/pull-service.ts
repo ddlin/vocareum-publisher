@@ -1253,6 +1253,14 @@ export async function applyPull(
           for (const name of changes.removed) {
             events.emit({ level: 'plain', message: `    - ${name} (not on remote)` });
           }
+          // rubricsEqual compares positionally, so a hand-reordered local list
+          // with the same criteria differs by comparison but leaves every
+          // describeRubricChanges bucket empty — without this, the header
+          // above would be followed by no lines at all.
+          if (changes.added.length === 0 && changes.changed.length === 0 && changes.removed.length === 0) {
+            events.emit({ level: 'plain', message: '    (order differs)' });
+          }
+          events.emit({ level: 'plain', message: '    (rubrics are read-only: push will not send these to Vocareum)' });
         }
       }
 
@@ -1481,6 +1489,9 @@ export async function applyPull(
             nextPart = { ...nextPart, settings: mergedPartSettings };
           }
 
+          // An absent map entry means "no rubric drift for this part" (leave
+          // it untouched); a present-but-empty array means "remote has none",
+          // so the key is removed rather than replaced with [].
           const newRubrics = updates.partRubrics?.get(part.path);
           if (newRubrics) {
             if (newRubrics.length > 0) {
