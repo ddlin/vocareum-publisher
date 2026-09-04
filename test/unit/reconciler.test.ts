@@ -888,4 +888,46 @@ describe('reconcile — rubric drift', () => {
     expect(partAction.type).toBe('update');       // content change still drives it
     expect(partAction.rubricPlan).toBeUndefined(); // rubrics unknown, not assumed empty
   });
+
+  // The empty-array vs. absent-key distinction is the exact thing wantsRubrics exists to
+  // preserve: `rubrics: []` means "no local criteria, report every remote row as an
+  // orphan"; an absent `rubrics` key means "not managed here, skip without a fetch". A
+  // future length-check regression (`configPart.rubrics?.length`) would pass every other
+  // test in this file while collapsing this pair to the same outcome — these two tests
+  // must disagree for that regression to be caught.
+  it('fetches and reports orphans when rubrics is an empty array with remote rows present', async () => {
+    const plan = await reconcileWithRubrics({
+      localRubrics: [],
+      remoteRubrics: [{ id: 'r1', name: 'Orphaned', seqnum: '1', maxscore: '5', auto: false, exclude: false }],
+    });
+
+    expect(mockListRubrics).toHaveBeenCalled();
+    const partAction = plan.assignments[0].parts[0];
+    expect(partAction.type).toBe('update');
+    expect(partAction.rubricPlan?.creates).toEqual([]);
+    expect(partAction.rubricPlan?.updates).toEqual([]);
+    expect(partAction.rubricPlan?.orphans.map((o) => o.name)).toEqual(['Orphaned']);
+  });
+
+  it('does not fetch and stays skip when rubrics is absent, even with the same remote rows', async () => {
+    const plan = await reconcileWithRubrics({
+      localRubrics: undefined,
+      remoteRubrics: [{ id: 'r1', name: 'Orphaned', seqnum: '1', maxscore: '5', auto: false, exclude: false }],
+    });
+
+    expect(mockListRubrics).not.toHaveBeenCalled();
+    expect(plan.assignments[0].parts[0].type).toBe('skip');
+  });
+
+  it('names the orphan in the reason when creates and updates are both zero', async () => {
+    const plan = await reconcileWithRubrics({
+      localRubrics: [],
+      remoteRubrics: [{ id: 'r1', name: 'Orphaned', seqnum: '1', maxscore: '5', auto: false, exclude: false }],
+    });
+
+    const partAction = plan.assignments[0].parts[0];
+    expect(partAction.reason).toContain('orphan');
+    expect(partAction.reason).not.toMatch(/0 to create/);
+    expect(partAction.reason).not.toMatch(/0 to update/);
+  });
 });

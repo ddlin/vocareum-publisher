@@ -306,9 +306,21 @@ export async function reconcile(
               reasons.push('Settings changed');
             }
             if (rubricPlan) {
-              const c = rubricPlan.creates.length;
-              const u = rubricPlan.updates.length;
-              reasons.push(`Rubrics: ${c} to create, ${u} to update`);
+              // Compose from whatever actually drove the promotion. Creates/updates are
+              // the common case; duplicateNames is mutually exclusive with the other three
+              // (planRubricSync short-circuits to it), so it gets its own message rather
+              // than reading as "0 to create, 0 to update" when it's the sole reason.
+              if (rubricPlan.duplicateNames.length > 0) {
+                reasons.push(`Rubrics: duplicate criterion names (${rubricPlan.duplicateNames.join(', ')})`);
+              } else {
+                const segments: string[] = [];
+                if (rubricPlan.creates.length > 0) { segments.push(`${rubricPlan.creates.length} to create`); }
+                if (rubricPlan.updates.length > 0) { segments.push(`${rubricPlan.updates.length} to update`); }
+                if (rubricPlan.orphans.length > 0) {
+                  segments.push(`${rubricPlan.orphans.length} orphan${rubricPlan.orphans.length === 1 ? '' : 's'}`);
+                }
+                reasons.push(`Rubrics: ${segments.join(', ')}`);
+              }
             }
             partActions.push({
               type: 'update',
