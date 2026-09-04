@@ -139,9 +139,14 @@ export interface VocareumRubricResponse {
 /**
  * Rubrics list API response. Part-scoped: the assignment-level and
  * collection-level variants of this endpoint return `Invalid Request`.
+ *
+ * NOTE: Vocareum may encode failures in the response body with a 200 status line
+ * (see src/api/content.ts:257 for the same pattern). The `status` field is widened
+ * to `string` to allow runtime guards to reject non-success responses before treating
+ * them as empty results.
  */
 export interface RubricsListResponse {
-  status: 'success';
+  status: string;
   parent?: { courseid: string; assignmentid: string; partid: string };
   rubrics?: VocareumRubricResponse[];
   total_records?: number | string;

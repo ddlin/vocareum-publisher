@@ -15,4 +15,4 @@ export * as courses from './courses';
 export * as assignments from './assignments';
 export * as parts from './parts';
 export * as content from './content';
-export * from './rubrics';
+export * as rubrics from './rubrics';
