@@ -24,7 +24,7 @@ import {
   DEFAULT_PART_DIRECTORIES,
   ELITE_DIRECTORIES,
   CONTAINER_DIRECTORIES,
-  detectArchitecture
+  resolveArchitecture,
 } from '../../types/config';
 import type { Assignment, Part, DirectoryType, AssignmentSettings, PartSettings, SubmissionFilters } from '../../types/config';
 import type { OrphanedEntity, StaleAssignment } from '../../types/state';
@@ -77,11 +77,7 @@ export function getDownloadPlan(
   labtype: string | null | undefined,
   configuredDirectories?: DirectoryType[]
 ): { directories: DirectoryType[]; architecture?: 'elite' | 'container' } {
-  const resolvedArchitecture = architecture ?? (
-    labtype !== undefined && labtype !== null && labtype !== ''
-      ? detectArchitecture(labtype)
-      : undefined
-  );
+  const resolvedArchitecture = resolveArchitecture(architecture, labtype);
 
   if (configuredDirectories !== undefined) {
     return { directories: configuredDirectories, architecture: resolvedArchitecture };

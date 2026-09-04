@@ -12,7 +12,9 @@
 import * as path from 'path';
 import { createHash } from 'node:crypto';
 import type { Config, PublishHistory, PartSettings, DirectoryType } from '../../types/config';
-import { normalizeSubmissionFilters, nullToUndefined } from '../../types/config';
+import { normalizeSubmissionFilters, nullToUndefined,
+  resolveArchitecture,
+} from '../../types/config';
 import type {
   AssignmentSettingsPayload,
   PartSettingsPayload,
@@ -356,7 +358,13 @@ export async function planPush(
                   action.assignment.assignment_id,
                   partAction.part.part_id,
                   dir,
-                  workingConfig.vocareum.architecture,
+                  // Fall back to the part's labtype: no real config sets
+                  // vocareum.architecture, and without this an Elite part is
+                  // listed at /voc paths that cannot exist there.
+                  resolveArchitecture(
+                    workingConfig.vocareum.architecture,
+                    partAction.part.settings?.labtype,
+                  ),
                 ),
                 readLocalDirectory(localDirPath, effectiveExcludePatterns),
               ]);
@@ -971,7 +979,10 @@ export async function executePush(
                 syncDeletes,
                 ...(plannedDeletePaths !== undefined ? { plannedDeletePaths } : {}),
                 excludePatterns: effectiveExcludePatterns,
-                architecture: ctx.persistedConfig.vocareum.architecture,
+                architecture: resolveArchitecture(
+                  ctx.persistedConfig.vocareum.architecture,
+                  partAction.part.settings?.labtype,
+                ),
                 workspaceRoot,
               },
               events,

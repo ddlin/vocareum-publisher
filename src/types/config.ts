@@ -80,6 +80,26 @@ export function detectArchitecture(labtype: string | null | undefined): 'elite' 
 }
 
 /**
+ * Resolve a part's workspace architecture from config, falling back to labtype.
+ *
+ * An explicit `vocareum.architecture` wins — an operator who set it meant it.
+ * Otherwise derive it from the labtype, which is what the part actually runs on.
+ *
+ * Both the pull and push paths must use this. getDownloadPlan had the fallback
+ * inline while push read the config field directly, so on any config without an
+ * explicit architecture (which is all of them in practice) push treated Elite
+ * courses as Container and asked for /voc paths that cannot exist there.
+ */
+export function resolveArchitecture(
+  configArchitecture: 'elite' | 'container' | undefined,
+  labtype: string | null | undefined,
+): 'elite' | 'container' | undefined {
+  if (configArchitecture !== undefined) { return configArchitecture; }
+  if (labtype === undefined || labtype === null || labtype === '') { return undefined; }
+  return detectArchitecture(labtype);
+}
+
+/**
  * Get the correct directory set for a given labtype.
  * Use this instead of hardcoded directory lists.
  */
