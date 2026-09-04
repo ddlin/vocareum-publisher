@@ -26,7 +26,7 @@ import {
   CONTAINER_DIRECTORIES,
   resolveArchitecture,
 } from '../../types/config';
-import type { Assignment, Part, DirectoryType, AssignmentSettings, PartSettings, SubmissionFilters } from '../../types/config';
+import type { Assignment, Part, DirectoryType, AssignmentSettings, PartSettings, SubmissionFilters, Rubric } from '../../types/config';
 import type { OrphanedEntity, StaleAssignment } from '../../types/state';
 import type { FileMap } from '../../types/api';
 import type { EventSink } from './event-sink';
@@ -42,6 +42,8 @@ import {
   shouldSyncAssignmentSettings,
   shouldSyncPartSettings,
 } from '../../utils/settings-sync';
+import { rubricsEqual, describeRubricChanges, type RubricChangeSummary } from '../../utils/rubrics';
+import { createRubricFetcher, type RubricFetcher } from './rubric-fetcher';
 
 // ── Re-exported helpers (used by pull.ts resolver) ──────────────────────────
 
@@ -222,6 +224,14 @@ interface SettingDiff {
   remoteValue: unknown;
 }
 
+/** Rubric differences for a part. Read-only: remote always wins on pull. */
+export interface RubricsDrift {
+  local: Rubric[];
+  remote: Rubric[];
+  /** Name-keyed breakdown, for display only — nothing acts on it. */
+  changes: RubricChangeSummary;
+}
+
 /** Represents settings drift for a part */
 export interface PartSettingsDrift {
   partId: string;
@@ -231,6 +241,8 @@ export interface PartSettingsDrift {
   remoteSettings: NonNullable<PartSettings>;
   unknownsChanged: boolean;
   observedChanged: boolean;
+  /** Present only when the part's rubrics differ from config. */
+  rubricsDrift?: RubricsDrift;
 }
 
 /** Represents settings drift for an assignment */
@@ -680,7 +692,8 @@ async function detectSettingsDrift(
   client: VocareumClient,
   skipAssignmentIds: Set<string>,
   warnFn: (msg: string) => void,
-  reporter?: UnknownFieldReporter
+  reporter?: UnknownFieldReporter,
+  rubricFetcher?: RubricFetcher
 ): Promise<AssignmentSettingsDrift[]> {
   const driftList: AssignmentSettingsDrift[] = [];
   const excludedIds = new Set(config.vocareum.excluded_assignments ?? []);
@@ -738,6 +751,23 @@ async function detectSettingsDrift(
           const fullRemotePart = await getPart(client, config.vocareum.course_id, assignment.assignment_id, configPart.part_id);
           const remotePartSettings = mapPartSettings(fullRemotePart, reporter, fullRemotePart.id);
 
+          // Rubrics live behind their own endpoint and their own optional token
+          // scope. The fetcher returns undefined rather than throwing — a throw
+          // here would be swallowed by this function's per-assignment catch and
+          // would silently discard the assignment's settings drift too.
+          let rubricsDrift: RubricsDrift | undefined;
+          const remoteRubrics = await rubricFetcher?.fetch(assignment.assignment_id, configPart.part_id);
+          if (remoteRubrics !== undefined) {
+            const localRubrics = configPart.rubrics ?? [];
+            if (!rubricsEqual(localRubrics, remoteRubrics)) {
+              rubricsDrift = {
+                local: localRubrics,
+                remote: remoteRubrics,
+                changes: describeRubricChanges(localRubrics, remoteRubrics),
+              };
+            }
+          }
+
           const partDiffs = comparePartSettings(configPart.settings, remotePartSettings);
 
           const localPartUnknowns = configPart.settings?._unknown_settings ?? {};
@@ -757,7 +787,8 @@ async function detectSettingsDrift(
             OBSERVED_PART_SETTING_KEYS
           );
 
-          if (partDiffs.length > 0 || partUnknownsChanged || partObservedChanged || partHasLegacyObservedTopLevel) {
+          if (partDiffs.length > 0 || partUnknownsChanged || partObservedChanged ||
+              partHasLegacyObservedTopLevel || rubricsDrift !== undefined) {
             partsDrift.push({
               partId: configPart.part_id,
               partName: configPart.name ?? remotePart.name,
@@ -766,6 +797,7 @@ async function detectSettingsDrift(
               remoteSettings: remotePartSettings,
               unknownsChanged: partUnknownsChanged,
               observedChanged: partObservedChanged,
+              rubricsDrift,
             });
           }
         }
@@ -986,7 +1018,13 @@ export async function inspectPull(
   const plan = await reconcile(config, client, undefined, { workspaceRoot, events });
 
   const staleAssignmentIds = new Set(plan.staleInConfig.map(s => s.assignment_id));
-  const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds, warnFn, reporter);
+  const rubricFetcher = createRubricFetcher(
+    client,
+    config.vocareum.course_id,
+    config.publish_options?.sync_rubrics ?? true,
+    warnFn
+  );
+  const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds, warnFn, reporter, rubricFetcher);
 
   let contentDrift: AssignmentContentDrift[] = [];
   if (req.content) {
@@ -1176,6 +1214,22 @@ export async function applyPull(
         }
         if (partDrift.observedChanged) {
           events.emit({ level: 'plain', message: `  Part "${partDrift.partName}" observed read-only settings changed` });
+        }
+        if (partDrift.rubricsDrift) {
+          const { changes, local, remote } = partDrift.rubricsDrift;
+          events.emit({
+            level: 'plain',
+            message: `  Part "${partDrift.partName}" rubrics changed (${local.length} local → ${remote.length} remote):`,
+          });
+          for (const name of changes.added) {
+            events.emit({ level: 'plain', message: `    + ${name} (new on remote)` });
+          }
+          for (const name of changes.changed) {
+            events.emit({ level: 'plain', message: `    ~ ${name} (changed)` });
+          }
+          for (const name of changes.removed) {
+            events.emit({ level: 'plain', message: `    - ${name} (not on remote)` });
+          }
         }
       }
 

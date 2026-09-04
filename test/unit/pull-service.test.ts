@@ -29,12 +29,14 @@ const {
   mockListParts,
   mockGetPart,
   mockDownloadContent,
+  mockListRubrics,
 } = vi.hoisted(() => ({
   mockReconcile: vi.fn(),
   mockGetAssignment: vi.fn(),
   mockListParts: vi.fn(),
   mockGetPart: vi.fn(),
   mockDownloadContent: vi.fn(),
+  mockListRubrics: vi.fn(),
 }));
 
 // ── mock local-scan (assertConfinedToWorkspace) ────────────────────────────────
@@ -61,6 +63,11 @@ vi.mock('../../src/api/parts', () => ({
 // ── mock content API ───────────────────────────────────────────────────────────
 vi.mock('../../src/api/content', () => ({
   downloadContent: mockDownloadContent,
+}));
+
+// ── mock rubrics API ───────────────────────────────────────────────────────────
+vi.mock('../../src/api/rubrics', () => ({
+  listRubrics: mockListRubrics,
 }));
 
 // ── mock files utilities ───────────────────────────────────────────────────────
@@ -111,7 +118,10 @@ import type { PullContext } from '../../src/core/services/context';
 import type { PullRequest } from '../../src/core/services/types';
 import type { LockedSession } from '../../src/core/session';
 import type { OrphanedEntity } from '../../src/types/state';
-import type { Config } from '../../src/types/config';
+import type { Config, Rubric } from '../../src/types/config';
+import type { VocareumRubricResponse } from '../../src/types/api';
+import { mapPartSettings } from '../../src/utils/settings';
+import { ForbiddenError } from '../../src/api/client';
 
 // ── Shared fixtures ────────────────────────────────────────────────────────────
 
@@ -544,5 +554,169 @@ describe('inspectPull is read-only (no writes, no prompts)', () => {
     expect(inspection.stale).toHaveLength(0);
     expect(inspection.settingsDrift).toHaveLength(0);
     expect(inspection.contentDrift).toHaveLength(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ── detectSettingsDrift — rubrics ──────────────────────────────────────────────
+
+const RUBRIC_ASSIGNMENT_ID = 'asn-rubric-1';
+const RUBRIC_PART_ID = 'part-rubric-1';
+
+/** Default reconcile result: no orphans, no stale assignments. */
+function emptyReconcileResult(config: Config): {
+  config: Config;
+  course: { type: 'skip' };
+  assignments: [];
+  summary: {
+    coursesToUpdate: number;
+    assignmentsToCreate: number;
+    assignmentsToUpdate: number;
+    assignmentsWithDiscoveredIds: number;
+    assignmentsToSkip: number;
+    partsToCreate: number;
+    partsToUpdate: number;
+    estimatedApiCalls: number;
+  };
+  orphanedInVocareum: [];
+  staleInConfig: [];
+} {
+  return {
+    config,
+    course: { type: 'skip' },
+    assignments: [],
+    summary: {
+      coursesToUpdate: 0,
+      assignmentsToCreate: 0,
+      assignmentsToUpdate: 0,
+      assignmentsWithDiscoveredIds: 0,
+      assignmentsToSkip: 0,
+      partsToCreate: 0,
+      partsToUpdate: 0,
+      estimatedApiCalls: 0,
+    },
+    orphanedInVocareum: [],
+    staleInConfig: [],
+  };
+}
+
+interface RubricCtxOptions {
+  /** Rubrics already in the config part. Default: none. */
+  localRubrics?: Rubric[];
+  /** Extra remote part settings, to test settings + rubric drift together. */
+  remoteSessionLength?: string;
+  /** Overrides merged into config.publish_options. Default: {}. */
+  publishOptions?: { sync_settings?: boolean; sync_rubrics?: boolean };
+}
+
+/**
+ * Local rubric baked into the config part when a test omits `opts` entirely
+ * (as opposed to passing `{ localRubrics: undefined }`, which explicitly means
+ * "no rubrics in config" — the `in` check below distinguishes the two).
+ */
+const DEFAULT_LOCAL_RUBRICS: Rubric[] = [
+  { name: 'A', seqnum: '1', maxscore: '10', auto: true, exclude: false },
+];
+
+/** Build a one-assignment, one-part config wired up for rubric-drift tests. */
+function buildRubricConfig(opts: RubricCtxOptions): Config {
+  const localRubrics = 'localRubrics' in opts ? opts.localRubrics : DEFAULT_LOCAL_RUBRICS;
+  return {
+    ...BASE_CONFIG,
+    publish_options: opts.publishOptions,
+    assignments: [
+      {
+        assignment_id: RUBRIC_ASSIGNMENT_ID,
+        name: 'Rubric Assignment',
+        path: 'rubric-assignment',
+        create_from_template: false,
+        settings: {},
+        parts: [
+          {
+            part_id: RUBRIC_PART_ID,
+            path: '.',
+            name: 'A',
+            settings: {},
+            rubrics: localRubrics,
+          },
+        ],
+      },
+    ],
+  } as Config;
+}
+
+/** Wire up mocks so the single assignment/part above is visited by detectSettingsDrift. */
+function primeAssignmentAndPartMocks(config: Config, opts: RubricCtxOptions): void {
+  mockReconcile.mockResolvedValue(emptyReconcileResult(config));
+  mockGetAssignment.mockResolvedValueOnce({ id: RUBRIC_ASSIGNMENT_ID });
+  mockListParts.mockResolvedValueOnce([{ id: RUBRIC_PART_ID, name: 'A', seqnum: '1', deleted: '0' }]);
+  mockGetPart.mockResolvedValueOnce({ id: RUBRIC_PART_ID, name: 'A' });
+
+  if (opts.remoteSessionLength !== undefined) {
+    vi.mocked(mapPartSettings).mockReturnValueOnce({ session_length: opts.remoteSessionLength });
+  }
+}
+
+/**
+ * Build a PullContext with one assignment/part whose rubric fetch resolves to
+ * `remoteRubrics` (raw API rows, as `listRubrics` would return them).
+ */
+function ctxWithRubrics(
+  remoteRubrics: VocareumRubricResponse[],
+  opts: RubricCtxOptions = {}
+): PullContext {
+  const config = buildRubricConfig(opts);
+  primeAssignmentAndPartMocks(config, opts);
+  mockListRubrics.mockResolvedValueOnce(remoteRubrics);
+  return makeCtx(config).ctx;
+}
+
+/** Build a PullContext whose rubric fetch is rejected with a ForbiddenError. */
+function ctxWithForbiddenRubrics(opts: RubricCtxOptions = {}): PullContext {
+  const config = buildRubricConfig(opts);
+  primeAssignmentAndPartMocks(config, opts);
+  mockListRubrics.mockRejectedValueOnce(new ForbiddenError('Access Forbidden', 'part'));
+  return makeCtx(config).ctx;
+}
+
+describe('detectSettingsDrift — rubrics', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('reports drift when a remote rubric maxscore differs from config', async () => {
+    // config part has maxscore '10'; remote returns '12'
+    const inspection = await inspectPull(ctxWithRubrics([
+      { id: '1', name: 'A', seqnum: '1', maxscore: '12', auto: true, exclude: false },
+    ]), { });
+
+    const partDrift = inspection.settingsDrift[0].partsDrift[0];
+    expect(partDrift.rubricsDrift?.changes.changed).toEqual(['A']);
+    expect(partDrift.rubricsDrift?.remote[0].maxscore).toBe('12');
+  });
+
+  it('reports drift when the part has rubrics remotely and none in config', async () => {
+    const inspection = await inspectPull(ctxWithRubrics([
+      { id: '1', name: 'A', seqnum: '1', maxscore: '10' },
+    ], { localRubrics: undefined }), { });
+
+    const partDrift = inspection.settingsDrift[0].partsDrift[0];
+    expect(partDrift.rubricsDrift?.changes.added).toEqual(['A']);
+  });
+
+  it('reports no drift when config and remote rubrics match', async () => {
+    const inspection = await inspectPull(ctxWithRubrics([
+      { id: '1', name: 'A', seqnum: '1', maxscore: '10', auto: true, exclude: false },
+    ], { localRubrics: [{ name: 'A', seqnum: '1', maxscore: '10', auto: true, exclude: false }] }), { });
+
+    expect(inspection.settingsDrift).toEqual([]);
+  });
+
+  it('still reports settings drift when the rubric fetch is forbidden', async () => {
+    // token lacks the rubrics scope: settings drift must survive intact
+    const inspection = await inspectPull(ctxWithForbiddenRubrics({ remoteSessionLength: '120' }), { });
+
+    expect(inspection.settingsDrift[0].partsDrift[0].diffs.map(d => d.key)).toContain('session_length');
+    expect(inspection.settingsDrift[0].partsDrift[0].rubricsDrift).toBeUndefined();
   });
 });

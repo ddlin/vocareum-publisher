@@ -593,6 +593,10 @@ export const PublishOptionsSchema = z
     auto_commit: z.boolean().optional().default(false),
     abort_on_error: z.boolean().optional().default(false),
     sync_settings: z.boolean().optional().default(true),
+    /** Fetch each part's rubrics during pull. Adds one API call per visited
+     *  part; set false on very large courses or tokens without the optional
+     *  rubrics scope. */
+    sync_rubrics: z.boolean().optional().default(true),
     sync_deletes: z.boolean().optional().default(false),
     exclude_patterns: z.array(z.string()).optional().default([]),
   })
