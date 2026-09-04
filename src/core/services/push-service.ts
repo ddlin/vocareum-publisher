@@ -394,6 +394,7 @@ export async function planPush(
         ...(partSettingsPayload !== undefined ? { settingsPayload: partSettingsPayload } : {}),
         ...(deletePaths !== undefined ? { deletePaths } : {}),
         ...(reconcileDeleteDirectories !== undefined ? { reconcileDeleteDirectories } : {}),
+        rubricPlan: partAction.rubricPlan,
       });
     }
 
