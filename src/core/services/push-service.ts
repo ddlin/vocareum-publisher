@@ -28,6 +28,8 @@ import { calculateDirectoryHash, readFile as readTextFile } from '../../utils/fi
 import { copyAssignment, getAssignment, updateAssignment } from '../../api/assignments';
 import { updateCourse } from '../../api/courses';
 import { getPart, updatePart } from '../../api/parts';
+import { createRubrics, updateRubrics } from '../../api/rubrics';
+import { ForbiddenError } from '../../api/client';
 import { mapParts } from '../mapper';
 import { readDirectory as readLocalDirectory, syncDirectory } from '../uploader';
 import { listFiles } from '../../api/content';
@@ -561,6 +563,10 @@ export async function executePush(
   const configUpdates: Config['assignments'] = [];
   let configChanged = false;
   let shouldAbort = false;
+  // Once a 403 is hit, the token lacks the rubrics scope for the rest of this
+  // run — every subsequently planned rubric write must be recorded as failed,
+  // never silently skipped (rule: a 403 fails the run, it does not degrade).
+  let rubricsAvailable = true;
   const settingChanges: HistorySettingChange[] = [];
   const fileChanges: HistoryFileChange[] = [];
   const fileSizeState: Record<string, number> = { ...(lastHistory?.file_size_state ?? {}) };
@@ -651,6 +657,16 @@ export async function executePush(
           assignmentIntent.templateCourseId,
         );
         events.emit({ level: 'success', message: `Created assignment ${action.assignment.name} (${copyResult.assignment_id})` });
+
+        if ((action.assignment.parts ?? []).some((part) => part.rubrics !== undefined)) {
+          events.emit({
+            level: 'warn',
+            message:
+              `Rubrics for "${action.assignment.name}" were not reconciled: it was created ` +
+              `in this run and carries its template's criteria. Run push again to reconcile ` +
+              `them against vocareum.yaml.`,
+          });
+        }
 
         action.assignment.assignment_id = copyResult.assignment_id;
         const mapped = mapParts(
@@ -942,6 +958,84 @@ export async function executePush(
           result.failed.push({ type: 'part', id: partId, error });
           result.success = false;
           if (abortOnError) { shouldAbort = true; break assignmentLoop; }
+        }
+      }
+
+      const rubricPlan = partIntent.rubricPlan;
+      if (rubricPlan !== undefined && assignmentIntent.action !== 'create' && !rubricsAvailable) {
+        // The scope was lost earlier in this run. Record every subsequently skipped part —
+        // the spec requires skipped writes to be recorded, and a silent skip would hide how
+        // much of the migration did not happen.
+        const message = `Rubrics not pushed for "${partAction.part.name ?? partAction.part.path}": token lacks rubric write permission.`;
+        events.emit({ level: 'warn', message });
+        result.failed.push({ type: 'part', id: partId, error: message });
+        result.success = false;
+      } else if (rubricPlan !== undefined && assignmentIntent.action !== 'create' && rubricsAvailable) {
+        const partLabel = partAction.part.name ?? partAction.part.path;
+        // `courseId` does not exist in executePush — the surrounding code reads
+        // workingConfig.vocareum.course_id directly. And assignment_id is `string | null`
+        // (config.ts), so it must be narrowed before the string-typed API calls.
+        const courseId = workingConfig.vocareum.course_id;
+        const assignmentId = action.assignment.assignment_id;
+        if (assignmentId === null || assignmentId === '') {
+          events.emit({ level: 'warn', message: `Skipping rubrics for "${partLabel}": assignment has no id yet.` });
+        } else {
+
+        if (rubricPlan.duplicateNames.length > 0) {
+          // Name matching is undefined against duplicates; guessing risks updating the
+          // wrong row's points.
+          const message =
+            `Part "${partLabel}" has duplicate rubric criterion names ` +
+            `(${rubricPlan.duplicateNames.join(', ')}); rubrics not pushed for this part.`;
+          events.emit({ level: 'error', message });
+          result.failed.push({ type: 'part', id: partId, error: message });
+          result.success = false;
+        } else {
+          const holdCreates = req.nonInteractive === true && rubricPlan.orphans.length > 0;
+          if (holdCreates) {
+            const message =
+              `Part "${partLabel}" has ${rubricPlan.orphans.length} remote rubric ` +
+              `criterion(s) with no local counterpart; creating in non-interactive mode ` +
+              `could duplicate a renamed criterion and inflate the part's points. ` +
+              `Creates held — re-run interactively to confirm.`;
+            events.emit({ level: 'error', message });
+            result.failed.push({ type: 'part', id: partId, error: message });
+            result.success = false;
+          }
+
+          let wroteAnything = false;
+          try {
+            if (!holdCreates && rubricPlan.creates.length > 0) {
+              await createRubrics(ctx.client, courseId, assignmentId, partId, rubricPlan.creates);
+              events.emit({ level: 'success', message: `Created ${rubricPlan.creates.length} rubric criteria on "${partLabel}"` });
+              wroteAnything = true;
+            }
+            if (rubricPlan.updates.length > 0) {
+              await updateRubrics(ctx.client, courseId, assignmentId, partId, rubricPlan.updates);
+              events.emit({ level: 'success', message: `Updated ${rubricPlan.updates.length} rubric criteria on "${partLabel}"` });
+              wroteAnything = true;
+            }
+            if (wroteAnything) { partWasUpdated = true; }
+          } catch (error) {
+            if (error instanceof ForbiddenError) {
+              // Unlike the read side, this does NOT degrade to a warning: the write was the
+              // point. A green push that silently left grading points unmigrated is the
+              // failure this feature exists to prevent.
+              rubricsAvailable = false;
+              events.emit({
+                level: 'error',
+                message:
+                  'Rubric writes are not permitted with this API token; rubric sync is ' +
+                  'disabled for the rest of this run. Regenerate the token with the rubrics ' +
+                  'POST and PUT permissions enabled.',
+              });
+            } else {
+              events.emit({ level: 'error', message: `Rubric write failed for "${partLabel}": ${describeApiError(error)}` });
+            }
+            result.failed.push({ type: 'part', id: partId, error: describeApiError(error) });
+            result.success = false;
+          }
+          }
         }
       }
 
