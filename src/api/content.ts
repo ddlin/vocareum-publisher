@@ -545,7 +545,11 @@ async function downloadDirectoryTree(
   budget: DownloadBudget
 ): Promise<void> {
   const apiDirPath = relativePath ? `${baseApiPath}/${relativePath}` : baseApiPath;
-  const entries = await listFilesByApiPath(client, courseId, assignmentId, partId, apiDirPath);
+  // Only the part's own declared directory is worth warning about; deeper
+  // levels are paths we discovered, so their absence is not a config problem.
+  const entries = await listFilesByApiPath(
+    client, courseId, assignmentId, partId, apiDirPath, relativePath === ''
+  );
 
   for (const entry of entries) {
     const entryRelPath = relativePath ? `${relativePath}/${entry.path}` : entry.path;
@@ -723,7 +727,7 @@ export async function listFiles(
   architecture?: 'elite' | 'container'
 ): Promise<FileInfo[]> {
   return listFilesByApiPath(
-    client, courseId, assignmentId, partId, toApiDirPath(directory, architecture)
+    client, courseId, assignmentId, partId, toApiDirPath(directory, architecture), true
   );
 }
 
@@ -732,7 +736,14 @@ async function listFilesByApiPath(
   courseId: string,
   assignmentId: string,
   partId: string,
-  apiDirPath: string
+  apiDirPath: string,
+  /**
+   * Warn when the API reports this path absent. Only true for a directory the
+   * part actually DECLARES. The walk also calls this speculatively — to decide
+   * whether a zero-byte entry is really a directory — and those probes are
+   * expected to miss constantly. Warning on them would bury the real signal.
+   */
+  warnIfAbsent = false,
 ): Promise<FileInfo[]> {
   const url = `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
 
@@ -754,18 +765,21 @@ async function listFilesByApiPath(
       const msg = error instanceof Error ? error.message : String(error);
       if (missingDirectoryMessageMatches(msg, apiDirPath)) {
         // An absent directory is not an error — returning [] is correct, and
-        // throwing would make pull read it as remote deletions. But it must not
-        // be SILENT: this swallow is why a whole architecture's worth of
-        // scripts/ went missing with exit code 0. Name the path we asked for,
-        // so a wrong prefix is visible as a wrong prefix.
-        client.events.emit({
+        // throwing would make pull read it as remote deletions. But a DECLARED
+        // directory coming back absent must not be SILENT: this swallow is why
+        // a whole architecture's worth of scripts/ went missing with exit
+        // code 0. Name the path we asked for, so a wrong prefix is visible as
+        // a wrong prefix.
+        if (warnIfAbsent) {
+          client.events.emit({
           level: 'warn',
           message:
             `Directory "${apiDirPath}" does not exist on part ${partId} — treated as empty. ` +
             `If you expected content here, the directory may live at a different path for ` +
             `this lab type (Elite workspaces keep everything under /resource; Container ` +
             `workspaces keep scripts, startercode, docs, data and private under /voc).`,
-        });
+          });
+        }
         return [];
       }
     }
