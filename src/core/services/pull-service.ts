@@ -41,6 +41,7 @@ import {
 import {
   shouldSyncAssignmentSettings,
   shouldSyncPartSettings,
+  shouldSyncRubrics,
 } from '../../utils/settings-sync';
 import { rubricsEqual, describeRubricChanges, type RubricChangeSummary } from '../../utils/rubrics';
 import { createRubricFetcher, type RubricFetcher } from './rubric-fetcher';
@@ -1032,7 +1033,7 @@ export async function inspectPull(
   const rubricFetcher = createRubricFetcher(
     client,
     config.vocareum.course_id,
-    config.publish_options?.sync_rubrics ?? true,
+    shouldSyncRubrics(config),
     warnFn
   );
   const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds, warnFn, reporter, rubricFetcher);
@@ -1080,7 +1081,7 @@ export async function applyPull(
   const rubricFetcher = createRubricFetcher(
     client,
     config.vocareum.course_id,
-    config.publish_options?.sync_rubrics ?? true,
+    shouldSyncRubrics(config),
     (msg: string) => events.emit({ level: 'warn', message: msg })
   );
 

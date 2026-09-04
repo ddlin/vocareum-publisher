@@ -20,7 +20,7 @@
  *      never invoked (no prompts).
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ── hoisted mock functions (must be declared before vi.mock factories) ────────
 const {
@@ -718,6 +718,46 @@ describe('detectSettingsDrift — rubrics', () => {
 
     expect(inspection.settingsDrift[0].partsDrift[0].diffs.map(d => d.key)).toContain('session_length');
     expect(inspection.settingsDrift[0].partsDrift[0].rubricsDrift).toBeUndefined();
+  });
+});
+
+describe('rubric fetching is gated by sync_settings as well', () => {
+  beforeEach(() => {
+    // Clear call history left by the previous describe block's tests so this
+    // block's `not.toHaveBeenCalled()` assertion isn't tripped by a call
+    // recorded before this test ever ran.
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    // ctxWithRubrics queues mockReconcile/mockGetAssignment/mockListParts/
+    // mockGetPart/mockListRubrics via primeAssignmentAndPartMocks. Because
+    // sync_settings: false makes detectSettingsDrift bail out before the
+    // assignment/part loop, those queued values are never consumed here — a
+    // plain vi.clearAllMocks() (as used by sibling describes) clears call
+    // history but leaves queued `...Once` implementations queued, which would
+    // otherwise leak into the next describe block's mocks. Reset just these
+    // (not vi.resetAllMocks(), which would also wipe unrelated module-level
+    // mock defaults set up elsewhere in this file).
+    mockReconcile.mockReset();
+    mockGetAssignment.mockReset();
+    mockListParts.mockReset();
+    mockGetPart.mockReset();
+    mockListRubrics.mockReset();
+  });
+
+  it('fetches no rubrics when sync_settings is false, even with sync_rubrics true', async () => {
+    // detectSettingsDrift continues past the assignment before reaching the part
+    // loop (src/core/services/pull-service.ts:696), so the fetcher is never called.
+    const inspection = await inspectPull(
+      ctxWithRubrics([{ id: '1', name: 'A', seqnum: '1', maxscore: '10' }], {
+        publishOptions: { sync_settings: false, sync_rubrics: true },
+      }),
+      {}
+    );
+
+    expect(inspection.settingsDrift).toEqual([]);
+    expect(mockListRubrics).not.toHaveBeenCalled();
   });
 });
 

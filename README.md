@@ -137,6 +137,12 @@ assignments:
           lab_interface:
             panels: ["Console"]
             controls: ["Reset"]
+        rubrics:                       # Recorded by `pull`; not yet pushed (read-only)
+          - name: "[Tasks 2-5] Prompts were run in the playground"
+            seqnum: "1"
+            maxscore: "10"
+            auto: true
+            exclude: false
   - assignment_id: null
     name: "Lab 2: Classification"
     assignment_name_for_lookup: "Lab 2: Classification"  # Optional name-based ID discovery
@@ -155,6 +161,7 @@ publish_options:
   on_missing_id: "skip"
   auto_commit: false
   sync_settings: true                # Set false to sync files only, not settings
+  sync_rubrics: true                 # Set false to skip fetching rubrics on pull (one extra API call per part)
   sync_deletes: false
 
 publish_history:
@@ -200,6 +207,21 @@ assignments:
 ```
 
 When settings sync is disabled for an assignment or part, vocgit skips both pushing its settings and reporting settings drift for it on pull. The settings stay in `vocareum.yaml` — they're just ignored until you re-enable sync.
+
+### Rubrics (read-only)
+
+`vocgit pull` also fetches each part's grading rubric and records it under `parts[].rubrics` in `vocareum.yaml`, reporting drift the same way it does for settings. **Rubrics are read-only in this release**: `push` never creates, updates, or deletes rubric rows on Vocareum, so a course migrated with vocgit still needs its rubrics entered by hand. The server-assigned rubric ID is deliberately not stored — it's course-scoped and must not be reused if the rubric is later recreated in a different course.
+
+Fetching rubrics costs one extra API call per part visited. Set `publish_options.sync_rubrics: false` to skip it on courses where that matters:
+
+```yaml
+publish_options:
+  sync_rubrics: false          # Skip fetching rubrics during pull
+```
+
+`sync_rubrics` is nested inside the settings-sync pass, not a separate one — `sync_settings: false` skips rubrics too, regardless of `sync_rubrics`. There's no independent rubric-only traversal, so if you manage settings by hand in the Vocareum UI but still want rubrics pulled into Git, that combination isn't supported yet.
+
+The rubrics token permission (see [Generating a Token](#generating-a-token)) is optional: a token without it logs one warning per run and pull continues normally, with settings and content drift unaffected.
 
 ## CLI Commands
 
@@ -584,7 +606,8 @@ Select the following permissions when creating your token:
 | **parts** | GET: List parts for an assignment | |
 | | PUT: Update a part's data content | |
 | **files** | GET: Get the URL of a content file | |
-| **rubrics** | GET, POST, PUT, DELETE | Optional (future feature) |
+| **rubrics** | GET: List rubrics for a part | Recommended — `pull` records grading rubrics when present |
+| | POST, PUT, DELETE | Optional (push-side rubric support not yet implemented) |
 
 All other permissions are optional.
 
