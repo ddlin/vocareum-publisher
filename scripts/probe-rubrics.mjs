@@ -124,15 +124,16 @@ async function probeWrite(http, c, a, p) {
   console.log(JSON.stringify({ probe: 'PUT-seqnum-full-array', sentOrder: rows, status: all.status, data: all.data }, null, 2));
   console.log(JSON.stringify({ probe: 'PUT-seqnum-full-array-readback', rubrics: (await http.get(rubricsUrl(c, a, p))).data?.rubrics }, null, 2));
 
-  // DELETE was 403 on 2026-09-04 with a GET/POST/PUT-only token — shape still unverified.
-  for (const [label, req] of [
-    ['DELETE-by-id', () => http.delete(`${rubricsUrl(c, a, p)}/${created[0]}`)],
-    ['DELETE-collection', () => http.delete(rubricsUrl(c, a, p), { data: { rubrics: [{ id: created[0] }] } })],
-  ]) {
-    const del = await req();
-    console.log(JSON.stringify({ probe: label, status: del.status, data: del.data }, null, 2));
-    if (del.status === 403) { console.log('   (403 = token lacks the rubrics DELETE scope, not a wrong shape)'); }
+  // DELETE is COLLECTION-scoped like POST and PUT; /rubrics/{id} returns the same
+  // 400 "missing rubrics array". Batch delete works — several ids in one call.
+  const delById = await http.delete(`${rubricsUrl(c, a, p)}/${created[0]}`);
+  console.log(JSON.stringify({ probe: 'DELETE-by-id (expect 400)', status: delById.status, data: delById.data }, null, 2));
+  const del = await http.delete(rubricsUrl(c, a, p), { data: { rubrics: created.map((id) => ({ id })) } });
+  console.log(JSON.stringify({ probe: 'DELETE-collection (batch)', status: del.status, data: del.data }, null, 2));
+  if (del.status === 403) {
+    console.log('   (403 = this token lacks the rubrics DELETE scope, not a wrong shape)');
   }
+  console.log(JSON.stringify({ probe: 'DELETE-readback', rubrics: (await http.get(rubricsUrl(c, a, p))).data?.rubrics }, null, 2));
 }
 
 // PROBE 3 — is max_points derived from rubric maxscore?

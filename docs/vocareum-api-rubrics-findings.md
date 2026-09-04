@@ -56,50 +56,62 @@ substitute.
 The manual migration preserved rubrics; vocgit's preserved none. This reproduces the
 original gap report's figures (22 rows / 120 points).
 
-## 3. `max_points` tracks rubric maxscore — observations, then inference
+## 3. Points are DERIVED end to end — established by controlled intervention
 
-### The observations
+### The chain
 
-**19 parts were read** across the three courses: 6 rubric-bearing parts in 229752, the same
-6 in 229751, and 7 in 229677. Because the two source courses are rubric-identical, the
-distinct configurations are 13 — six paired labs plus the seven zero-rubric parts:
+```
+rubric `maxscore` (rows where exclude !== true)
+        │  ↓ summed per part
+part `max_points`
+        │  ↓ summed per assignment
+assignment `total_points`
+```
 
-| configuration | rubric rows | Σ maxscore | part `max_points` |
-|---|---|---|---|
-| Lab 1 (in both 229752 and 229751) | 2 | 15 | 15 |
-| Lab 2 (both) | 2 | 20 | 20 |
-| Lab 3 (both) | 6 | 25 | 25 |
-| Lab 4 (both) | 2 | 15 | 15 |
-| Lab 5 (both) | 5 | 20 | 20 |
-| Lab 6 (both) | 5 | 25 | 25 |
-| 229677, each of 7 parts | 0 | 0 | 0 |
+### The correlational baseline
 
-Σ maxscore equalled `max_points` in every one, including the seven zeroes. Two interventions
-on a scratch part then moved `max_points`; the full trace is in §5.
+**19 parts read** across the three courses: 6 rubric-bearing parts in 229752, the same 6 in
+229751, 7 in 229677. Σ maxscore equalled `max_points` in every one, including the seven
+zeroes.
 
-### The inference, and what would close it
+Assignment `total_points` matched the part total in every case checked — elite scratch 15,
+vnb scratch 15, Lab 3 25, and vocgit-migrated Lab 1 **0**. (The field is `total_points`;
+`points` is undefined on every assignment in all three courses.)
 
-The observations are consistent with **`max_points` being computed as Σ `maxscore` over
-criteria where `exclude !== true`**, and that reading explains VOC-4003: a `PUT` setting
-`max_points` is accepted and discarded because there is no such stored field.
+### The interventions — each isolating one variable
 
-One independent control already exists in the repo and was not run by me — CHANGELOG for
-the part-settings work records that *"in the same `PUT` that successfully changed
-`instant_aws_access`, `max_points` was ignored and the part still read its old value."* A
-write that lands other fields while dropping this one is what a derived field looks like.
+All on part 5785279 (container arch) unless noted. Every row is an observed readback.
 
-**But the observations equally fit weaker readings**, and none has been excluded:
+| control | operation | `max_points` |
+|---|---|---|
+| add | POST one 7-point criterion | 15 → **22** |
+| delete | DELETE one 9-point criterion | 27 → **18** |
+| **(b) maxscore only** | PUT `maxscore` 3 → 11, then revert | 18 → **26** → **18** |
+| **(c) exclude only** | PUT `exclude` true → false, then revert | 18 → **22** → **18** |
+| **(d) elite arch** | same add / exclude / un-exclude / delete on part 5785505 | 15 → **28** → **15** → **28** → **15** |
 
-- the server *recomputes* `max_points` after rubric mutations while still storing it, so
-  some other write path could set it;
-- the part `GET` reports a derived display total while points live elsewhere;
-- the behaviour is specific to these courses or to container architecture — every
-  intervention ran on **one part of one container-arch course**.
+### The direct-write controls — both refused
 
-**To close it:** (a) `PUT` `max_points` alone on a part with no rubrics and read back;
-(b) change an existing criterion's `maxscore` and read back; (c) toggle `exclude` on one
-criterion in isolation and read back; (d) repeat (b) and (c) on an elite-architecture part.
-`scripts/probe-rubrics.mjs --points` now performs (b) and (c) automatically.
+| write | result |
+|---|---|
+| **(a)** `PUT part { max_points: "999" }` | **202**, transaction settled `success` / *"Part updated"* — and `max_points` still **18** |
+| `PUT assignment { total_points: "777" }` | **400** — `No valid parameters to update the assignment` |
+| `PUT assignment { points: "777" }` | **400** — same |
+
+Control (a) is VOC-4003 reproduced under laboratory conditions: the platform reports the part
+update as **successful** while discarding the value, because there is no such stored field.
+At assignment level the API does not even recognise the parameter.
+
+### Conclusion
+
+`max_points` = Σ `maxscore` over criteria where `exclude !== true`, computed rather than
+stored, on **both** elite and container architectures. `total_points` is the assignment-level
+sum of it. Each variable was moved in isolation and reverted, so this is no longer inference
+from correlation.
+
+**Creating, updating and deleting rubric rows is the only mechanism found to set points.**
+Direct writes were tried at both levels and refused. Not exhaustively excluded: a UI-only
+path, or some third field name never surfaced by any response observed here.
 
 ## 4. A structural difference in vocgit's migration
 
@@ -154,18 +166,32 @@ coerce defensively rather than trusting either shape.
 **PUT is collection-scoped, not per-row**, and is **partial** — sending only `maxscore`
 preserved `name`.
 
-**Reordering: one negative result, not a proof.** A single-element PUT of
-`{id:"11597036", seqnum:"1"}` returned 200 with `seqnum` unchanged at `"5"`. **Not tested:**
-sending the full array in the desired order, array order without `seqnum`, multi-row seqnum
-swaps, or whether append order is the only ordering mechanism. `probe-rubrics.mjs --write`
-now tests the full-array case. Do not design push around "reordering is impossible" until
-that runs.
+**Reordering is impossible — now tested three ways, all negative:**
 
-### DELETE — untestable with this token
+| attempt | result |
+|---|---|
+| single-row `{id, seqnum}` | 200, `seqnum` unchanged |
+| **full array**, every row with a new `seqnum` | 200, order unchanged |
+| **full array in reversed order**, no `seqnum` field | 200, order unchanged |
 
-Both `DELETE .../rubrics/{id}` and `DELETE .../rubrics` with `{rubrics:[{id}]}` returned
-**403 `Access Forbidden (permission denied)`**. The token carries GET/POST/PUT only. The 403
-says nothing about which shape is correct. **Re-probe with a DELETE-scoped token.**
+`seqnum` is a server-assigned monotonic counter, and it does **not** reuse freed values:
+after deleting the row at `seqnum 3`, the next POST was assigned **6**, leaving the sequence
+`1, 2, 4, 5, 6`. Gaps persist and cannot be closed.
+
+So criterion order is **create-order only and immutable**. The sole way to reorder is
+delete-and-recreate, which mints new ids — and therefore, presumably, severs whatever grade
+history is keyed to them. Push cannot offer reordering without that trade.
+
+### DELETE — collection-scoped, same as the others
+
+| body | result |
+|---|---|
+| `DELETE .../rubrics/{id}` | **400** — `Cannot decode content - missing rubrics array` |
+| `DELETE .../rubrics` with `{rubrics:[{id}]}` | **200** ✅ |
+
+**All three write verbs share one shape: `{ rubrics: [ … ] }` on the collection URL.**
+Batch delete works — three rows removed in a single call, response
+`rubrics deleted successfully`.
 
 ### The intervention trace behind §3 and §6
 
@@ -188,26 +214,19 @@ count while probe B (`auto:true`) also counted — so `auto` is not the discrimi
 aggregate at step 4 rather than an isolated toggle. `probe-rubrics.mjs --points` now performs
 that isolated toggle.
 
-## 6. What this means for VOC-4003 — and the limit of the claim
+## 6. What this means for VOC-4003
 
-If §3's reading is right, `max_points` was never storable, which is why a part `PUT` that
-sets it is accepted and discarded. Rubric rows would then be the mechanism that determines a
-part's point total, making rubric **push** support the remedy for VOC-4003's user-visible
-symptom rather than a separate feature.
+`max_points` was never storable. That is why a part `PUT` setting it returns success and
+changes nothing — §3 control (a) reproduces exactly the behaviour VOC-4003 describes, and
+shows the cause. At assignment level `total_points` is not even an accepted parameter.
 
-**Three limits on that, stated plainly:**
+**Rubric push support is therefore the remedy for VOC-4003's user-visible symptom**, not a
+separate feature: rubric rows are the only mechanism found that moves a course's points.
+A migrated course cannot be given its point values by any other route observed here.
 
-1. **This concerns part-level `max_points`, not assignment-level `points`.** Those are
-   different fields. `VocareumAssignmentResponse.points` exists in the type, but it came back
-   **undefined on all 7 assignments in all 3 courses** — it was never observed, and its
-   relationship to part `max_points` was never tested. The repo separately documents
-   assignment `points` as "must be set manually in Vocareum UI"
-   ([src/types/config.ts](../src/types/config.ts)), which predates this probe.
-2. **"The only way to set points" is NOT established.** No alternative was tried. Untested:
-   a UI-only path, a differently named API field, another endpoint, a create/copy-time
-   parameter, or an assignment-level total independent of parts.
-3. **One part, one course, one architecture.** Every intervention ran on part 5785279 of
-   container-arch 229751.
+Remaining limits, stated plainly: alternatives were tried at both part and assignment level
+and refused, but a UI-only path or an unsurfaced third field cannot be excluded from the
+outside. The derivation rule itself is now confirmed on both architectures.
 
 ## 7. Known unknowns a push implementation still needs
 
@@ -228,20 +247,30 @@ None of these was probed, and each changes the design:
 
 ## 8. What to do next
 
-1. **Re-probe DELETE** with a DELETE-scoped token — reconciliation design is blocked on it.
-2. **Run `--points` and `--write` again** on a genuine scratch course to close §3's controls
-   (b)/(c) and settle full-array reordering.
-3. **Test the elite architecture**, so the rule is not asserted from container-arch alone.
-4. **Answer §7 before designing push**, particularly grade impact.
-5. **Stop sending `max_points`.** It reaches the part `PUT` only as a passenger inside
-   `_unknown_settings` when a part-settings update is already being sent for other reasons —
-   the reconciler does not treat a `max_points` difference as a change, and the create path
-   sends no settings payload at all. So it is not sent on *every* push, but when it is sent
-   it is ignored, and it should not be sent at all.
+1. **Answer §7 before designing push** — grade impact above all. It is the one question
+   whose answer could make rubric sync unsafe rather than merely complex.
+2. **Settle pagination** (§1). Still the only untested part of the read path, and
+   `listRubrics`'s loop rests on it. Needs a part with >100 criteria, or a deliberate
+   `size=1` request to force a second page.
+3. **Decide the reordering trade.** Order is immutable without delete-and-recreate. Either
+   push declines to reorder and says so, or it recreates and accepts the id churn.
+4. **Stop sending `max_points`.** It reaches the part `PUT` only as a passenger inside
+   `_unknown_settings`, when a settings update is already being sent for other reasons — the
+   reconciler does not treat a `max_points` difference as a change, and the create path sends
+   no settings payload. So not *every* push, but when sent it is ignored, and it should not
+   be sent at all.
 
 ## Scratch state left behind
 
-`229751 / 5785278` — "ZZ vocgit rubric probe (safe to delete)", 1 part, 5 rubric criteria
-(2 copied + 3 probe rows). It could not be cleaned up: the token lacks rubrics DELETE.
-**Delete it by hand in the Vocareum UI.** No reference assignment in 229751 or 229752 was
+Two scratch assignments, both named for deletion. Their **rubric rows have been cleaned up**
+(both parts verified back to the copied 2-criterion, `max_points: 15` state), but the
+assignments themselves remain — the API offers no assignment delete, and AGENTS.md forbids
+one.
+
+| course | assignment | note |
+|---|---|---|
+| 229751 (vnb) | **5785278** "ZZ vocgit rubric probe (safe to delete)" | copy of Lab 1 |
+| 229752 (elite) | **5785504** "ZZ vocgit elite rubric probe (safe to delete)" | copy of Lab 1 |
+
+**Delete both by hand in the Vocareum UI.** No reference assignment in either course was
 modified, and 229677 was never written to.
