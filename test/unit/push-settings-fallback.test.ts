@@ -19,8 +19,10 @@ describe('safe-mode fallback loss', () => {
     const safe = buildPartSettingsPayload('cloud-lab', settings, 'safe');
     const dropped = describeDroppedPartSettings(full, safe);
 
-    // The grading weight is the one that matters most: a silently zeroed
-    // max_points changes what students are scored out of.
+    // An unrecognized pass-through field is dropped by the safe rung and must be
+    // named, so the caller can tell the user what was given up. (This fixture used
+    // max_points until it became a reserved observed key — it is now filtered before
+    // payload construction, so it can no longer reach or be dropped by this ladder.)
     expect(dropped).toContain('cleanup_time');
     expect(dropped).toContain('lab_interface');
     expect(dropped).toContain('container_image');

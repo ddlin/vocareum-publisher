@@ -120,7 +120,7 @@ import type { LockedSession } from '../../src/core/session';
 import type { OrphanedEntity } from '../../src/types/state';
 import type { Config, ConfigUpdates, Rubric } from '../../src/types/config';
 import type { VocareumRubricResponse } from '../../src/types/api';
-import { mapPartSettings } from '../../src/utils/settings';
+import { mapPartSettings, mapAssignmentSettings } from '../../src/utils/settings';
 import { ForbiddenError } from '../../src/api/client';
 
 // ── Shared fixtures ────────────────────────────────────────────────────────────
@@ -998,5 +998,123 @@ describe('importAssignment — rubrics', () => {
 
     expect(configUpdates.assignments![0].parts![0].part_id).toBeDefined();
     expect(configUpdates.assignments![0].parts![0]).not.toHaveProperty('rubrics');
+  });
+});
+
+// ── Derived point fields: the reclassification round-trip ────────────────────
+// max_points / total_points moved from _unknown_settings to _observed_settings.
+// The transition every existing user hits is the migration row: a config written
+// by the OLD code, pulled by the NEW code. AGENTS.md "Feature Development
+// Discipline" item 1 requires each row of the matrix to have a test.
+describe('derived point fields — round-trip matrix', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => {
+    for (const m of [mockReconcile, mockGetAssignment, mockListParts, mockGetPart, mockListRubrics]) {
+      m.mockReset();
+    }
+    // Drain any unconsumed mockReturnValueOnce, then restore the module mock's
+    // factory default ({}). A bare mockReset() would leave these returning undefined
+    // for every later test in the file.
+    for (const m of [vi.mocked(mapAssignmentSettings), vi.mocked(mapPartSettings)]) {
+      m.mockReset();
+      m.mockReturnValue({} as never);
+    }
+  });
+
+  /** Config in the shape the OLD code wrote: derived fields under _unknown_settings. */
+  const legacyConfig = (): Config => ({
+    ...BASE_CONFIG,
+    assignments: [{
+      assignment_id: RUBRIC_ASSIGNMENT_ID,
+      name: 'Rubric Assignment',
+      path: 'rubric-assignment',
+      create_from_template: false,
+      settings: { _unknown_settings: { total_points: '25' } },
+      parts: [{
+        part_id: RUBRIC_PART_ID,
+        path: '.',
+        name: 'A',
+        settings: { _unknown_settings: { max_points: '25' } },
+      }],
+    }],
+  } as Config);
+
+  /** Config in the shape the NEW code writes. */
+  const currentConfig = (): Config => ({
+    ...BASE_CONFIG,
+    assignments: [{
+      assignment_id: RUBRIC_ASSIGNMENT_ID,
+      name: 'Rubric Assignment',
+      path: 'rubric-assignment',
+      create_from_template: false,
+      settings: { _observed_settings: { total_points: '25' } },
+      parts: [{
+        part_id: RUBRIC_PART_ID,
+        path: '.',
+        name: 'A',
+        settings: { _observed_settings: { max_points: '25' } },
+      }],
+    }],
+  } as Config);
+
+  const primeRemote = (
+    config: Config,
+    remotePartSettings: Record<string, unknown>,
+    remoteAssignmentSettings: Record<string, unknown> = { _observed_settings: { total_points: '25' } },
+  ): void => {
+    mockReconcile.mockResolvedValue(emptyReconcileResult(config));
+    mockGetAssignment.mockResolvedValueOnce({ id: RUBRIC_ASSIGNMENT_ID });
+    mockListParts.mockResolvedValueOnce([{ id: RUBRIC_PART_ID, name: 'A', seqnum: '1', deleted: '0' }]);
+    mockGetPart.mockResolvedValueOnce({ id: RUBRIC_PART_ID, name: 'A' });
+    mockListRubrics.mockResolvedValueOnce([]);
+    // BOTH mappers must be primed: leaving mapAssignmentSettings at its default makes the
+    // remote assignment look empty, which reads as observed-drift at assignment level and
+    // masks whatever the part-level assertion was trying to show.
+    vi.mocked(mapAssignmentSettings).mockReturnValueOnce(remoteAssignmentSettings as never);
+    vi.mocked(mapPartSettings).mockReturnValueOnce(remotePartSettings as never);
+  };
+
+  it('MIGRATION: a legacy config reports drift, so the next pull rewrites it', async () => {
+    const config = legacyConfig();
+    primeRemote(config, { _observed_settings: { max_points: '25' } });
+    // local assignment has total_points under _unknown_settings; remote reports it observed
+
+    const inspection = await inspectPull(makeCtx(config).ctx, {} as PullRequest);
+
+    const partDrift = inspection.settingsDrift[0]?.partsDrift[0];
+    // Local has it under unknown, remote under observed — both buckets differ, which is
+    // what drives the rewrite. Without either flag the stale shape would persist forever.
+    expect(partDrift?.unknownsChanged).toBe(true);
+    expect(partDrift?.observedChanged).toBe(true);
+    expect(partDrift?.remoteSettings._observed_settings).toEqual({ max_points: '25' });
+    expect(partDrift?.remoteSettings._unknown_settings).toBeUndefined();
+  });
+
+  it('UNCHANGED: a current-shape config with matching remote reports no drift', async () => {
+    const config = currentConfig();
+    primeRemote(config, { _observed_settings: { max_points: '25' } });
+
+    const inspection = await inspectPull(makeCtx(config).ctx, {} as PullRequest);
+
+    expect(inspection.settingsDrift).toEqual([]);
+  });
+
+  it('CHANGED: a different remote point total reports drift', async () => {
+    const config = currentConfig();
+    primeRemote(config, { _observed_settings: { max_points: '40' } });
+
+    const inspection = await inspectPull(makeCtx(config).ctx, {} as PullRequest);
+
+    expect(inspection.settingsDrift[0]?.partsDrift[0]?.observedChanged).toBe(true);
+  });
+
+  it('REMOVED: the field disappearing from the remote reports drift', async () => {
+    const config = currentConfig();
+    primeRemote(config, {});
+
+    const inspection = await inspectPull(makeCtx(config).ctx, {} as PullRequest);
+
+    expect(inspection.settingsDrift[0]?.partsDrift[0]?.observedChanged).toBe(true);
+    expect(inspection.settingsDrift[0]?.partsDrift[0]?.remoteSettings._observed_settings).toBeUndefined();
   });
 });

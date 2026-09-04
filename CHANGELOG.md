@@ -89,9 +89,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `total_points` is rejected with *"No valid parameters to update the assignment"*. That is
   the whole of Vocareum VOC-4003 — the field was never there to write.
 
-  vocgit previously captured both under `_unknown_settings`, sent them on every part-settings
-  update that ran for other reasons, had them ignored, and nagged you to file an enhancement
-  request for them. They now land in `_observed_settings` instead: still visible in
+  vocgit previously captured both under `_unknown_settings` and nagged you to file an
+  enhancement request for them. `max_points` additionally rode along in any part-settings
+  `PUT` that was already being sent for other reasons, where the server ignored it;
+  `total_points` is assignment-scoped and would have ridden an assignment update the same
+  way. They now land in `_observed_settings` instead: still visible in
   `vocareum.yaml` so you can read a part's point total, never sent, and no longer reported as
   unsupported. `_unknown_settings.max_points` is now refused with a warning rather than
   quietly added to the payload.

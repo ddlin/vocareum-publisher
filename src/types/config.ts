@@ -233,8 +233,11 @@ export type ObservedSettings = z.infer<typeof ObservedSettingsSchema>;
  * Part settings for Vocareum configuration
  *
  * Writable and observed fields accepted in vocareum.yaml.
- * Pull/import stores read-only or create-only values under _observed_settings;
- * older top-level values remain parseable but are not necessarily pushed.
+ * Pull/import stores read-only or create-only values under _observed_settings.
+ * An observed key that is ALSO declared below (e.g. `description`) additionally
+ * survives at top level in an older config, and pull migrates it into the bucket.
+ * An observed key that is NOT declared below (e.g. `max_points`) is stripped by this
+ * schema before any code sees it, so it can only ever exist inside _observed_settings.
  * Note: Many fields use .nullish() because API may return null values.
  */
 export const PartSettingsSchema = z
