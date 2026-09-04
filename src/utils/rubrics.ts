@@ -9,7 +9,7 @@
  * human-readable diff only — nothing acts on its output.
  */
 
-import type { VocareumRubricResponse } from '../types/api';
+import type { VocareumRubricResponse, RubricCreate, RubricUpdate, RubricSyncPlan, RemoteRubric } from '../types/api';
 import type { Rubric } from '../types/config';
 
 export interface RubricChangeSummary {
@@ -97,4 +97,102 @@ export function describeRubricChanges(local: Rubric[], remote: Rubric[]): Rubric
   }
 
   return { added, removed, changed };
+}
+
+function duplicates(names: string[]): string[] {
+  const seen = new Set<string>();
+  const dupes = new Set<string>();
+  for (const n of names) {
+    if (seen.has(n)) { dupes.add(n); } else { seen.add(n); }
+  }
+  return [...dupes].sort();
+}
+
+/**
+ * Diff local rubric config against a part's remote rows.
+ *
+ * Names match EXACTLY — byte-for-byte, case-sensitive, no trimming. Vocareum criterion
+ * names carry meaningful leading tags ("[Task 2] …"), and a fuzzy match that paired
+ * "[Task 2] Foo" with "[Task 3] Foo" would update the wrong row's points. A near-miss is
+ * better surfaced as a create plus an orphan, which the confirmation shows, than resolved
+ * by a guess.
+ *
+ * Never produces deletions. A remote row with no local match is an orphan — most often a
+ * rename, since name matching cannot see one — and because max_points is derived from
+ * rubric maxscore, creating its replacement while the original remains inflates the part's
+ * points. That is why orphans are surfaced rather than acted on.
+ *
+ * Duplicate names on either side make matching undefined, so the part is refused wholesale
+ * rather than guessed at.
+ */
+export function planRubricSync(local: Rubric[], remote: RemoteRubric[]): RubricSyncPlan {
+  // Duplicates are checked WITHIN each side, never across them. Concatenating first would
+  // flag every ordinary local↔remote name match as a duplicate and refuse the part — which
+  // is the normal case this function exists to handle.
+  const duplicateNames = [...new Set([
+    ...duplicates(local.map(r => r.name)),
+    ...duplicates(remote.map(r => r.name)),
+  ])].sort();
+  if (duplicateNames.length > 0) {
+    return { creates: [], updates: [], orphans: [], duplicateNames };
+  }
+
+  const remoteByName = new Map(remote.map(r => [r.name, r]));
+  const localNames = new Set(local.map(r => r.name));
+
+  // Create order is the only ordering control available: POST rejects seqnum and the
+  // server assigns it by append order.
+  const ordered = [...local].sort((a, b) => parseInt(a.seqnum, 10) - parseInt(b.seqnum, 10));
+
+  const creates: RubricCreate[] = [];
+  const updates: RubricUpdate[] = [];
+
+  for (const rubric of ordered) {
+    const match = remoteByName.get(rubric.name);
+    if (!match) {
+      const create: RubricCreate = { name: rubric.name, maxscore: rubric.maxscore };
+      if (rubric.auto !== undefined) { create.auto = rubric.auto; }
+      if (rubric.exclude !== undefined) { create.exclude = rubric.exclude; }
+      creates.push(create);
+      continue;
+    }
+
+    const update: RubricUpdate = { id: match.id };
+    let changed = false;
+    if (rubric.maxscore !== match.maxscore) { update.maxscore = rubric.maxscore; changed = true; }
+    if (flag(rubric.auto) !== flag(match.auto)) { update.auto = flag(rubric.auto); changed = true; }
+    if (flag(rubric.exclude) !== flag(match.exclude)) { update.exclude = flag(rubric.exclude); changed = true; }
+    if (changed) { updates.push(update); }
+  }
+
+  const orphans = remote.filter(r => !localNames.has(r.name));
+
+  return { creates, updates, orphans, duplicateNames: [] };
+}
+
+/**
+ * The part's point total before and after the plan, using Vocareum's own rule:
+ * Σ maxscore over criteria where exclude !== true.
+ *
+ * Shown in the push confirmation because "your points will go from 25 to 30" is the
+ * sentence that makes the rename hazard legible; "1 orphan" is not. It is a projection
+ * from plan-time remote state, not a promise — see the design spec §7b.
+ */
+export function projectedPoints(
+  remote: RemoteRubric[],
+  plan: RubricSyncPlan
+): { before: number; after: number } {
+  const score = (maxscore: string, exclude: boolean | undefined): number =>
+    flag(exclude) ? 0 : Number(maxscore);
+
+  const before = remote.reduce((sum, r) => sum + score(r.maxscore, r.exclude), 0);
+
+  const updateById = new Map(plan.updates.map(u => [u.id, u]));
+  const afterExisting = remote.reduce((sum, r) => {
+    const u = updateById.get(r.id);
+    return sum + score(u?.maxscore ?? r.maxscore, u?.exclude ?? r.exclude);
+  }, 0);
+  const afterCreates = plan.creates.reduce((sum, c) => sum + score(c.maxscore, c.exclude), 0);
+
+  return { before, after: afterExisting + afterCreates };
 }

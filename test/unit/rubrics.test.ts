@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mapRubrics, rubricsEqual, describeRubricChanges } from '../../src/utils/rubrics';
+import { mapRubrics, rubricsEqual, describeRubricChanges, planRubricSync, projectedPoints } from '../../src/utils/rubrics';
 import { RubricSchema } from '../../src/types/config';
 import type { VocareumRubricResponse } from '../../src/types/api';
 
@@ -129,5 +129,148 @@ describe('describeRubricChanges', () => {
     const local = [{ name: 'A', seqnum: '1', maxscore: '99' }, { name: 'A', seqnum: '2', maxscore: '20' }, { name: 'A', seqnum: '3', maxscore: '30' }];
     const remote = [{ name: 'A', seqnum: '1', maxscore: '10' }, { name: 'A', seqnum: '2', maxscore: '20' }];
     expect(describeRubricChanges(local, remote)).toEqual({ added: [], removed: ['A'], changed: ['A'] });
+  });
+});
+
+describe('planRubricSync', () => {
+  const remote = (id: string, name: string, maxscore: string, extra = {}) =>
+    ({ id, name, seqnum: id, maxscore, auto: false, exclude: false, ...extra });
+
+  it('creates local criteria that have no remote name match', () => {
+    const plan = planRubricSync(
+      [{ name: 'A', seqnum: '1', maxscore: '10' }, { name: 'B', seqnum: '2', maxscore: '5' }],
+      [remote('r1', 'A', '10')],
+    );
+
+    expect(plan.creates).toEqual([{ name: 'B', maxscore: '5' }]);
+    expect(plan.updates).toEqual([]);
+    expect(plan.orphans).toEqual([]);
+  });
+
+  it('updates a name match whose maxscore differs, carrying the remote id', () => {
+    const plan = planRubricSync(
+      [{ name: 'A', seqnum: '1', maxscore: '12' }],
+      [remote('r1', 'A', '10')],
+    );
+
+    expect(plan.creates).toEqual([]);
+    expect(plan.updates).toEqual([{ id: 'r1', maxscore: '12' }]);
+  });
+
+  it('updates auto and exclude when they differ', () => {
+    const plan = planRubricSync(
+      [{ name: 'A', seqnum: '1', maxscore: '10', auto: true, exclude: true }],
+      [remote('r1', 'A', '10')],
+    );
+
+    expect(plan.updates).toEqual([{ id: 'r1', auto: true, exclude: true }]);
+  });
+
+  it('emits NOTHING when local and remote agree — no false write', () => {
+    const plan = planRubricSync(
+      [{ name: 'A', seqnum: '1', maxscore: '10', auto: false, exclude: false }],
+      [remote('r1', 'A', '10')],
+    );
+
+    expect(plan).toEqual({ creates: [], updates: [], orphans: [], duplicateNames: [] });
+  });
+
+  it('treats an omitted local flag as false, matching the read side', () => {
+    const plan = planRubricSync(
+      [{ name: 'A', seqnum: '1', maxscore: '10' }],
+      [remote('r1', 'A', '10', { auto: false, exclude: false })],
+    );
+
+    expect(plan.updates).toEqual([]);
+  });
+
+  it('reports a remote criterion with no local match as an orphan and never deletes it', () => {
+    const plan = planRubricSync(
+      [{ name: 'A', seqnum: '1', maxscore: '10' }],
+      [remote('r1', 'A', '10'), remote('r2', 'GONE', '5')],
+    );
+
+    expect(plan.orphans.map(o => o.name)).toEqual(['GONE']);
+    expect(plan.creates).toEqual([]);
+  });
+
+  it('a rename surfaces as a create PLUS an orphan — it cannot be seen as a rename', () => {
+    const plan = planRubricSync(
+      [{ name: 'NEW NAME', seqnum: '1', maxscore: '10' }],
+      [remote('r1', 'OLD NAME', '10')],
+    );
+
+    expect(plan.creates).toEqual([{ name: 'NEW NAME', maxscore: '10' }]);
+    expect(plan.orphans.map(o => o.name)).toEqual(['OLD NAME']);
+  });
+
+  it('matches names exactly — no trimming, no case folding', () => {
+    const plan = planRubricSync(
+      [{ name: 'a ', seqnum: '1', maxscore: '10' }],
+      [remote('r1', 'A', '10')],
+    );
+
+    expect(plan.creates).toHaveLength(1);
+    expect(plan.orphans).toHaveLength(1);
+  });
+
+  it('creates in local seqnum order, since the server assigns seqnum by append order', () => {
+    const plan = planRubricSync(
+      [{ name: 'Third', seqnum: '10', maxscore: '1' },
+       { name: 'First', seqnum: '2', maxscore: '1' }],
+      [],
+    );
+
+    expect(plan.creates.map(c => c.name)).toEqual(['First', 'Third']);
+  });
+
+  it('refuses a part with duplicate LOCAL names', () => {
+    const plan = planRubricSync(
+      [{ name: 'A', seqnum: '1', maxscore: '1' }, { name: 'A', seqnum: '2', maxscore: '2' }],
+      [],
+    );
+
+    expect(plan.duplicateNames).toEqual(['A']);
+    expect(plan.creates).toEqual([]);
+    expect(plan.updates).toEqual([]);
+  });
+
+  it('refuses a part with duplicate REMOTE names', () => {
+    // Remote is not trustworthy just because Vocareum returned it: copied templates,
+    // UI edits and prior failed runs all produce duplicates, and with two rows sharing
+    // a name "the name matches" no longer identifies a row.
+    const plan = planRubricSync(
+      [{ name: 'A', seqnum: '1', maxscore: '1' }],
+      [remote('r1', 'A', '1'), remote('r2', 'A', '2')],
+    );
+
+    expect(plan.duplicateNames).toEqual(['A']);
+    expect(plan.creates).toEqual([]);
+    expect(plan.updates).toEqual([]);
+  });
+});
+
+describe('projectedPoints', () => {
+  it('sums maxscore over non-excluded rows, before and after the plan', () => {
+    const remote = [
+      { id: 'r1', name: 'A', seqnum: '1', maxscore: '10', auto: false, exclude: false },
+      { id: 'r2', name: 'X', seqnum: '2', maxscore: '4', auto: false, exclude: true },
+    ];
+    const plan = { creates: [{ name: 'B', maxscore: '5' }], updates: [], orphans: [], duplicateNames: [] };
+
+    // before: 10 (X excluded).  after: 10 + 5.
+    expect(projectedPoints(remote, plan)).toEqual({ before: 10, after: 15 });
+  });
+
+  it('counts an update as replacing the matched row value', () => {
+    const remote = [{ id: 'r1', name: 'A', seqnum: '1', maxscore: '10', auto: false, exclude: false }];
+    const plan = { creates: [], updates: [{ id: 'r1', maxscore: '12' }], orphans: [], duplicateNames: [] };
+
+    expect(projectedPoints(remote, plan)).toEqual({ before: 10, after: 12 });
+  });
+
+  it('excludes a create marked exclude:true from the projection', () => {
+    const plan = { creates: [{ name: 'B', maxscore: '5', exclude: true }], updates: [], orphans: [], duplicateNames: [] };
+    expect(projectedPoints([], plan)).toEqual({ before: 0, after: 0 });
   });
 });

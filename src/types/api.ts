@@ -6,6 +6,8 @@
  * CRITICAL: seqnum is a string that must be parsed for sorting
  */
 
+import type { Rubric } from './config';
+
 /**
  * Course response from Vocareum API
  */
@@ -180,6 +182,19 @@ export interface RubricUpdate {
   maxscore?: string;
   auto?: boolean;
   exclude?: boolean;
+}
+
+/** A rubric row as it exists remotely: the config shape plus the server id. */
+export type RemoteRubric = Rubric & { id: string };
+
+/** What push will do to one part's rubrics. Empty on every axis means no work. */
+export interface RubricSyncPlan {
+  creates: RubricCreate[];
+  updates: RubricUpdate[];
+  /** Remote criteria with no local counterpart. Reported, never deleted. */
+  orphans: RemoteRubric[];
+  /** Names duplicated within local, or within remote. Non-empty means the part is refused. */
+  duplicateNames: string[];
 }
 
 /**
