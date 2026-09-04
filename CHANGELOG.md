@@ -36,6 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still retries by removing just those two, and any settings still given up
   are named at `warn`.
 
+  **This does not make `max_points` / `total_points` take effect.** Those are a
+  separate, server-side problem: the API returns them on `GET`, accepts them on
+  `PUT` with a 200 and no warning, and then does not persist them (Vocareum
+  VOC-4003). Verified on a request that was otherwise fully applied — in the same
+  `PUT` that successfully changed `instant_aws_access`, `max_points` was ignored
+  and the part still read its old value. vocgit now reports what it *declines to
+  send*; it cannot report what the server accepts and discards, because
+  `updatePart` does not read the part back. So a course whose point values matter
+  should be verified in the Vocareum UI after a push until VOC-4003 is fixed.
+
 ### Added
 - `VOCAREUM_MAX_UPLOAD_CHUNK_BYTES` to tune the upload chunk size
   (default 32 MB, range 1 KB–64 MB).
