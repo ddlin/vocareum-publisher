@@ -228,6 +228,42 @@ Remaining limits, stated plainly: alternatives were tried at both part and assig
 and refused, but a UI-only path or an unsurfaced third field cannot be excluded from the
 outside. The derivation rule itself is now confirmed on both architectures.
 
+## 6b. Assignment delete — soft, synchronous, and effectively cascading
+
+Probed after the token gained the delete scope, while cleaning up this session's scratch
+assignments.
+
+`DELETE /courses/{c}/assignments/{a}` → **200**, synchronous (no transaction id),
+`"Assignment successfully deleted"`.
+
+It is a **soft** delete, and the tombstone is well behaved:
+
+| operation on a soft-deleted assignment | result |
+|---|---|
+| `GET /courses/{c}/assignments` (list) | **excluded** — 8 rows → 7, and `total_records` 8 → 7 |
+| `GET /courses/{c}/assignments/{a}` (direct) | **200**, with `deleted: "1"` |
+| `GET .../parts` | **400** |
+| `GET .../parts/{p}/rubrics` | **400** |
+| `PUT .../parts/{p}` | **400** — `Invalid assignment` |
+
+### What this means for vocgit
+
+Mostly good news, and one trap:
+
+- **The list filters server-side**, so `listAssignments` having no client-side
+  `deleted !== '1'` filter (unlike `listParts`, which has one) is harmless today. A deleted
+  assignment simply vanishes from the list, the reconciler sees the config entry as stale,
+  and the user is offered the existing stale-assignment resolution. Correct behaviour by
+  accident rather than by design — worth a comment in `listAssignments` so nobody "fixes"
+  the asymmetry by removing the filter from `listParts`.
+- **Every part-scoped and rubric-scoped operation 400s**, so a stale config entry fails
+  loudly rather than corrupting anything.
+- ⚠️ **The direct assignment `GET` is the trap**: it returns 200 with `deleted: "1"`, and
+  `getAssignment` does not check the flag. Nothing reaches it today — `detectSettingsDrift`
+  skips assignments the reconciler marked stale — but any future code that resolves an
+  assignment by id without going through the reconciler would silently operate on a
+  tombstone. Cheap hardening: have `getAssignment` treat `deleted === '1'` as not found.
+
 ## 7. Known unknowns a push implementation still needs
 
 None of these was probed, and each changes the design:
@@ -262,15 +298,12 @@ None of these was probed, and each changes the design:
 
 ## Scratch state left behind
 
-Two scratch assignments, both named for deletion. Their **rubric rows have been cleaned up**
-(both parts verified back to the copied 2-criterion, `max_points: 15` state), but the
-assignments themselves remain — the API offers no assignment delete, and AGENTS.md forbids
-one.
+**None.** Both scratch assignments were deleted once the token gained the delete scope:
 
-| course | assignment | note |
+| course | assignment | state |
 |---|---|---|
-| 229751 (vnb) | **5785278** "ZZ vocgit rubric probe (safe to delete)" | copy of Lab 1 |
-| 229752 (elite) | **5785504** "ZZ vocgit elite rubric probe (safe to delete)" | copy of Lab 1 |
+| 229751 (vnb) | 5785278 "ZZ vocgit rubric probe" | rubric rows removed, then assignment soft-deleted |
+| 229752 (elite) | 5785504 "ZZ vocgit elite rubric probe" | same |
 
-**Delete both by hand in the Vocareum UI.** No reference assignment in either course was
-modified, and 229677 was never written to.
+Both are excluded from their course listings (each course back to 7 assignments). No
+reference assignment in either course was modified, and 229677 was never written to.
