@@ -119,7 +119,6 @@ async function probeMaxPoints(http, c, a, p) {
   console.log('NOTE: delete the probe row by hand or re-run --write to clean up.');
 }
 
-const http = client();
 const c = argValue('--course');
 const a = argValue('--assignment');
 const p = argValue('--part');
@@ -127,6 +126,16 @@ if (!c || !a || !p) {
   console.error('Usage: npm run probe:rubrics -- --course C --assignment A --part P [--write] [--points]');
   process.exit(1);
 }
+
+let http;
+try {
+  http = client();
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(message);
+  process.exit(1);
+}
+
 await probePagination(http, c, a, p);
 if (process.argv.includes('--write')) { await probeWrite(http, c, a, p); }
 if (process.argv.includes('--points')) { await probeMaxPoints(http, c, a, p); }
