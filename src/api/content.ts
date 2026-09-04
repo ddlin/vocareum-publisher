@@ -678,7 +678,32 @@ function accountDownloadedFile(
  * Vocareum file listing uses /resource/ for shared library directories
  * (lib/asnlib) and /voc/ for workspace directories.
  */
-function toApiDirPath(directory: DirectoryType, _architecture?: 'elite' | 'container'): string {
+/**
+ * Map a directory to its path in the Vocareum workspace.
+ *
+ * The two architectures are laid out differently, and this is not cosmetic:
+ *
+ *   Elite      `/` -> ['resource', 'work']            — there is NO /voc
+ *              `/resource` -> asnlib, lib, scripts, startercode
+ *   Container  `/` -> ['resource', 'voc', 'work']
+ *              `/voc` -> course, data, docs, private, scripts, startercode
+ *
+ * This function previously ignored `architecture` and always sent `scripts` and
+ * `startercode` to /voc. On Elite that path cannot exist, the API answered
+ * "doesn't exist", and listFilesByApiPath's missing-optional-directory branch
+ * turned it into an empty listing — so pulls reported success while every
+ * build/grade/run/submit script stayed on the server. Verified against live
+ * Elite courses 102668 and 227714.
+ *
+ * Note Elite has no `docs` at all (neither /voc/docs nor /resource/docs); its
+ * documentation lives under `/resource/asnlib/public/docs` and arrives via
+ * asnlib. A part that declares `docs` on an Elite course now gets a warning
+ * from listFilesByApiPath rather than a silently empty directory.
+ */
+export function toApiDirPath(directory: DirectoryType, architecture?: 'elite' | 'container'): string {
+  if (architecture === 'elite') {
+    return `/resource/${directory}`;
+  }
   const prefix = directory === 'lib' || directory === 'asnlib' ? '/resource' : '/voc';
   return `${prefix}/${directory}`;
 }
@@ -728,6 +753,19 @@ async function listFilesByApiPath(
     if (isHttp400(error)) {
       const msg = error instanceof Error ? error.message : String(error);
       if (missingDirectoryMessageMatches(msg, apiDirPath)) {
+        // An absent directory is not an error — returning [] is correct, and
+        // throwing would make pull read it as remote deletions. But it must not
+        // be SILENT: this swallow is why a whole architecture's worth of
+        // scripts/ went missing with exit code 0. Name the path we asked for,
+        // so a wrong prefix is visible as a wrong prefix.
+        client.events.emit({
+          level: 'warn',
+          message:
+            `Directory "${apiDirPath}" does not exist on part ${partId} — treated as empty. ` +
+            `If you expected content here, the directory may live at a different path for ` +
+            `this lab type (Elite workspaces keep everything under /resource; Container ` +
+            `workspaces keep scripts, startercode, docs, data and private under /voc).`,
+        });
         return [];
       }
     }
