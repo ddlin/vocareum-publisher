@@ -61,6 +61,9 @@ export function rubricsEqual(a: Rubric[], b: Rubric[]): boolean {
  * Best-effort added/removed/changed breakdown by criterion name, for display.
  * Duplicate names are handled by count: three "Correctness" rows locally and
  * four remotely yields one "added" entry.
+ * A name can legitimately appear in more than one bucket when it is duplicated:
+ * if one copy's values changed and another copy was added, the name lands in both
+ * `changed` and `added`, because both are true of that name.
  */
 export function describeRubricChanges(local: Rubric[], remote: Rubric[]): RubricChangeSummary {
   const byName = (list: Rubric[]): Map<string, Rubric[]> => {

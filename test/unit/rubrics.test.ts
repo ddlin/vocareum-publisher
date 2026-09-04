@@ -118,4 +118,16 @@ describe('describeRubricChanges', () => {
     expect(describeRubricChanges([a], [a, { ...a, seqnum: '2' }]))
       .toEqual({ added: ['A'], removed: [], changed: [] });
   });
+
+  it('puts a name in both changed and added when duplicated with one copy altered', () => {
+    const local = [{ name: 'A', seqnum: '1', maxscore: '10' }, { name: 'A', seqnum: '2', maxscore: '20' }];
+    const remote = [{ name: 'A', seqnum: '1', maxscore: '99' }, { name: 'A', seqnum: '2', maxscore: '20' }, { name: 'A', seqnum: '3', maxscore: '30' }];
+    expect(describeRubricChanges(local, remote)).toEqual({ added: ['A'], removed: [], changed: ['A'] });
+  });
+
+  it('puts a name in both changed and removed when duplicated with one copy altered', () => {
+    const local = [{ name: 'A', seqnum: '1', maxscore: '99' }, { name: 'A', seqnum: '2', maxscore: '20' }, { name: 'A', seqnum: '3', maxscore: '30' }];
+    const remote = [{ name: 'A', seqnum: '1', maxscore: '10' }, { name: 'A', seqnum: '2', maxscore: '20' }];
+    expect(describeRubricChanges(local, remote)).toEqual({ added: [], removed: ['A'], changed: ['A'] });
+  });
 });
