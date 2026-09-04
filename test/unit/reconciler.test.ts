@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Config } from '../../src/types/config';
+import type { Config, Rubric, PublishOptions } from '../../src/types/config';
 import type { VocareumClient } from '../../src/api/client';
 import { reconcile } from '../../src/core/reconciler';
 
@@ -10,6 +10,7 @@ const {
   listPartsMock,
   getPartMock,
   calculateDirectoryHashMock,
+  mockListRubrics,
 } = vi.hoisted(() => ({
   getCourseMock: vi.fn(),
   listAssignmentsMock: vi.fn(),
@@ -17,6 +18,7 @@ const {
   listPartsMock: vi.fn(),
   getPartMock: vi.fn(),
   calculateDirectoryHashMock: vi.fn(),
+  mockListRubrics: vi.fn(),
 }));
 
 vi.mock('../../src/api/courses', () => ({
@@ -31,6 +33,10 @@ vi.mock('../../src/api/assignments', () => ({
 vi.mock('../../src/api/parts', () => ({
   listParts: listPartsMock,
   getPart: getPartMock,
+}));
+
+vi.mock('../../src/api/rubrics', () => ({
+  listRubrics: mockListRubrics,
 }));
 
 vi.mock('../../src/utils/files', async () => {
@@ -693,5 +699,193 @@ describe('reconcile options behavior', () => {
       contentChanged: false,
     });
     expect(getPartMock).toHaveBeenCalledWith(client, '201303', 'asn-1', 'part-1');
+  });
+});
+
+describe('reconcile — rubric drift', () => {
+  const client = {} as VocareumClient;
+
+  const baseConfig: Config = {
+    version: '1.0',
+    vocareum: {
+      org_id: '1',
+      course_id: '201303',
+      template_assignment_id: 'tmpl-1',
+      api_base_url: 'https://api.vocareum.com',
+    },
+    assignments: [
+      {
+        assignment_id: 'asn-1',
+        name: 'Lab 1',
+        path: 'lab1',
+        create_from_template: false,
+        parts: [
+          {
+            part_id: 'part-1',
+            path: 'part1',
+            directories: ['startercode', 'scripts', 'docs', 'data'],
+          },
+        ],
+      },
+    ],
+    publish_history: [],
+    publish_options: {
+      on_missing_id: 'skip',
+      auto_commit: false,
+      abort_on_error: false,
+      sync_deletes: false,
+      exclude_patterns: [],
+    },
+  };
+
+  const unchangedContentState = {
+    'lab1/part1/startercode': 'same-hash',
+    'lab1/part1/scripts': 'same-hash',
+    'lab1/part1/docs': 'same-hash',
+    'lab1/part1/data': 'same-hash',
+  };
+
+  const publishHistory = {
+    timestamp: '2026-09-04T00:00:00Z',
+    commit_sha: 'abc',
+    published_by: 'tester',
+    status: 'success' as const,
+    content_state: unchangedContentState,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getCourseMock.mockResolvedValue({ id: '201303', name: 'Course 1', org_id: '1' });
+    listAssignmentsMock.mockResolvedValue([{ id: 'asn-1', name: 'Lab 1', deleted: '0' }]);
+    getAssignmentMock.mockResolvedValue({ id: 'asn-1', name: 'Lab 1', courseid: '201303', deleted: '0' });
+    listPartsMock.mockResolvedValue([
+      { id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0' },
+    ]);
+    getPartMock.mockResolvedValue({ id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0', assignmentid: 'asn-1', courseid: '201303' });
+    calculateDirectoryHashMock.mockResolvedValue('same-hash');
+    mockListRubrics.mockResolvedValue([]);
+  });
+
+  interface RemoteRubricRow {
+    id: string;
+    name: string;
+    seqnum: string;
+    maxscore: string;
+    auto?: boolean;
+    exclude?: boolean;
+  }
+
+  interface RubricScenario {
+    localRubrics: Rubric[] | undefined;
+    remoteRubrics: RemoteRubricRow[];
+    publishOptions?: Partial<PublishOptions>;
+    contentChanged?: boolean;
+  }
+
+  function buildConfig(scenario: RubricScenario): Config {
+    return {
+      ...baseConfig,
+      publish_options: {
+        ...baseConfig.publish_options!,
+        ...scenario.publishOptions,
+      },
+      assignments: [
+        {
+          ...baseConfig.assignments[0],
+          parts: [
+            {
+              ...baseConfig.assignments[0].parts[0],
+              rubrics: scenario.localRubrics,
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  /** Minimal EventSink that records emitted messages for assertions. */
+  class RecordingEventSink {
+    readonly messages: string[] = [];
+    emit(event: { message?: string }): void {
+      if (event.message) { this.messages.push(event.message); }
+    }
+  }
+
+  async function reconcileWithRubricsCapturingWarnings(scenario: RubricScenario) {
+    mockListRubrics.mockResolvedValue(scenario.remoteRubrics);
+    if (scenario.contentChanged) {
+      calculateDirectoryHashMock.mockResolvedValue('different-hash');
+    }
+    const config = buildConfig(scenario);
+    const sink = new RecordingEventSink();
+    const plan = await reconcile(config, client, publishHistory, { events: sink });
+    return { plan, warnings: sink.messages };
+  }
+
+  async function reconcileWithRubrics(scenario: RubricScenario) {
+    const { plan } = await reconcileWithRubricsCapturingWarnings(scenario);
+    return plan;
+  }
+
+  it('promotes an otherwise-unchanged part to an update when rubrics differ', async () => {
+    // no content change, no settings change — only rubrics
+    const plan = await reconcileWithRubrics({
+      localRubrics: [{ name: 'A', seqnum: '1', maxscore: '10' }],
+      remoteRubrics: [],
+    });
+
+    const partAction = plan.assignments[0].parts[0];
+    expect(partAction.type).toBe('update');
+    expect(partAction.rubricPlan?.creates).toEqual([{ name: 'A', maxscore: '10' }]);
+    expect(partAction.reason).toContain('Rubrics');
+  });
+
+  it('still skips a part when rubrics match and nothing else changed', async () => {
+    const plan = await reconcileWithRubrics({
+      localRubrics: [{ name: 'A', seqnum: '1', maxscore: '10' }],
+      remoteRubrics: [{ id: 'r1', name: 'A', seqnum: '1', maxscore: '10', auto: false, exclude: false }],
+    });
+
+    expect(plan.assignments[0].parts[0].type).toBe('skip');
+  });
+
+  it('does not fetch rubrics when the part has none in config', async () => {
+    await reconcileWithRubrics({ localRubrics: undefined, remoteRubrics: [] });
+    expect(mockListRubrics).not.toHaveBeenCalled();
+  });
+
+  it('does not fetch rubrics when sync_rubrics is false', async () => {
+    await reconcileWithRubrics({
+      localRubrics: [{ name: 'A', seqnum: '1', maxscore: '10' }],
+      remoteRubrics: [],
+      publishOptions: { sync_rubrics: false },
+    });
+    expect(mockListRubrics).not.toHaveBeenCalled();
+  });
+
+  it('warns and skips rubrics when sync_settings suppressed them but rubrics exist in config', async () => {
+    // The nesting is a migration failure mode: sync_rubrics is at its default true, the
+    // user disabled settings sync for other reasons, and rubrics silently do not migrate.
+    const { plan, warnings } = await reconcileWithRubricsCapturingWarnings({
+      localRubrics: [{ name: 'A', seqnum: '1', maxscore: '10' }],
+      remoteRubrics: [],
+      publishOptions: { sync_settings: false },
+    });
+
+    expect(plan.assignments[0].parts[0].type).toBe('skip');
+    expect(warnings.join('\n')).toMatch(/sync_settings/);
+  });
+
+  it('a rubric fetch failure leaves other change detection for that part intact', async () => {
+    mockListRubrics.mockRejectedValueOnce(new Error('boom'));
+    const plan = await reconcileWithRubrics({
+      localRubrics: [{ name: 'A', seqnum: '1', maxscore: '10' }],
+      remoteRubrics: [],
+      contentChanged: true,
+    });
+
+    const partAction = plan.assignments[0].parts[0];
+    expect(partAction.type).toBe('update');       // content change still drives it
+    expect(partAction.rubricPlan).toBeUndefined(); // rubrics unknown, not assumed empty
   });
 });

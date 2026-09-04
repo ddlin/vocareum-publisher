@@ -7,7 +7,7 @@
 import type { Config, PublishHistory, Part, Assignment } from '../types/config';
 import { normalizeSubmissionFilters } from '../types/config';
 import { detectChangedDirectories, directoriesForPart, publishExcludePatterns } from './local-scan';
-import type { VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
+import type { VocareumAssignmentResponse, VocareumPartResponse, RubricSyncPlan, RemoteRubric } from '../types/api';
 import type {
   ReconciliationPlan,
   AssignmentAction,
@@ -20,6 +20,7 @@ import { VocareumClient } from '../api/client';
 import { getCourse } from '../api/courses';
 import { listAssignments, getAssignment } from '../api/assignments';
 import { listParts, getPart } from '../api/parts';
+import { listRubrics } from '../api/rubrics';
 import { mapParts } from './mapper';
 import { LoggerEventSink } from '../utils/logger-event-sink';
 import type { EventSink } from './services/event-sink';
@@ -27,7 +28,9 @@ import {
   shouldSyncAssignmentSettings,
   shouldSyncCourseSettings,
   shouldSyncPartSettings,
+  shouldSyncRubrics,
 } from '../utils/settings-sync';
+import { mapRubrics, planRubricSync } from '../utils/rubrics';
 import { deepEqual } from '../utils/deep-equal';
 
 const ACCEPTED_UNVERIFIED_ASSIGNMENT_KEYS = [
@@ -237,6 +240,48 @@ export async function reconcile(
               hasAcceptedUnverifiedPartChange(configAssignment, configPart, lastPublishHistory);
           }
 
+          // Rubric drift is a third change signal alongside content and settings. Without
+          // it a part whose files and settings already match produces no action at all,
+          // and a rubrics-only migration plans as "No changes" and does nothing.
+          let rubricPlan: RubricSyncPlan | undefined;
+          let remoteRubrics: RemoteRubric[] | undefined;
+          // The spec distinguishes these deliberately: `rubrics: []` means "no local
+          // criteria", so every remote row is an orphan to report; an ABSENT `rubrics` key
+          // means "this part is not managed here" and is skipped without a fetch.
+          const wantsRubrics = configPart.rubrics !== undefined;
+
+          if (wantsRubrics && shouldSyncRubrics(config)) {
+            if (!shouldSyncPartSettings(config, configAssignment, configPart)) {
+              // Silence here would reproduce the original bug in a new place: the user has
+              // sync_rubrics on, expects a migration, and gets nothing.
+              events.emit({
+                level: 'warn',
+                message:
+                  `Part "${configPart.name ?? configPart.path}" has rubrics in config but ` +
+                  `settings sync is disabled for it, so rubrics will not be pushed. ` +
+                  `Set sync_settings: true for this part to migrate them.`,
+              });
+            } else {
+              try {
+                const rows = await listRubrics(client, config.vocareum.course_id, remoteAssignment.id, mapping.apiPartId);
+                remoteRubrics = mapRubrics(rows).map((r, i) => ({ ...r, id: String(rows[i].id) }));
+                const planned = planRubricSync(configPart.rubrics ?? [], remoteRubrics);
+                const hasWork =
+                  planned.creates.length > 0 || planned.updates.length > 0 ||
+                  planned.orphans.length > 0 || planned.duplicateNames.length > 0;
+                if (hasWork) { rubricPlan = planned; }
+              } catch (error) {
+                // Leave rubricPlan undefined — "unknown", not "nothing to do". Content and
+                // settings detection for this part must not be lost to a rubric read.
+                const message = error instanceof Error ? error.message : 'Unknown error';
+                events.emit({
+                  level: 'warn',
+                  message: `Could not read rubrics for part ${mapping.apiPartId}: ${message}`,
+                });
+              }
+            }
+          }
+
           const effectiveDirs = directoriesForPart(config, configPart);
 
           const excludePatterns = publishExcludePatterns(config);
@@ -250,13 +295,20 @@ export async function reconcile(
             options.workspaceRoot ?? process.cwd()
           );
 
-          if (changedDirs.length > 0 || metadataChanged) {
+          const rubricsChanged = rubricPlan !== undefined;
+
+          if (changedDirs.length > 0 || metadataChanged || rubricsChanged) {
             const reasons: string[] = [];
             if (changedDirs.length > 0) {
               reasons.push(`Content: ${changedDirs.join(', ')}`);
             }
             if (metadataChanged) {
               reasons.push('Settings changed');
+            }
+            if (rubricPlan) {
+              const c = rubricPlan.creates.length;
+              const u = rubricPlan.updates.length;
+              reasons.push(`Rubrics: ${c} to create, ${u} to update`);
             }
             partActions.push({
               type: 'update',
@@ -267,6 +319,8 @@ export async function reconcile(
               // can read them directly instead of recomputing (Stage 1a Fix 3).
               dirHashes: Object.keys(dirHashes).length > 0 ? dirHashes : undefined,
               metadataChanged,
+              rubricPlan,
+              remoteRubrics,
               reason: reasons.join('; ')
             });
           } else {

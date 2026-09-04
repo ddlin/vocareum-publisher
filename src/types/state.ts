@@ -5,6 +5,7 @@
  */
 
 import type { Assignment, Part, DirectoryType, Config } from './config';
+import type { RubricSyncPlan, RemoteRubric } from './api';
 
 /**
  * Validation error types
@@ -74,6 +75,13 @@ export interface PartAction {
   dirHashes?: Record<string, string>;
   /** True when part metadata (name) differs from remote and needs updating */
   metadataChanged?: boolean;
+  /** Rubric work this part needs, when rubric sync is enabled and the part has
+   *  `rubrics` in config. Present only when non-empty — a part whose rubrics already
+   *  match carries no plan and stays a `skip`. */
+  rubricPlan?: RubricSyncPlan;
+  /** The part's remote rubric rows as read during reconciliation, carried so the push
+   *  confirmation can project the point total without a second fetch. */
+  remoteRubrics?: RemoteRubric[];
   reason?: string;
 }
 
