@@ -1081,7 +1081,11 @@ export async function applyPull(
   const newExclusions: string[] = [];
   const assignmentsToRemove: string[] = [];
   const assignmentsToReset: string[] = [];
-  const settingsUpdates: Map<string, { assignmentSettings?: NonNullable<AssignmentSettings>; partSettings?: Map<string, NonNullable<PartSettings>> }> = new Map();
+  const settingsUpdates: Map<string, {
+    assignmentSettings?: NonNullable<AssignmentSettings>;
+    partSettings?: Map<string, NonNullable<PartSettings>>;
+    partRubrics?: Map<string, Rubric[]>;
+  }> = new Map();
   const importedContentState: Record<string, string> = {};
 
   // ── Process orphaned assignments ──────────────────────────────────────────
@@ -1243,11 +1247,19 @@ export async function applyPull(
           }
         }
 
+        const partRubricsMap = new Map<string, Rubric[]>();
+        for (const partDrift of drift.partsDrift) {
+          if (partDrift.rubricsDrift) {
+            partRubricsMap.set(partDrift.partPath, partDrift.rubricsDrift.remote);
+          }
+        }
+
         settingsUpdates.set(drift.assignmentPath, {
           assignmentSettings: (drift.assignmentDiffs.length > 0 || drift.unknownsChanged || drift.observedChanged)
             ? drift.remoteAssignmentSettings
             : undefined,
           partSettings: partSettingsMap.size > 0 ? partSettingsMap : undefined,
+          partRubrics: partRubricsMap.size > 0 ? partRubricsMap : undefined,
         });
 
         result.settingsPulled++;
@@ -1427,8 +1439,13 @@ export async function applyPull(
         assignmentUpdate.settings = mergedSettings;
       }
 
-      if (updates.partSettings && updates.partSettings.size > 0) {
+      const hasPartUpdates =
+        (updates.partSettings?.size ?? 0) > 0 || (updates.partRubrics?.size ?? 0) > 0;
+
+      if (hasPartUpdates) {
         assignmentUpdate.parts = existingAssignment.parts.map(part => {
+          let nextPart = part;
+
           const newPartSettings = updates.partSettings?.get(part.path);
           if (newPartSettings) {
             const mergedPartSettings = {
@@ -1442,12 +1459,28 @@ export async function applyPull(
             if (newPartSettings._observed_settings === undefined) {
               delete mergedPartSettings._observed_settings;
             }
-            return {
-              ...part,
-              settings: mergedPartSettings,
-            };
+            nextPart = { ...nextPart, settings: mergedPartSettings };
           }
-          return part;
+
+          const newRubrics = updates.partRubrics?.get(part.path);
+          if (newRubrics) {
+            if (newRubrics.length > 0) {
+              // Remote is authoritative on pull: replace wholesale, never merge.
+              // A merge would resurrect criteria deleted in the Vocareum UI.
+              nextPart = { ...nextPart, rubrics: newRubrics };
+            } else {
+              // Delete on a copy rather than destructuring off a rest sibling:
+              // .eslintrc.js sets no-unused-vars with argsIgnorePattern only, which
+              // does not cover variables, and ignoreRestSiblings defaults to false —
+              // `const { rubrics: _x, ...rest }` would fail `npm run lint`. This also
+              // matches how the settings branch above clears keys.
+              const partWithoutRubrics = { ...nextPart };
+              delete partWithoutRubrics.rubrics;
+              nextPart = partWithoutRubrics;
+            }
+          }
+
+          return nextPart;
         });
       }
 

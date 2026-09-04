@@ -118,7 +118,7 @@ import type { PullContext } from '../../src/core/services/context';
 import type { PullRequest } from '../../src/core/services/types';
 import type { LockedSession } from '../../src/core/session';
 import type { OrphanedEntity } from '../../src/types/state';
-import type { Config, Rubric } from '../../src/types/config';
+import type { Config, ConfigUpdates, Rubric } from '../../src/types/config';
 import type { VocareumRubricResponse } from '../../src/types/api';
 import { mapPartSettings } from '../../src/utils/settings';
 import { ForbiddenError } from '../../src/api/client';
@@ -718,5 +718,104 @@ describe('detectSettingsDrift — rubrics', () => {
 
     expect(inspection.settingsDrift[0].partsDrift[0].diffs.map(d => d.key)).toContain('session_length');
     expect(inspection.settingsDrift[0].partsDrift[0].rubricsDrift).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ── applyPull — rubrics ─────────────────────────────────────────────────────
+
+interface ApplyPullRubricOptions {
+  /** Rubrics already in the config part. Omitted means none in config (forces "added" drift). */
+  local?: Rubric[];
+  /** Raw rubric rows as `listRubrics` would return them. `id` defaults to a placeholder when omitted. */
+  remote: Array<Omit<VocareumRubricResponse, 'id'> & { id?: string }>;
+  /** Extra remote part settings, to test settings + rubric drift together. */
+  remoteSettings?: { session_length?: string };
+  /** Resolver's answer to the settings-drift prompt. */
+  action: SettingsDriftAction;
+}
+
+/**
+ * Drive inspectPull + applyPull over the single-assignment/single-part config
+ * from `buildRubricConfig`, with rubric drift and a fixed resolver `action`.
+ * Returns the `ConfigUpdates` captured from the mocked
+ * `LockedSession.applyConfigUpdate` (undefined if it was never called, e.g.
+ * when the user keeps local).
+ */
+async function applyPullWithRubricDrift(
+  opts: ApplyPullRubricOptions
+): Promise<{ configUpdates: ConfigUpdates | undefined }> {
+  const remoteRubrics: VocareumRubricResponse[] = opts.remote.map((r, i) => ({
+    id: r.id ?? `rubric-${i}`,
+    ...r,
+  }));
+
+  // Always forward the `localRubrics` key (even when `opts.local` is undefined)
+  // so buildRubricConfig treats "no local given" as "no rubrics in config",
+  // not as its own DEFAULT_LOCAL_RUBRICS fallback.
+  const ctx = ctxWithRubrics(remoteRubrics, {
+    localRubrics: opts.local,
+    remoteSessionLength: opts.remoteSettings?.session_length,
+  });
+
+  const req: PullRequest = { batch: false, verbose: false, skipContent: false, content: false };
+  const inspection = await inspectPull(ctx, req);
+
+  const { session, applyConfigUpdate } = makeSession();
+  const resolver = makeStubResolver({
+    resolveSettingsDriftAction: vi.fn<[PullIssueSettingsDrift], Promise<SettingsDriftAction>>()
+      .mockResolvedValue(opts.action),
+  });
+
+  await applyPull(session, ctx, req, inspection, resolver);
+
+  return { configUpdates: applyConfigUpdate.mock.calls[0]?.[0] as ConfigUpdates | undefined };
+}
+
+describe('applyPull — rubrics', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('writes pulled rubrics to the part in config', async () => {
+    const { configUpdates } = await applyPullWithRubricDrift({
+      remote: [{ name: 'A', seqnum: '1', maxscore: '10', auto: true, exclude: false }],
+      action: 'pull',
+    });
+
+    const part = configUpdates!.assignments![0].parts![0];
+    expect(part.rubrics).toEqual([{ name: 'A', seqnum: '1', maxscore: '10', auto: true, exclude: false }]);
+  });
+
+  it('removes the rubrics key when the remote part has none left', async () => {
+    const { configUpdates } = await applyPullWithRubricDrift({
+      local: [{ name: 'A', seqnum: '1', maxscore: '10' }],
+      remote: [],
+      action: 'pull',
+    });
+
+    expect(configUpdates!.assignments![0].parts![0]).not.toHaveProperty('rubrics');
+  });
+
+  it('leaves config untouched when the user keeps local', async () => {
+    const { configUpdates } = await applyPullWithRubricDrift({
+      local: [{ name: 'A', seqnum: '1', maxscore: '10' }],
+      remote: [{ name: 'A', seqnum: '1', maxscore: '99' }],
+      action: 'keep',
+    });
+
+    expect(configUpdates).toBeUndefined();
+  });
+
+  it('applies settings and rubrics together without one clobbering the other', async () => {
+    const { configUpdates } = await applyPullWithRubricDrift({
+      remote: [{ name: 'A', seqnum: '1', maxscore: '10' }],
+      remoteSettings: { session_length: '120' },
+      action: 'pull',
+    });
+
+    const part = configUpdates!.assignments![0].parts![0];
+    expect(part.rubrics).toHaveLength(1);
+    expect(part.settings!.session_length).toBe('120');
   });
 });
