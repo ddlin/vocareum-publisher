@@ -261,6 +261,79 @@ export function buildPartSettingsPayload(
   return full;
 }
 
+/**
+ * Keys present in `full` but missing from `reduced`.
+ *
+ * The settings fallback ladder in push silently narrows the payload on a 400.
+ * Callers use this to name what was given up, so a reduced write is never
+ * reported as an unqualified success.
+ */
+export function describeDroppedPartSettings(
+  full: PartSettingsPayload,
+  reduced: PartSettingsPayload,
+): string[] {
+  const kept = new Set(Object.keys(reduced));
+  return Object.keys(full).filter((k) => !kept.has(k)).sort();
+}
+
+/** Fields that describe the part's platform rather than its pedagogy. */
+const PLATFORM_KEYS = ['labtype', 'container_image'] as const;
+
+/**
+ * Strip `labtype`/`container_image` from a part-settings UPDATE payload.
+ *
+ * `pull` returns these; sending them back is rejected
+ * (`400 Image <name> not found for <labtype>`), and that rejection drives the
+ * whole settings write into the lossy fallback ladder in push, costing
+ * max_points, lab_interface and tags. The API rejects `labtype` alone as well
+ * ("Latest Version could not be fetched"), so both go or neither does.
+ *
+ * Deliberately unconditional rather than diffing against remote: the payload is
+ * built in planPush, which has no remote part state, and PushIntent must
+ * describe what executePush actually sends (AGENTS.md #15). A pure function can
+ * be applied identically at both sites.
+ */
+export function omitPlatformKeysForUpdate(payload: PartSettingsPayload): PartSettingsPayload {
+  const out = { ...payload } as Record<string, unknown>;
+  for (const k of PLATFORM_KEYS) { delete out[k]; }
+  return out;
+}
+
+/** One platform field (`labtype`/`container_image`) whose desired value differs from Vocareum's. */
+export interface PlatformFieldDrift {
+  key: (typeof PLATFORM_KEYS)[number];
+  desired: string;
+  remote: string;
+}
+
+/**
+ * Find desired platform-field (`labtype`/`container_image`) values that differ
+ * from what Vocareum currently reports for the part.
+ *
+ * These fields are unconditionally stripped from every update payload by
+ * `omitPlatformKeysForUpdate` because the write API rejects them. That means a
+ * real difference here can never be resolved by push: the reconciler still
+ * sees it as drift on every run, push still plans an update, the payload still
+ * has the keys removed before it is sent, and the API still reports success —
+ * a write that changes nothing, forever, with no indication anything is
+ * wrong. Callers use this to surface that instead of staying silent.
+ */
+export function findPlatformFieldDrift(
+  toPartSettings: PartSettings | undefined,
+  remotePart: Partial<Record<(typeof PLATFORM_KEYS)[number], string>>,
+): PlatformFieldDrift[] {
+  const drift: PlatformFieldDrift[] = [];
+  for (const key of PLATFORM_KEYS) {
+    const desired = toPartSettings?.[key];
+    if (!hasSettingValue(desired)) { continue; }
+    const remote = remotePart[key] ?? '';
+    if (String(desired) !== remote) {
+      drift.push({ key, desired: String(desired), remote });
+    }
+  }
+  return drift;
+}
+
 export function collectSettingsState(config: Config): Record<string, unknown> {
   const state: Record<string, unknown> = {};
   for (const assignment of config.assignments) {

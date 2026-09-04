@@ -26,6 +26,56 @@ interface TransactionResponse {
 
 const PART_UPDATE_POLL_MAX_ATTEMPTS = 30;
 const PART_UPDATE_POLL_DELAY_MS = 1000;
+const PART_UPDATE_POLL_MAX_ATTEMPTS_CAP = 300;
+const PART_UPDATE_POLL_ATTEMPTS_PER_MB = 2;
+
+// These four numbers are DELIBERATE BEST GUESSES, not measurements. No
+// baseline for throughput to Vocareum or for server-side unzip time exists,
+// and none was available when this was written; rather than block on
+// instrumenting one, they are set for margin and revised when evidence
+// arrives. 4s/MB tolerates ~0.25 MB/s (2 Mbps) sustained -- well below any
+// plausible link, and far above the 0 s/MB the old fixed timeout effectively
+// allowed. The cap bounds a hung run. A1 is what turns these into informed
+// values; until it runs, treat them as arbitrary but safe.
+const UPLOAD_TIMEOUT_BASE_MS = 60_000;
+const UPLOAD_TIMEOUT_MS_PER_MB = 4_000;
+const UPLOAD_TIMEOUT_MAX_MS = 600_000;
+
+/**
+ * Request timeout for a part-content PUT.
+ *
+ * axios's timeout covers connect + body upload + server processing until the
+ * first response byte. A fixed 60s meant a ~144 MB body needed 2.4 MB/s
+ * sustained before the server did any work; in practice the client aborted
+ * while the server was still holding the request, and the next call for that
+ * part collided with it ("previous corresponding API request is not yet
+ * complete"). Budget ~4s per MB on top of the old floor, capped.
+ */
+export function uploadTimeoutForBytes(bodyBytes: number): number {
+  // Whole megabytes only: a sub-MB body must resolve to exactly the historical
+  // 60s floor, or existing callers and tests that pin 60000 start seeing 60001.
+  const mb = Math.floor(bodyBytes / (1024 * 1024));
+  return Math.min(
+    UPLOAD_TIMEOUT_MAX_MS,
+    UPLOAD_TIMEOUT_BASE_MS + mb * UPLOAD_TIMEOUT_MS_PER_MB,
+  );
+}
+
+/**
+ * Poll attempts to allow for the server-side unzip of a part update. Scales
+ * with payload size for the same reason as the timeout above; the old fixed
+ * 30s ceiling surfaced a large upload as a confusing "Timed out waiting for
+ * part update" rather than as slowness.
+ */
+export function pollAttemptsForBytes(bodyBytes: number): number {
+  // Whole megabytes, same reason as uploadTimeoutForBytes: a sub-MB body must
+  // yield exactly the historical 30 attempts.
+  const mb = Math.floor(bodyBytes / (1024 * 1024));
+  return Math.min(
+    PART_UPDATE_POLL_MAX_ATTEMPTS_CAP,
+    PART_UPDATE_POLL_MAX_ATTEMPTS + mb * PART_UPDATE_POLL_ATTEMPTS_PER_MB,
+  );
+}
 
 export interface DownloadContentLimits {
   maxFiles: number;
@@ -259,6 +309,84 @@ export function crc32(buffer: Buffer): number {
 }
 
 /**
+ * Target uncompressed bytes per upload chunk. 32 MB of files becomes roughly a
+ * 43 MB base64 body once zipped and encoded, which clears the scaled timeout
+ * with room to spare. Oversized single files are exempt (see chunkFilesBySize).
+ */
+// Also a best guess, not a measured optimum. 32 MB sits below both observed
+// failures (74 MB and 108 MB) while keeping directories smaller than that on
+// the single-PUT atomic path they use today. Nothing in the evidence shows a
+// 10-20 MB directory failing, so chunking one is all risk and no demonstrated
+// benefit. No measurement backs the specific value. The env override exists so
+// it can be tuned against a real course without a release.
+export const DEFAULT_MAX_CHUNK_BYTES = 32 * 1024 * 1024;
+
+/** Mirrors the validate-and-throw style of resolveThrottle in src/api/throttle.ts. */
+export function resolveMaxChunkBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.VOCAREUM_MAX_UPLOAD_CHUNK_BYTES;
+  if (raw === undefined || raw === '') { return DEFAULT_MAX_CHUNK_BYTES; }
+  if (!/^\d+$/.test(raw.trim())) {
+    throw new Error(
+      `VOCAREUM_MAX_UPLOAD_CHUNK_BYTES must be a positive integer (got "${raw}").`,
+    );
+  }
+  const n = Number(raw.trim());
+  if (n < 1024 || n > 64 * 1024 * 1024) {
+    throw new Error(
+      `VOCAREUM_MAX_UPLOAD_CHUNK_BYTES must be between 1024 and ${64 * 1024 * 1024} (got "${raw}").`,
+    );
+  }
+  return n;
+}
+
+function contentByteLength(content: Buffer | string): number {
+  return Buffer.isBuffer(content) ? content.length : Buffer.byteLength(content, 'utf8');
+}
+
+/**
+ * Partition a FileMap into chunks whose uncompressed contents stay under
+ * `maxChunkBytes`.
+ *
+ * Paths are sorted so chunking is deterministic: a retry must reproduce the
+ * same boundaries, because chunk 1 is the one that carries `reset: 1`.
+ *
+ * A single file larger than the budget gets its own chunk. There is no
+ * sub-file granularity available -- the API accepts whole files inside a zip --
+ * so the alternative would be dropping it.
+ *
+ * An empty map yields one empty chunk so that createZipBuffer still throws
+ * 'Cannot create ZIP: no files provided' exactly as it does today. Returning an
+ * empty array instead would skip the loop entirely and turn that throw into a
+ * silent success. (No caller passes an empty map: uploadDirectory returns early
+ * for empty directories.)
+ */
+export function chunkFilesBySize(files: FileMap, maxChunkBytes: number): FileMap[] {
+  const paths = Object.keys(files).sort();
+  if (paths.length === 0) { return [{}]; }
+
+  const oversized = paths.filter((p) => contentByteLength(files[p]) > maxChunkBytes);
+  const regular = paths.filter((p) => contentByteLength(files[p]) <= maxChunkBytes);
+
+  const chunks: FileMap[] = oversized.map((p) => ({ [p]: files[p] }));
+
+  let current: FileMap = {};
+  let currentBytes = 0;
+  for (const p of regular) {
+    const size = contentByteLength(files[p]);
+    if (currentBytes > 0 && currentBytes + size > maxChunkBytes) {
+      chunks.push(current);
+      current = {};
+      currentBytes = 0;
+    }
+    current[p] = files[p];
+    currentBytes += size;
+  }
+  if (Object.keys(current).length > 0) { chunks.push(current); }
+
+  return chunks;
+}
+
+/**
  * Create a ZIP buffer from a map of files
  * @internal Exported for testing
  */
@@ -371,6 +499,45 @@ export async function waitForPartUpdateTransaction(
 }
 
 /**
+ * A multi-chunk upload failed partway through, so the remote directory holds
+ * some chunks but not all of it.
+ *
+ * Recovery is to re-run the same upload from the beginning: chunk 1 carries
+ * reset:1, so replaying the whole sequence clears whatever landed and rebuilds
+ * the directory. The FINAL STATE converges regardless of where the previous
+ * attempt died.
+ *
+ * That is a statement about state, not about timing. An immediate replay can
+ * still be refused with "The previous corresponding API request is not yet
+ * complete" if the aborted request is still executing server-side -- which is
+ * exactly the failure this work exists to address. Retry after a pause, and do
+ * not treat a collision on the retry as a new fault.
+ */
+export class PartialUploadError extends APIError {
+  constructor(
+    public chunkIndex: number,
+    public totalChunks: number,
+    public directory: string,
+    public partId: string,
+    cause: unknown,
+  ) {
+    super(
+      `Part ${partId} directory "${directory}" is PARTIALLY uploaded: chunk ` +
+      `${chunkIndex + 1} of ${totalChunks} failed (${cause instanceof Error ? cause.message : String(cause)}). ` +
+      (chunkIndex === 0
+        ? `Chunk 1's own outcome is unknown -- its reset:1 may or may not have executed, ` +
+          `so the directory may now be empty, untouched, or still holding its old content. `
+        : `The remote directory now holds only the chunks before it. `) +
+      `Re-run the push to rebuild it from scratch -- the first chunk resets the directory, ` +
+      `so a full replay is safe.`,
+      undefined,
+      cause,
+    );
+    this.name = 'PartialUploadError';
+  }
+}
+
+/**
  * Upload content to a Vocareum workspace directory
  *
  * CRITICAL: Uses part update endpoint with content[].zipcontent payload.
@@ -381,6 +548,10 @@ export async function waitForPartUpdateTransaction(
  * @param partId - Part ID (string!)
  * @param directory - Directory type (startercode, scripts, docs, data)
  * @param files - Map of relative paths to file contents
+ * @param options.maxChunkBytes - Overrides the resolved chunk-size budget
+ *   (env var, then default). Large directories are split into sequential
+ *   chunks; chunk 1 sends reset:1 to clear the target, later chunks send
+ *   reset:0 to append.
  * @returns Upload result with succeeded/failed files
  */
 export async function uploadContent(
@@ -389,34 +560,122 @@ export async function uploadContent(
   assignmentId: string,
   partId: string,
   directory: DirectoryType,
-  files: FileMap
+  files: FileMap,
+  options?: { maxChunkBytes?: number }
 ): Promise<UploadResult> {
   const filePaths = Object.keys(files);
-  const zipBuffer = createZipBuffer(files);
-  const zipBase64 = zipBuffer.toString('base64');
+  // Explicit override wins over the env var, which wins over the default. Tests
+  // pass a tiny override directly; resolveMaxChunkBytes enforces a 1 KB floor
+  // that a test-sized value would otherwise trip.
+  const chunks = chunkFilesBySize(files, options?.maxChunkBytes ?? resolveMaxChunkBytes());
 
-  const response = await client.request<PartUpdateResponse>({
-    method: 'PUT',
-    url: `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
-    data: {
-      update: 1,
-      content: [
-        {
-          target: directory,
-          zipcontent: zipBase64,
-          reset: 1, // Clear directory before upload to ensure exact Git state
+  const isChunkedUpload = chunks.length > 1;
+
+  if (isChunkedUpload) {
+    // Say this out loud. A single PUT was effectively atomic from a viewer's
+    // side; a chunk sequence is not. Between chunk 1's reset and the last
+    // chunk landing, the remote directory is genuinely incomplete and students
+    // looking at the course see it that way. That window is new behavior and
+    // is not something the chunking can avoid -- there is no staged-swap
+    // primitive in the API -- so the operator has to know it exists.
+    //
+    // It also is not undoable partway through. Chunk 1's reset:1 has already
+    // erased the previous contents before chunk 2 is ever sent, and there is
+    // no rollback: an abort at chunk 5 of 14 leaves the directory holding
+    // only chunks 1-4 permanently, until a re-run completes the rest.
+    client.events.emit({
+      level: 'warn',
+      message:
+        `Uploading ${filePaths.length} files to ${directory} in ${chunks.length} chunks. ` +
+        `This directory will be incomplete in Vocareum until all chunks land. ` +
+        `If this upload fails partway, the directory is left holding only the ` +
+        `chunks that landed; re-run to restore it.`,
+    });
+  }
+
+  // Fires at most once per uploadContent call, on whichever chunk hits it
+  // first. Without this a 14-chunk upload against a server that never returns
+  // a transaction id would emit the same warning 14 times.
+  let missingTransactionWarned = false;
+
+  for (let i = 0; i < chunks.length; i++) {
+    try {
+      if (isChunkedUpload) {
+        client.events.emit({
+          level: 'info',
+          message:
+            `Uploading chunk ${i + 1} of ${chunks.length} to ${directory} ` +
+            `(${Object.keys(chunks[i]).length} files)`,
+        });
+      }
+
+      const zipBase64 = createZipBuffer(chunks[i]).toString('base64');
+      const bodyBytes = Buffer.byteLength(zipBase64, 'utf8');
+
+      // Only the first chunk resets. reset:1 clears the target directory before
+      // applying the zip, so sending it on a later chunk would delete everything
+      // uploaded so far and leave only the final chunk. Keyed off the loop
+      // index, never off chunk contents: chunkFilesBySize emits an oversized
+      // file's chunk first, so chunk 0 need not be the alphabetically-first
+      // file, but it is always this loop's first iteration.
+      const reset = i === 0 ? 1 : 0;
+
+      const response = await client.request<PartUpdateResponse>({
+        method: 'PUT',
+        url: `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}`,
+        data: {
+          update: 1,
+          content: [{ target: directory, zipcontent: zipBase64, reset }],
         },
-      ],
-    },
-    timeout: 60000,
-  });
+        timeout: uploadTimeoutForBytes(bodyBytes),
+      });
 
-  if (response.transactionid !== undefined && response.transactionid !== '') {
-    await waitForPartUpdateTransaction(client, response.transactionid);
-  } else if (response.state === 'error' || response.state === 'failed') {
-    throw new APIError(
-      response.message ?? `Part update failed (part=${partId}, dir=${directory})`
-    );
+      if (response.transactionid !== undefined && response.transactionid !== '') {
+        // Must complete before the next chunk: the server serialises part
+        // updates and rejects an overlapping one outright.
+        await waitForPartUpdateTransaction(client, response.transactionid, {
+          maxAttempts: pollAttemptsForBytes(bodyBytes),
+        });
+      } else if (response.state === 'error' || response.state === 'failed') {
+        throw new APIError(
+          response.message ?? `Part update failed (part=${partId}, dir=${directory})`
+        );
+      } else if (isChunkedUpload && !missingTransactionWarned) {
+        // No transactionid means we cannot confirm this chunk actually landed
+        // before the next PUT goes out -- the exact overlap this plan exists to
+        // prevent. Established single-response contract (tests mock
+        // {status:'success'} with no transactionid) is left alone; this only
+        // makes the gap visible rather than changing control flow.
+        //
+        // Emitted only once per upload: if the server never returns a
+        // transaction id, every remaining chunk would hit this same branch, and
+        // a warning repeated once per chunk is noise, not information.
+        missingTransactionWarned = true;
+        client.events.emit({
+          level: 'warn',
+          message:
+            `Chunk ${i + 1} of ${chunks.length} for ${directory} returned no transaction id; ` +
+            `its completion could not be confirmed before the next chunk was sent. This server ` +
+            `does not appear to return transaction ids for this upload, so no further chunks ` +
+            `will be confirmed either -- this warning will not repeat for the rest of it.`,
+        });
+      }
+    } catch (error) {
+      // Any failure in a multi-chunk sequence is indeterminate, chunk 0
+      // included. A client-side abort does not tell us whether the server
+      // applied the request -- that indeterminacy is the whole premise of this
+      // work -- so a failed chunk 0 may well have executed its reset:1 and
+      // cleared the directory, or landed chunk 0 and nothing else. Both are
+      // partial states for a multi-chunk upload.
+      //
+      // A single-chunk upload is genuinely all-or-nothing: the directory ends
+      // up either as it was or as the new content, never a mix. Leave that
+      // unwrapped so today's error surface is unchanged.
+      if (chunks.length > 1) {
+        throw new PartialUploadError(i, chunks.length, directory, partId, error);
+      }
+      throw error;
+    }
   }
 
   return {

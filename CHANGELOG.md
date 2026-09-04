@@ -25,6 +25,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and planned no deletions. Not destructive, but inert on exactly the courses the
   path fix targets. Both paths now share one `resolveArchitecture()` so they
   cannot drift apart again.
+- **Large content directories now upload.** `uploadContent` zipped an entire
+  directory into a single base64 `PUT`: a 108 MB `docs/` became a ~144 MB body
+  against a fixed 60s timeout, and peak memory ran to several times the
+  directory size. Uploads are
+  now split into sequential size-bounded chunks — the first carrying `reset: 1`
+  to clear the target, the rest `reset: 0` to append — and the request timeout
+  and transaction poll ceiling scale with payload size. The zip, base64 string
+  and request body are now bounded by the chunk size rather than the directory
+  size. (The input `FileMap` is still read whole by `uploadDirectory`, so total
+  peak memory falls but is not itself bounded by the chunk size.)
+
+  Verified against live courses: a 74 MB directory (496 files, 3 chunks) and a
+  110 MB directory (786 files, 4 chunks) both uploaded completely and matched
+  local exactly, having previously failed every attempt. Note the earlier
+  failures were **not** caused by payload size: the same
+  `The previous corresponding API request is not yet complete` error was later
+  reproduced on a 7 KB chunk, and those two parts turned out to be wedged
+  server-side, rejecting every part-level write regardless of size. Deleting and
+  recreating the assignments cleared it. Chunking is what let the content land
+  once the parts were writable again; it is not a fix for a wedged part.
+- **Part settings are no longer silently discarded.** `pull` returns
+  `container_image`, `push` echoed it back, and the write API rejected it —
+  sending the part into a fallback that kept only name, filters, session length
+  and budget while dropping `max_points`, `lab_interface`, `instant_aws_access`
+  and `tags`, and still reporting a green "Updated part". `labtype` and
+  `container_image` are now stripped from every part-settings update
+  unconditionally, not compared against remote state and omitted only when
+  unchanged — the API rejected them in every combination tested, and the
+  omission has to be deterministic so the payload `push` plans matches the one
+  it sends. One consequence: changing a part's lab type or container image
+  through `push` is no longer possible. In practice this is not a loss of a
+  working path — the API rejected the round-tripped value regardless — but it
+  is a capability gap worth knowing about. A rejection on the remaining fields
+  still retries by removing just those two, and any settings still given up
+  are named at `warn`.
+
+  **This does not make `max_points` / `total_points` take effect.** Those are a
+  separate, server-side problem: the API returns them on `GET`, accepts them on
+  `PUT` with a 200 and no warning, and then does not persist them (Vocareum
+  VOC-4003). Verified on a request that was otherwise fully applied — in the same
+  `PUT` that successfully changed `instant_aws_access`, `max_points` was ignored
+  and the part still read its old value. vocgit now reports what it *declines to
+  send*; it cannot report what the server accepts and discards, because
+  `updatePart` does not read the part back. So a course whose point values matter
+  should be verified in the Vocareum UI after a push until VOC-4003 is fixed.
 
 ### Changed
 - **A declared directory that the API reports absent is now a warning rather than
@@ -34,6 +79,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code 0. The warning names the exact path requested, so a wrong prefix is
   visible as a wrong prefix. It fires only for directories a part declares, not
   for the walk's speculative probes.
+
+### Added
+- `VOCAREUM_MAX_UPLOAD_CHUNK_BYTES` to tune the upload chunk size
+  (default 32 MB, range 1 KB–64 MB).
+- `PartialUploadError`, raised when a multi-chunk upload fails partway, naming
+  the chunk position and stating that a re-run rebuilds the directory.
 
 ## [1.3.8] — 2026-09-02
 

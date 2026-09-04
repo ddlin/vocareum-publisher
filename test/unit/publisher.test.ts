@@ -482,6 +482,11 @@ describe('publish', () => {
       staleInConfig: [],
     };
     reconcileMock.mockResolvedValue(plan);
+    // Only 2 calls: this fixture has no labtype/container_image, so the
+    // without-platform rung would be byte-identical to full and is skipped
+    // automatically (round 1 fix — the ladder now skips a rung whose payload
+    // deep-equals the one just attempted, rather than re-sending a guaranteed
+    // duplicate). The effective ladder here is full -> safe.
     updatePartMock
       .mockRejectedValueOnce({ response: { status: 400 } })
       .mockResolvedValueOnce(undefined);
@@ -621,6 +626,9 @@ describe('publish', () => {
       staleInConfig: [],
     };
     reconcileMock.mockResolvedValue(plan);
+    // Only 3 calls: this fixture has no labtype/container_image, so the
+    // without-platform rung is skipped as a guaranteed duplicate of full
+    // (round 1 fix). Effective ladder here is full -> safe -> name-only.
     updatePartMock
       .mockRejectedValueOnce({ response: { status: 400 } })
       .mockRejectedValueOnce({ response: { status: 400 } })
@@ -910,6 +918,9 @@ describe('part update full→safe ladder with _unknown_settings (integration-sty
     updateConfigMock.mockResolvedValue(undefined);
 
     const http400 = Object.assign(new Error('rejected'), { response: { status: 400 } });
+    // Only 2 calls: this fixture has no labtype/container_image, so the
+    // without-platform rung is skipped as a guaranteed duplicate of full
+    // (round 1 fix). Effective ladder here is full -> safe.
     updatePartMock
       .mockRejectedValueOnce(http400)   // full attempt
       .mockResolvedValueOnce(undefined); // safe retry
