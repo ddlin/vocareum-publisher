@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Config, HistorySettingChange, PartSettings } from '../../src/types/config';
 import type { PublishOperationOptions, ReconciliationPlan } from '../../src/types/state';
+import type { RubricCreate, RubricUpdate, RemoteRubric, RubricSyncPlan } from '../../src/types/api';
 import type { VocareumClient } from '../../src/api/client';
 import { publish, pushSettingChange, buildPartSettingsPayload } from '../../src/core/publisher';
 import { executePush } from '../../src/core/services/push-service';
@@ -26,6 +27,8 @@ const {
   getCommitShaMock,
   getGitUserNameMock,
   promptConfirmMock,
+  createRubricsMock,
+  updateRubricsMock,
 } = vi.hoisted(() => ({
   reconcileMock: vi.fn(),
   displayPlanMock: vi.fn(),
@@ -42,6 +45,13 @@ const {
   getCommitShaMock: vi.fn(),
   getGitUserNameMock: vi.fn(),
   promptConfirmMock: vi.fn(),
+  createRubricsMock: vi.fn(),
+  updateRubricsMock: vi.fn(),
+}));
+
+vi.mock('../../src/api/rubrics', () => ({
+  createRubrics: createRubricsMock,
+  updateRubrics: updateRubricsMock,
 }));
 
 vi.mock('../../src/core/reconciler', () => ({
@@ -1736,5 +1746,168 @@ describe('executePush intent authority', () => {
       {},
       plan,
     )).rejects.toThrow(/intent changed after confirmation/);
+  });
+});
+
+describe('executePush rubric history', () => {
+  /**
+   * Build a minimal update-action plan for one part carrying the given rubricPlan
+   * (against a fixed single-criterion remote, "A" @ 25 points), run the real
+   * executePush, and return the publish_history entry handed to
+   * session.applyConfigUpdate — the only place history assembly can be observed,
+   * since publish-command.test.ts mocks both planPush and executePush.
+   */
+  async function pushAndReadHistory(
+    rubricPlanInput: {
+      creates?: RubricCreate[];
+      updates?: RubricUpdate[];
+      orphans?: RemoteRubric[];
+    },
+    options: { nonInteractive?: boolean } = {},
+  ) {
+    vi.clearAllMocks();
+    getCommitShaMock.mockResolvedValue('abc123');
+    getGitUserNameMock.mockResolvedValue('tester');
+    createRubricsMock.mockResolvedValue([]);
+    updateRubricsMock.mockResolvedValue([]);
+
+    const rubricPlan: RubricSyncPlan = {
+      creates: rubricPlanInput.creates ?? [],
+      updates: rubricPlanInput.updates ?? [],
+      orphans: rubricPlanInput.orphans ?? [],
+      duplicateNames: [],
+    };
+    const remoteRubrics: RemoteRubric[] = [
+      { id: 'r1', name: 'A', seqnum: '1', maxscore: '25', auto: false, exclude: false },
+    ];
+
+    const config: Config = {
+      version: '1.0',
+      vocareum: { org_id: '1', course_id: 'c1', api_base_url: 'https://api.vocareum.com' },
+      assignments: [
+        {
+          assignment_id: 'a1',
+          name: 'Lab 1',
+          path: 'lab1',
+          parts: [{ part_id: 'p1', path: 'part1', rubrics: [] }],
+        },
+      ],
+      publish_history: [],
+    } as unknown as Config;
+
+    const reconciliation = {
+      config,
+      course: { type: 'skip' },
+      assignments: [
+        {
+          type: 'update',
+          assignment: config.assignments[0],
+          parts: [
+            {
+              type: 'update',
+              part: config.assignments[0].parts[0],
+              contentChanged: false,
+              rubricPlan,
+              remoteRubrics,
+            },
+          ],
+        },
+      ],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 1,
+        estimatedApiCalls: 1,
+      },
+      orphanedInVocareum: [],
+      staleInConfig: [],
+    } as unknown as ReconciliationPlan;
+
+    const intent = {
+      assignments: [
+        {
+          path: 'lab1',
+          name: 'Lab 1',
+          assignmentId: 'a1',
+          action: 'update' as const,
+          parts: [{ partId: 'p1', path: 'part1', contentHashes: {}, rubricPlan }],
+        },
+      ],
+    };
+
+    const plan: PushPlan = {
+      intent,
+      preconditions: {
+        configDigest: 'digest',
+        contentHashes: {},
+        assignmentIds: ['a1'],
+        partIds: ['p1'],
+        remoteAssumptions: [
+          { assignmentPath: 'lab1', assignmentId: 'a1', exists: true, partIds: ['p1'] },
+        ],
+      },
+      semanticFingerprint: semanticFingerprint(intent),
+      summary: '1 to update',
+      hasChanges: true,
+      execution: { reconciliation, workingConfig: config },
+    };
+
+    const applyConfigUpdate = vi.fn().mockResolvedValue(undefined);
+    await executePush(
+      { applyConfigUpdate } as unknown as LockedSession,
+      {
+        persistedConfig: config,
+        effectiveConfig: config,
+        configPath: 'vocareum.yaml',
+        workspaceRoot: process.cwd(),
+        events: new CollectingEventSink(),
+        prompter: new NonInteractivePrompter(),
+        client: {} as VocareumClient,
+      },
+      { nonInteractive: options.nonInteractive ?? false },
+      plan,
+    );
+
+    return applyConfigUpdate.mock.calls[0][0].publish_history[0];
+  }
+
+  it('records created and updated criteria in publish_history with the point delta', async () => {
+    const history = await pushAndReadHistory({ creates: [{ name: 'B', maxscore: '5' }] });
+
+    expect(history.changes?.rubrics?.[0]).toMatchObject({
+      part_id: expect.any(String),
+      created: ['B'],
+      points_before: 25,
+      points_after: 30,
+    });
+  });
+
+  it('records the updated criterion by name using the remote row when the update omits it', async () => {
+    const history = await pushAndReadHistory({ updates: [{ id: 'r1', maxscore: '30' }] });
+
+    expect(history.changes?.rubrics?.[0]).toMatchObject({
+      updated: ['A'],
+      points_before: 25,
+      points_after: 30,
+    });
+    expect(history.changes?.rubrics?.[0].created).toBeUndefined();
+  });
+
+  it('records a held part with its reason and no created/updated names', async () => {
+    const history = await pushAndReadHistory(
+      {
+        creates: [{ name: 'NEW', maxscore: '5' }],
+        orphans: [{ id: 'r9', name: 'OLD', seqnum: '9', maxscore: '5' }],
+      },
+      { nonInteractive: true },
+    );
+
+    expect(createRubricsMock).not.toHaveBeenCalled();
+    expect(history.changes?.rubrics?.[0]).toMatchObject({ held: 'orphans-held' });
+    expect(history.changes?.rubrics?.[0].created).toBeUndefined();
   });
 });

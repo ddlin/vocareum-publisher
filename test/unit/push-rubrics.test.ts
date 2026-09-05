@@ -4,7 +4,7 @@ import type { ReconciliationPlan } from '../../src/types/state';
 import type { RubricCreate, RubricUpdate, RemoteRubric, RubricSyncPlan } from '../../src/types/api';
 import type { VocareumClient } from '../../src/api/client';
 import { ForbiddenError } from '../../src/api/client';
-import { executePush } from '../../src/core/services/push-service';
+import { executePush, emitRubricPlanSummary } from '../../src/core/services/push-service';
 import { semanticFingerprint } from '../../src/core/services/plan-fingerprint';
 import type { PushPlan } from '../../src/core/services/types';
 import type { LockedSession } from '../../src/core/session';
@@ -533,5 +533,85 @@ describe('executePush — rubric writes', () => {
       (e) => e.message?.includes('Rubric writes are not permitted with this API token') === true,
     );
     expect(scopeWarnings).toHaveLength(1);
+  });
+});
+
+describe('emitRubricPlanSummary (plan-confirmation display)', () => {
+  /** Render one part's rubric plan the way both planPush display branches do, and
+   *  return the joined message text for substring/regex assertions. */
+  function renderPlanWithRubrics(input: {
+    creates: RubricCreate[];
+    updates: RubricUpdate[];
+    orphans: RemoteRubric[];
+    remoteRubrics: RemoteRubric[];
+  }): string {
+    const events: ServiceEvent[] = [];
+    const rubricPlan: RubricSyncPlan = {
+      creates: input.creates,
+      updates: input.updates,
+      orphans: input.orphans,
+      duplicateNames: [],
+    };
+    emitRubricPlanSummary(
+      { emit: (e: ServiceEvent) => { events.push(e); } },
+      'Part Golden',
+      rubricPlan,
+      input.remoteRubrics,
+    );
+    return events.map((e) => e.message ?? '').join('\n');
+  }
+
+  it('shows creates, updates, and the projected point change before confirming', () => {
+    const out = renderPlanWithRubrics({
+      creates: [{ name: 'B', maxscore: '5' }],
+      updates: [],
+      orphans: [{ id: 'r9', name: 'OLD', seqnum: '9', maxscore: '5' }],
+      remoteRubrics: [{ id: 'r1', name: 'A', seqnum: '1', maxscore: '25', auto: false, exclude: false }],
+    });
+
+    expect(out).toContain('1 rubric criterion to create');
+    expect(out).toMatch(/no local counterpart/);
+    expect(out).toMatch(/25 to 30/); // the sentence that makes the risk legible
+    expect(out).toContain('never deletes');
+  });
+
+  it('shows updates without a create when only maxscore drifted', () => {
+    const out = renderPlanWithRubrics({
+      creates: [],
+      updates: [{ id: 'r1', maxscore: '15' }],
+      orphans: [],
+      remoteRubrics: [{ id: 'r1', name: 'A', seqnum: '1', maxscore: '10', auto: false, exclude: false }],
+    });
+
+    expect(out).toContain('0 rubric criteria to create, 1 to update');
+    expect(out).toMatch(/10 to 15/);
+  });
+
+  it('omits the point projection and names the unparseable criteria instead', () => {
+    const out = renderPlanWithRubrics({
+      creates: [],
+      updates: [],
+      orphans: [],
+      remoteRubrics: [{ id: 'r1', name: 'Bad', seqnum: '1', maxscore: 'N/A', auto: false, exclude: false }],
+    });
+
+    expect(out).toMatch(/could not be computed/);
+    expect(out).toContain('Bad');
+    expect(out).not.toMatch(/Points would go from/);
+  });
+
+  it('reports duplicate names and refuses to push, without a point projection', () => {
+    const events: ServiceEvent[] = [];
+    emitRubricPlanSummary(
+      { emit: (e: ServiceEvent) => { events.push(e); } },
+      'Part Golden',
+      { creates: [], updates: [], orphans: [], duplicateNames: ['Task 1'] },
+      [],
+    );
+
+    const out = events.map((e) => e.message ?? '').join('\n');
+    expect(out).toMatch(/duplicate criterion names/);
+    expect(out).toContain('Task 1');
+    expect(out).not.toMatch(/to create/);
   });
 });

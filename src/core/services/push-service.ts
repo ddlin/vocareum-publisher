@@ -19,9 +19,11 @@ import type {
   AssignmentSettingsPayload,
   VocareumAssignmentResponse,
   VocareumPartResponse,
+  RubricSyncPlan,
+  RemoteRubric,
 } from '../../types/api';
-import type { HistorySettingChange, HistoryFileChange, AssignmentSettings } from '../../types/config';
-import type { PublishResult } from '../../types/state';
+import type { HistorySettingChange, HistoryFileChange, HistoryRubricChange, AssignmentSettings } from '../../types/config';
+import type { PublishResult, ReconciliationPlan } from '../../types/state';
 import { reconcile, displayPlan } from '../reconciler';
 import { assertConfinedToWorkspace, publishExcludePatterns } from '../local-scan';
 import { calculateDirectoryHash, readFile as readTextFile } from '../../utils/files';
@@ -29,6 +31,7 @@ import { copyAssignment, getAssignment, updateAssignment } from '../../api/assig
 import { updateCourse } from '../../api/courses';
 import { getPart, updatePart } from '../../api/parts';
 import { createRubrics, updateRubrics } from '../../api/rubrics';
+import { projectedPoints } from '../../utils/rubrics';
 import { ForbiddenError } from '../../api/client';
 import { mapParts } from '../mapper';
 import { readDirectory as readLocalDirectory, syncDirectory } from '../uploader';
@@ -44,7 +47,78 @@ import {
 import type { PushContext } from './context';
 import type { LockedSession } from '../session';
 import type { PushRequest, PushPlan, PushIntent, PushPreconditions, AssignmentIntent, PartIntent } from './types';
+import type { EventSink } from './event-sink';
 import { semanticFingerprint } from './plan-fingerprint';
+
+/**
+ * Render one part's rubric plan into confirmation-facing lines: creates/updates
+ * counts, each orphan by name, the projected point total, and the never-deletes
+ * reminder. Exported so both plan-display branches in `planPush` (verbose
+ * `displayPlan` and the compact "Found:" summary) share one rendering, and so the
+ * rename hazard — a renamed criterion reads as a duplicate, inflating the part's
+ * points — is visible in the ordinary interactive confirmation, not only
+ * `--verbose`/`--dry-run`.
+ */
+export function emitRubricPlanSummary(
+  events: EventSink,
+  partLabel: string,
+  rubricPlan: RubricSyncPlan,
+  remoteRubrics: RemoteRubric[] | undefined,
+): void {
+  if (rubricPlan.duplicateNames.length > 0) {
+    events.emit({
+      level: 'warn',
+      message:
+        `Rubrics for "${partLabel}": duplicate criterion names ` +
+        `(${rubricPlan.duplicateNames.join(', ')}); rubrics will not be pushed for this part.`,
+    });
+    return;
+  }
+
+  const criterionWord = rubricPlan.creates.length === 1 ? 'criterion' : 'criteria';
+  events.emit({
+    level: 'plain',
+    message:
+      `Rubrics for "${partLabel}": ${rubricPlan.creates.length} rubric ${criterionWord} to create, ` +
+      `${rubricPlan.updates.length} to update`,
+  });
+
+  for (const orphan of rubricPlan.orphans) {
+    events.emit({
+      level: 'warn',
+      message: `  "${orphan.name}" has no local counterpart and will be left in place`,
+    });
+  }
+
+  const { before, after, unparseable } = projectedPoints(remoteRubrics ?? [], rubricPlan);
+  if (unparseable.length > 0) {
+    events.emit({
+      level: 'warn',
+      message:
+        `  Points total could not be computed — unparseable maxscore on: ${unparseable.join(', ')}`,
+    });
+  } else {
+    events.emit({ level: 'plain', message: `  Points would go from ${before} to ${after}` });
+  }
+
+  events.emit({ level: 'plain', message: '  Push never deletes rubric criteria.' });
+}
+
+/** Emit `emitRubricPlanSummary` for every part in the plan that carries a rubricPlan. */
+function emitRubricPlanSummaries(reconPlan: ReconciliationPlan, events: EventSink): void {
+  for (const assignmentAction of reconPlan.assignments) {
+    if (assignmentAction.type === 'error' || assignmentAction.type === 'skip') { continue; }
+    for (const partAction of assignmentAction.parts) {
+      if (partAction.type === 'skip' || partAction.rubricPlan === undefined) { continue; }
+      emitRubricPlanSummary(
+        events,
+        partAction.part.name ?? partAction.part.path,
+        partAction.rubricPlan,
+        partAction.remoteRubrics,
+      );
+    }
+  }
+}
 
 function validateExecutableIntent(plan: PushPlan): void {
   const actionableAssignments = plan.execution.reconciliation.assignments.filter(
@@ -205,6 +279,7 @@ export async function planPush(
 
   if ((req.verbose ?? false) || (req.dryRun ?? false)) {
     displayPlan(reconPlan, events);
+    emitRubricPlanSummaries(reconPlan, events);
   } else if (hasChanges) {
     const extras: string[] = [];
     if (reconPlan.summary.coursesToUpdate > 0) { extras.push('course settings update'); }
@@ -217,6 +292,11 @@ export async function planPush(
         `${reconPlan.summary.assignmentsToSkip} unchanged` +
         (extras.length > 0 ? ` (${extras.join(', ')})` : ''),
     });
+    // The rename hazard (a renamed criterion re-creates as a duplicate and
+    // inflates the part's points) must be visible here too — this compact
+    // branch, not displayPlan's --verbose/--dry-run form, is the summary the
+    // ordinary interactive user confirms from.
+    emitRubricPlanSummaries(reconPlan, events);
   }
 
   // Build the configDigest from the persisted YAML text.
@@ -569,6 +649,7 @@ export async function executePush(
   let rubricsAvailable = true;
   const settingChanges: HistorySettingChange[] = [];
   const fileChanges: HistoryFileChange[] = [];
+  const rubricChanges: HistoryRubricChange[] = [];
   const fileSizeState: Record<string, number> = { ...(lastHistory?.file_size_state ?? {}) };
   const intentAssignmentsByPath = new Map(
     plan.intent.assignments.map((assignmentIntent) => [assignmentIntent.path, assignmentIntent]),
@@ -970,6 +1051,11 @@ export async function executePush(
         events.emit({ level: 'warn', message });
         result.failed.push({ type: 'part', id: partId, error: message });
         result.success = false;
+        rubricChanges.push({
+          assignment_id: action.assignment.assignment_id ?? '',
+          part_id: partId,
+          held: 'no-scope',
+        });
       } else if (rubricPlan !== undefined && assignmentIntent.action !== 'create' && rubricsAvailable) {
         const partLabel = partAction.part.name ?? partAction.part.path;
         // `courseId` does not exist in executePush — the surrounding code reads
@@ -990,6 +1076,11 @@ export async function executePush(
           events.emit({ level: 'error', message });
           result.failed.push({ type: 'part', id: partId, error: message });
           result.success = false;
+          rubricChanges.push({
+            assignment_id: assignmentId,
+            part_id: partId,
+            held: 'duplicate-names',
+          });
         } else {
           const holdCreates = req.nonInteractive === true && rubricPlan.orphans.length > 0;
           if (holdCreates) {
@@ -1003,19 +1094,20 @@ export async function executePush(
             result.success = false;
           }
 
-          let wroteAnything = false;
+          let createdOk = false;
+          let updatedOk = false;
           try {
             if (!holdCreates && rubricPlan.creates.length > 0) {
               await createRubrics(ctx.client, courseId, assignmentId, partId, rubricPlan.creates);
               events.emit({ level: 'success', message: `Created ${rubricPlan.creates.length} rubric criteria on "${partLabel}"` });
-              wroteAnything = true;
+              createdOk = true;
             }
             if (rubricPlan.updates.length > 0) {
               await updateRubrics(ctx.client, courseId, assignmentId, partId, rubricPlan.updates);
               events.emit({ level: 'success', message: `Updated ${rubricPlan.updates.length} rubric criteria on "${partLabel}"` });
-              wroteAnything = true;
+              updatedOk = true;
             }
-            if (wroteAnything) { partWasUpdated = true; }
+            if (createdOk || updatedOk) { partWasUpdated = true; }
           } catch (error) {
             if (error instanceof ForbiddenError) {
               // Unlike the read side, this does NOT degrade to a warning: the write was the
@@ -1034,6 +1126,32 @@ export async function executePush(
             }
             result.failed.push({ type: 'part', id: partId, error: describeApiError(error) });
             result.success = false;
+          }
+
+          // Record what actually happened to this part's rubrics — the criteria written
+          // (by name), the resulting point delta, and the hold reason when creates were
+          // withheld. Only the applied portion of the plan (not the full plan) feeds the
+          // point projection, so a held create doesn't get counted as though it landed.
+          const heldReason = holdCreates ? 'orphans-held' : undefined;
+          if (createdOk || updatedOk || heldReason !== undefined) {
+            const appliedPlan: RubricSyncPlan = {
+              creates: createdOk ? rubricPlan.creates : [],
+              updates: updatedOk ? rubricPlan.updates : [],
+              orphans: rubricPlan.orphans,
+              duplicateNames: [],
+            };
+            const { before, after, unparseable } = projectedPoints(partAction.remoteRubrics ?? [], appliedPlan);
+            const remoteNameById = new Map((partAction.remoteRubrics ?? []).map((r) => [r.id, r.name]));
+            rubricChanges.push({
+              assignment_id: assignmentId,
+              part_id: partId,
+              created: createdOk ? rubricPlan.creates.map((c) => c.name) : undefined,
+              updated: updatedOk
+                ? rubricPlan.updates.map((u) => u.name ?? remoteNameById.get(u.id) ?? u.id)
+                : undefined,
+              ...(unparseable.length === 0 ? { points_before: before, points_after: after } : {}),
+              ...(heldReason !== undefined ? { held: heldReason } : {}),
+            });
           }
           }
         }
@@ -1172,10 +1290,11 @@ export async function executePush(
     settings_state: settingsState,
     file_size_state: fileSizeState,
     changes:
-      settingChanges.length > 0 || fileChanges.length > 0
+      settingChanges.length > 0 || fileChanges.length > 0 || rubricChanges.length > 0
         ? {
             settings: settingChanges.length > 0 ? settingChanges : undefined,
             files: fileChanges.length > 0 ? fileChanges : undefined,
+            rubrics: rubricChanges.length > 0 ? rubricChanges : undefined,
           }
         : undefined,
     created: result.created.map((c) => ({ assignment: c.id, parts: c.parts ?? [] })),

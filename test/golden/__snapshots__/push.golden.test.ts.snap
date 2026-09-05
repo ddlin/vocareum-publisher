@@ -2,13 +2,18 @@
 
 exports[`golden: push > (a) changed: sequence contains PUT and snapshot is stable 1`] = `
 {
-  "errors": "",
+  "errors": "  "Old Criterion" has no local counterpart and will be left in place",
   "output": "Starting push for course course-golden-1...
 Analyzing changes...
 Fetching current state from Vocareum...
 Found: 0 to create, 1 to update, 0 unchanged
+Rubrics for "Part Golden": 1 rubric criterion to create, 1 to update
+  Points would go from 13 to 20
+  Push never deletes rubric criteria.
 
 Executing push...
+Created 1 rubric criteria on "Part Golden"
+Updated 1 rubric criteria on "Part Golden"
 Uploading 1 files to startercode...
 Uploaded 1 files
 Push completed successfully!
@@ -19,6 +24,9 @@ Pushed: 0 created, 1 updated.",
     "GET /courses/course-golden-1/assignments/asn-golden-1",
     "GET /courses/course-golden-1/assignments/asn-golden-1/parts",
     "GET /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1",
+    "GET /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1/rubrics",
+    "POST /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1/rubrics",
+    "PUT /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1/rubrics",
     "PUT /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1",
   ],
 }
@@ -26,11 +34,15 @@ Pushed: 0 created, 1 updated.",
 
 exports[`golden: push > (b) cancel: no PUT when user declines 1`] = `
 {
-  "errors": "Push cancelled by user.",
+  "errors": "  "Old Criterion" has no local counterpart and will be left in place
+Push cancelled by user.",
   "output": "Starting push for course course-golden-1...
 Analyzing changes...
 Fetching current state from Vocareum...
 Found: 0 to create, 1 to update, 0 unchanged
+Rubrics for "Part Golden": 1 rubric criterion to create, 1 to update
+  Points would go from 13 to 20
+  Push never deletes rubric criteria.
 
 Push completed successfully!
 Cancelled by user",
@@ -40,21 +52,28 @@ Cancelled by user",
     "GET /courses/course-golden-1/assignments/asn-golden-1",
     "GET /courses/course-golden-1/assignments/asn-golden-1/parts",
     "GET /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1",
+    "GET /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1/rubrics",
   ],
 }
 `;
 
 exports[`golden: push > (c) failure: upload error is recorded and run does not throw 1`] = `
 {
-  "errors": "Failed to upload startercode for part part-golden-1
+  "errors": "  "Old Criterion" has no local counterpart and will be left in place
+Failed to upload startercode for part part-golden-1
 Push failed with errors.
 - file part-golden-1/startercode: Upload failed: server error",
   "output": "Starting push for course course-golden-1...
 Analyzing changes...
 Fetching current state from Vocareum...
 Found: 0 to create, 1 to update, 0 unchanged
+Rubrics for "Part Golden": 1 rubric criterion to create, 1 to update
+  Points would go from 13 to 20
+  Push never deletes rubric criteria.
 
 Executing push...
+Created 1 rubric criteria on "Part Golden"
+Updated 1 rubric criteria on "Part Golden"
 Uploading 1 files to startercode...",
   "sequence": [
     "GET /courses/course-golden-1",
@@ -62,6 +81,9 @@ Uploading 1 files to startercode...",
     "GET /courses/course-golden-1/assignments/asn-golden-1",
     "GET /courses/course-golden-1/assignments/asn-golden-1/parts",
     "GET /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1",
+    "GET /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1/rubrics",
+    "POST /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1/rubrics",
+    "PUT /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1/rubrics",
     "PUT /courses/course-golden-1/assignments/asn-golden-1/parts/part-golden-1",
   ],
   "threw": "Push completed with errors",

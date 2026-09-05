@@ -101,8 +101,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Existing configs migrate themselves — the next `pull` reports the change as settings drift
   and rewrites both fields into `_observed_settings`.
 
-  To change a course's points, change its rubric criteria. vocgit reads rubrics but does not
-  yet write them, so that remains a Vocareum UI operation for now.
+  To change a course's points, edit `parts[].rubrics` in `vocareum.yaml` and push — `push`
+  now creates and updates rubric criteria to match (see below); this is the *only* way vocgit
+  can change a course's points, since both derived fields are otherwise read-only.
 
 ### Added
 - `VOCAREUM_MAX_UPLOAD_CHUNK_BYTES` to tune the upload chunk size
@@ -117,20 +118,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rubric data existed. In one migration this meant 425 criteria carrying 2,448
   points did not reach the target courses.
 
-  Rubrics remain **read-only**: `push` does not create, update or delete rubric
-  rows, so a migrated course still needs its rubrics entered by hand. The write
-  API's payload shape is unverified and is being probed before push support is
-  designed.
-
-  The rubrics token permission is optional at token creation. A token without it
-  logs a warning and pull continues normally — settings and content drift are
-  unaffected. There are two independent fetchers (drift detection and orphan
-  import), so a single run can log this at most twice. Set
-  `publish_options.sync_rubrics: false` to skip the fetch entirely (it costs at
-  least one API call per part — more if a part has over 100 criteria);
-  `sync_settings: false` skips it too during drift detection,
+  The rubrics **read** token permission is optional at token creation. A token
+  without it logs a warning and pull continues normally — settings and content
+  drift are unaffected. There are two independent fetchers (drift detection and
+  orphan import), so a single run can log this at most twice.
+  `publish_options.sync_settings: false` skips rubric drift detection too,
   since rubrics are read during the settings pass — orphan import still records
-  rubrics whenever `sync_rubrics` is on, the same way it records settings.
+  rubrics whenever `sync_rubrics` is on, the same way it records settings. See
+  the next entry for `sync_rubrics` and the push-side write.
+
+- **`push` now creates and updates rubric criteria to match `vocareum.yaml`.**
+  This is the feature the previous entry's rubric *reads* were building toward,
+  and it's the only way vocgit can change a course's points — `max_points` and
+  `total_points` are derived from rubric criteria and otherwise read-only (see
+  the "Point totals" entry above). For each rubric-bearing part, `push` diffs
+  local `parts[].rubrics` against the remote list by criterion **name**: a local
+  name with no remote match is created; a matched pair whose `maxscore`/`auto`/
+  `exclude` differs is updated.
+
+  **`push` never deletes a rubric criterion.** A remote row with no local
+  counterpart is reported as an orphan — named, with the resulting point total
+  — and left in place. This matters because Vocareum has no rename operation for
+  rubric rows: renaming a criterion in `vocareum.yaml` reads as "delete one, add
+  another," so it creates a duplicate and inflates the part's points rather than
+  renaming in place. The push confirmation shows the projected point change
+  (e.g. "points would go from 25 to 30") specifically so this is visible before
+  it's applied, not after. A part whose rubric names collide (locally or
+  remotely) is refused entirely, since matching against duplicates is
+  ambiguous. In `--non-interactive` mode, a part with both creates and orphans
+  has its creates held back and is recorded as a failure, rather than risk
+  silently duplicating a rename unattended.
+
+  Rubric sync does not run for a newly created assignment in the same push that
+  creates it — the assignment is copied from a template that already carries
+  the template's rubrics. A second `push` reconciles it like any other part.
+
+  Every rubric write lands in `publish_history[].changes.rubrics`: which
+  criteria were created and updated by name, the point delta, and — for a held
+  part — why nothing was written.
+
+  On by default; disabled by `publish_options.sync_rubrics: false` or
+  `sync_settings: false` (same precedence as the pull-side read). Requires the
+  rubrics token's POST and PUT permissions in addition to the existing GET —
+  without them, `push` fails the run with an explanatory error rather than
+  silently leaving points unmigrated.
 
 ## [1.3.8] — 2026-09-02
 

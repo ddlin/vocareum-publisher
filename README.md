@@ -137,7 +137,7 @@ assignments:
           lab_interface:
             panels: ["Console"]
             controls: ["Reset"]
-        rubrics:                       # Recorded by `pull`; not yet pushed (read-only)
+        rubrics:                       # Recorded by `pull`; created/updated by `push` (never deleted)
           - name: "[Tasks 2-5] Prompts were run in the playground"
             seqnum: "1"
             maxscore: "10"
@@ -161,7 +161,7 @@ publish_options:
   on_missing_id: "skip"
   auto_commit: false
   sync_settings: true                # Set false to sync files only, not settings
-  sync_rubrics: true                 # Set false to skip fetching rubrics on pull (at least one extra API call per part)
+  sync_rubrics: true                 # Set false to skip fetching/pushing rubrics (at least one extra API call per part)
   sync_deletes: false
 
 publish_history:
@@ -190,8 +190,9 @@ Because Vocareum's API treats fields inconsistently — some are writable, some 
   **`total_points`** are *derived* by Vocareum from the part's rubric criteria — the sum of
   each criterion's `maxscore` where `exclude` is not true — and are not storable. Setting
   `max_points` on a part is accepted and silently discarded; setting `total_points` on an
-  assignment is rejected outright. **To change a course's points, change its rubric
-  criteria** (today, in the Vocareum UI — vocgit's rubric support is read-only).
+  assignment is rejected outright. **To change a course's points, edit `parts[].rubrics`
+  in `vocareum.yaml` and push** — see [Rubrics](#rubrics) below. This is the *only* way
+  vocgit can change a course's points, since both point fields are otherwise read-only.
 - **`_unknown_settings`** — fields vocgit doesn't recognize yet (typically new Vocareum features). vocgit preserves them verbatim and passes them back through unchanged on the next push, so nothing is silently lost. When these appear, vocgit prints an end-of-run notice asking you to [file an issue](https://github.com/ddlin/vocareum-publisher/issues/new) so the field can be promoted to a supported setting.
 
 **"Accepted but not confirmed" fields.** Some writable fields (e.g. `exam_mode`, `exam_duration`, `deadlinedate`, `late_penalty_percent`) are accepted by the API on write but are not echoed back on read. vocgit writes them and trusts the success response — it just can't read them back to confirm the value applied, so it won't report drift on them.
@@ -215,20 +216,32 @@ assignments:
 
 When settings sync is disabled for an assignment or part, vocgit skips both pushing its settings and reporting settings drift for it on pull. The settings stay in `vocareum.yaml` — they're just ignored until you re-enable sync.
 
-### Rubrics (read-only)
+### Rubrics
 
-`vocgit pull` also fetches each part's grading rubric and records it under `parts[].rubrics` in `vocareum.yaml`, reporting drift the same way it does for settings. **Rubrics are read-only in this release**: `push` never creates, updates, or deletes rubric rows on Vocareum, so a course migrated with vocgit still needs its rubrics entered by hand. The server-assigned rubric ID is deliberately not stored — it's course-scoped and must not be reused if the rubric is later recreated in a different course.
+`vocgit pull` fetches each part's grading rubric and records it under `parts[].rubrics` in `vocareum.yaml`, reporting drift the same way it does for settings. `vocgit push` then keeps Vocareum's rubric rows in sync with what's in `vocareum.yaml`: it **creates** local criteria that don't exist remotely and **updates** ones whose `maxscore`/`auto`/`exclude` drifted — matched by criterion **name**. This is on by default (see [Opting out](#opting-out-of-rubric-sync) below) and it's the only way vocgit can change a course's points, since `max_points`/`total_points` are otherwise read-only derived fields (see [Understanding Settings Sync](#understanding-settings-sync) above).
 
-Fetching rubrics costs one API call per part visited (more if a part has over 100 criteria, since `listRubrics` paginates at 100 rows per page). Set `publish_options.sync_rubrics: false` to skip it on courses where that matters:
+**`push` never deletes a rubric criterion.** A remote row with no matching local name is reported as an *orphan* and left in place — you'll see it called out by name in the push confirmation, along with the resulting point total ("points would go from 25 to 30"), before anything is written. This matters because **renaming a criterion in `vocareum.yaml` does not rename it on Vocareum** — vocgit has no way to tell "renamed" apart from "deleted one, added another" — so a rename creates a *new* criterion (the old one becomes an orphan) and inflates the part's `max_points`. Watch for that line in the confirmation before you approve it.
+
+A part is refused entirely (nothing is written) if its rubric names collide — either two local criteria share a name, or two remote ones do — since a name match against duplicates is ambiguous and guessing risks updating the wrong row's points. In `--non-interactive` mode, creates are additionally held back (the whole part is skipped, logged as a failure) whenever the part also has orphans, since an unattended run can't distinguish a genuine new criterion from a rename; re-run interactively to confirm.
+
+**Rubric sync does not run for a newly created assignment** in the same push that creates it — the assignment is created from a template that already carries the template's rubrics, and diffing against not-yet-known remote IDs isn't meaningful in the same pass. Run `vocgit push` a second time and it reconciles rubrics for the new assignment normally, same as any other drift.
+
+Every rubric write is recorded in `publish_history[].changes.rubrics`, one entry per part touched or held: which criteria were created and updated (by name), the resulting point delta, and — for a held part — why nothing was written.
+
+The server-assigned rubric ID is deliberately not stored in `vocareum.yaml` — it's course-scoped and must not be reused if the rubric is later recreated in a different course.
+
+#### Opting out of rubric sync
+
+Fetching and writing rubrics costs at least one extra API call per part (more on read if a part has over 100 criteria, since `listRubrics` paginates at 100 rows per page). Set `publish_options.sync_rubrics: false` to disable it — both the `pull`-side fetch/drift-check and the `push`-side create/update — on courses where that matters:
 
 ```yaml
 publish_options:
-  sync_rubrics: false          # Skip fetching rubrics during pull
+  sync_rubrics: false          # Skip fetching and pushing rubrics entirely
 ```
 
-`sync_rubrics` is nested inside the settings-sync pass, not a separate one — `sync_settings: false` skips rubrics too during drift detection, regardless of `sync_rubrics`. There's no independent rubric-only traversal, so if you manage settings by hand in the Vocareum UI but still want rubrics drift-checked from Git, that combination isn't supported yet. This only affects drift detection: importing an orphaned assignment records its rubrics whenever `sync_rubrics` is on, the same way it records settings, regardless of `sync_settings`.
+`sync_rubrics` is nested inside the settings-sync pass, not a separate one — `sync_settings: false` disables rubric sync too, regardless of `sync_rubrics`. There's no independent rubric-only traversal, so if you manage settings by hand in the Vocareum UI but still want rubrics synced from Git, that combination isn't supported yet. This only affects drift detection and push: importing an orphaned assignment on pull records its rubrics whenever `sync_rubrics` is on, the same way it records settings, regardless of `sync_settings`.
 
-The rubrics token permission (see [Generating a Token](#generating-a-token)) is optional: a token without it logs a warning and pull continues normally, with settings and content drift unaffected. There are two independent fetchers (drift detection and orphan import), each warning at most once, so a single run can log this at most twice.
+The rubrics **write** token permissions (POST, PUT — see [Generating a Token](#generating-a-token)) are required for `push` to create or update criteria; without them, `push` fails the run with an error telling you to regenerate the token, rather than silently leaving points unmigrated. The **read** permission (GET) is optional for `pull`: a token without it logs a warning and pull continues normally, with settings and content drift unaffected. There are two independent read fetchers (drift detection and orphan import), each warning at most once, so a single pull run can log that at most twice.
 
 ## CLI Commands
 
@@ -329,7 +342,7 @@ unexpectedly large or malformed remote file listings.
 
 **For settings drift** (local settings differ from Vocareum):
 - **Pull**: Update local config with settings from Vocareum
-- **Keep**: Keep local settings (will overwrite Vocareum on next push; if the drift included rubrics, the rubric changes are read-only and are not part of that push — see [Rubrics (read-only)](#rubrics-read-only))
+- **Keep**: Keep local settings (will overwrite Vocareum on next push; if the drift included rubrics, `push` also reconciles those — see [Rubrics](#rubrics))
 - **Skip**: Do nothing for now
 
 Set `publish_options.sync_settings: false` to skip course, assignment, and part settings sync while still syncing files. Assignments and parts can override this with their own `sync_settings` value; part settings take precedence over assignment settings, which take precedence over the global publish option. Disabled settings remain in `vocareum.yaml` but are ignored for drift detection and push updates.
@@ -614,7 +627,8 @@ Select the following permissions when creating your token:
 | | PUT: Update a part's data content | |
 | **files** | GET: Get the URL of a content file | |
 | **rubrics** | GET: List rubrics for a part | Recommended — `pull` records grading rubrics when present |
-| | POST, PUT, DELETE | Optional (push-side rubric support not yet implemented) |
+| | POST, PUT: Create/update rubric criteria for a part | Required for `push` to sync rubrics (on by default — see [Rubrics](#rubrics)); without it, `push` fails the run rather than silently skipping points |
+| | DELETE | Not used — vocgit never deletes a rubric criterion |
 
 All other permissions are optional.
 
