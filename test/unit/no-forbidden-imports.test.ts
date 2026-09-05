@@ -36,12 +36,20 @@ describe('architecture guards', () => {
     // Static import at the top of this file:
     //   import { DIAGNOSTIC_CODES } from '../../src/core/diagnostics';
     // (require() does not work here - Vitest runs these as ESM.)
+    //
+    // `code:` names TWO different vocabularies in this codebase: diagnostic
+    // codes on a ServiceEvent, and error codes on a ReportError. Only the first
+    // is the registry's business, so the second is listed here explicitly
+    // rather than silently skipped -- an unlisted code is still a build failure.
+    const NON_DIAGNOSTIC_CODES = new Set(['report_serialization_failed']);
     const offenders: string[] = [];
     for (const file of walk('src')) {
       if (file === 'src/core/diagnostics.ts') { continue; }
       const source = readFileSync(file, 'utf8');
       for (const match of source.matchAll(/code:\s*'([a-z_]+)'/g)) {
-        if (!(DIAGNOSTIC_CODES as readonly string[]).includes(match[1])) { offenders.push(`${file}: ${match[1]}`); }
+        const code = match[1];
+        if (NON_DIAGNOSTIC_CODES.has(code)) { continue; }
+        if (!(DIAGNOSTIC_CODES as readonly string[]).includes(code)) { offenders.push(`${file}: ${code}`); }
       }
     }
     expect(offenders).toEqual([]);
