@@ -1763,13 +1763,25 @@ describe('executePush rubric history', () => {
       updates?: RubricUpdate[];
       orphans?: RemoteRubric[];
     },
-    options: { nonInteractive?: boolean } = {},
+    options: {
+      nonInteractive?: boolean;
+      createRubricsError?: unknown;
+      updateRubricsError?: unknown;
+    } = {},
   ) {
     vi.clearAllMocks();
     getCommitShaMock.mockResolvedValue('abc123');
     getGitUserNameMock.mockResolvedValue('tester');
-    createRubricsMock.mockResolvedValue([]);
-    updateRubricsMock.mockResolvedValue([]);
+    if (options.createRubricsError !== undefined) {
+      createRubricsMock.mockRejectedValue(options.createRubricsError);
+    } else {
+      createRubricsMock.mockResolvedValue([]);
+    }
+    if (options.updateRubricsError !== undefined) {
+      updateRubricsMock.mockRejectedValue(options.updateRubricsError);
+    } else {
+      updateRubricsMock.mockResolvedValue([]);
+    }
 
     const rubricPlan: RubricSyncPlan = {
       creates: rubricPlanInput.creates ?? [],
@@ -1857,7 +1869,7 @@ describe('executePush rubric history', () => {
     };
 
     const applyConfigUpdate = vi.fn().mockResolvedValue(undefined);
-    await executePush(
+    const result = await executePush(
       { applyConfigUpdate } as unknown as LockedSession,
       {
         persistedConfig: config,
@@ -1872,11 +1884,11 @@ describe('executePush rubric history', () => {
       plan,
     );
 
-    return applyConfigUpdate.mock.calls[0][0].publish_history[0];
+    return { history: applyConfigUpdate.mock.calls[0][0].publish_history[0], result };
   }
 
   it('records created and updated criteria in publish_history with the point delta', async () => {
-    const history = await pushAndReadHistory({ creates: [{ name: 'B', maxscore: '5' }] });
+    const { history } = await pushAndReadHistory({ creates: [{ name: 'B', maxscore: '5' }] });
 
     expect(history.changes?.rubrics?.[0]).toMatchObject({
       part_id: expect.any(String),
@@ -1887,7 +1899,7 @@ describe('executePush rubric history', () => {
   });
 
   it('records the updated criterion by name using the remote row when the update omits it', async () => {
-    const history = await pushAndReadHistory({ updates: [{ id: 'r1', maxscore: '30' }] });
+    const { history } = await pushAndReadHistory({ updates: [{ id: 'r1', maxscore: '30' }] });
 
     expect(history.changes?.rubrics?.[0]).toMatchObject({
       updated: ['A'],
@@ -1898,7 +1910,7 @@ describe('executePush rubric history', () => {
   });
 
   it('records a held part with its reason and no created/updated names', async () => {
-    const history = await pushAndReadHistory(
+    const { history } = await pushAndReadHistory(
       {
         creates: [{ name: 'NEW', maxscore: '5' }],
         orphans: [{ id: 'r9', name: 'OLD', seqnum: '9', maxscore: '5' }],
@@ -1909,5 +1921,46 @@ describe('executePush rubric history', () => {
     expect(createRubricsMock).not.toHaveBeenCalled();
     expect(history.changes?.rubrics?.[0]).toMatchObject({ held: 'orphans-held' });
     expect(history.changes?.rubrics?.[0].created).toBeUndefined();
+  });
+
+  // Fix round 1: the part whose write throws was the one part missing from the audit
+  // record — every part *skipped afterward* got a 'no-scope' entry, but the part that
+  // actually failed got none, only a generic entry in result.failed. A rubric write
+  // changes student-visible points, so the failing part needs its own record too.
+  it('records a write-failed entry when the rubric write throws, even though nothing was written', async () => {
+    const { history, result } = await pushAndReadHistory(
+      { creates: [{ name: 'B', maxscore: '5' }] },
+      { createRubricsError: new Error('server exploded') },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.failed.some((f) => f.type === 'part')).toBe(true);
+    expect(history.changes?.rubrics?.[0]).toMatchObject({ held: 'write-failed' });
+    expect(history.changes?.rubrics?.[0].created).toBeUndefined();
+    expect(history.changes?.rubrics?.[0].updated).toBeUndefined();
+    expect(history.changes?.rubrics?.[0].points_before).toBeUndefined();
+    expect(history.changes?.rubrics?.[0].points_after).toBeUndefined();
+  });
+
+  // Fix round 1, finding 2: a part with orphans but nothing to create has nothing for
+  // non-interactive mode to withhold. It must proceed normally — updates run, the part
+  // is not marked failed, and no 'held' entry is recorded — rather than being refused
+  // over an orphan alone (the root cause is in Task 5's holdCreates guard, but the new
+  // `held` field is what would have written the inaccuracy into a durable record).
+  it('does not hold or fail a part that has orphans but nothing to create', async () => {
+    const { history, result } = await pushAndReadHistory(
+      {
+        updates: [{ id: 'r1', maxscore: '30' }],
+        orphans: [{ id: 'r9', name: 'OLD', seqnum: '9', maxscore: '5' }],
+      },
+      { nonInteractive: true },
+    );
+
+    expect(createRubricsMock).not.toHaveBeenCalled();
+    expect(updateRubricsMock).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(true);
+    expect(result.failed).toHaveLength(0);
+    expect(history.changes?.rubrics?.[0]).toMatchObject({ updated: ['A'] });
+    expect(history.changes?.rubrics?.[0].held).toBeUndefined();
   });
 });

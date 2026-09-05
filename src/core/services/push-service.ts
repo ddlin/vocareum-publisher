@@ -1082,7 +1082,13 @@ export async function executePush(
             held: 'duplicate-names',
           });
         } else {
-          const holdCreates = req.nonInteractive === true && rubricPlan.orphans.length > 0;
+          // Both conditions matter: a part with orphans but nothing to create has
+          // nothing for non-interactive mode to withhold — its updates should proceed
+          // normally, not be marked failed/held over an orphan alone.
+          const holdCreates =
+            req.nonInteractive === true &&
+            rubricPlan.orphans.length > 0 &&
+            rubricPlan.creates.length > 0;
           if (holdCreates) {
             const message =
               `Part "${partLabel}" has ${rubricPlan.orphans.length} remote rubric ` +
@@ -1096,6 +1102,7 @@ export async function executePush(
 
           let createdOk = false;
           let updatedOk = false;
+          let writeFailed = false;
           try {
             if (!holdCreates && rubricPlan.creates.length > 0) {
               await createRubrics(ctx.client, courseId, assignmentId, partId, rubricPlan.creates);
@@ -1126,13 +1133,21 @@ export async function executePush(
             }
             result.failed.push({ type: 'part', id: partId, error: describeApiError(error) });
             result.success = false;
+            writeFailed = true;
           }
 
           // Record what actually happened to this part's rubrics — the criteria written
           // (by name), the resulting point delta, and the hold reason when creates were
-          // withheld. Only the applied portion of the plan (not the full plan) feeds the
-          // point projection, so a held create doesn't get counted as though it landed.
-          const heldReason = holdCreates ? 'orphans-held' : undefined;
+          // withheld or the write itself failed. Only the applied portion of the plan (not
+          // the full plan) feeds the point projection, so a held create doesn't get counted
+          // as though it landed. Without the write-failed branch, the one part that actually
+          // caused a scope loss (e.g. the 403 that disables rubric sync for the rest of the
+          // run) would be the only part missing from the audit trail — recorded generically
+          // in result.failed, but absent from changes.rubrics — while every part skipped
+          // afterward correctly gets a 'no-scope' entry.
+          const heldReason = holdCreates
+            ? 'orphans-held'
+            : (writeFailed && !createdOk && !updatedOk ? 'write-failed' : undefined);
           if (createdOk || updatedOk || heldReason !== undefined) {
             const appliedPlan: RubricSyncPlan = {
               creates: createdOk ? rubricPlan.creates : [],
@@ -1149,7 +1164,12 @@ export async function executePush(
               updated: updatedOk
                 ? rubricPlan.updates.map((u) => u.name ?? remoteNameById.get(u.id) ?? u.id)
                 : undefined,
-              ...(unparseable.length === 0 ? { points_before: before, points_after: after } : {}),
+              // Omit the point projection for a write-failed entry: nothing is known to
+              // have been written, so "before === after" would misleadingly read as a
+              // confirmed no-op rather than an unknown outcome.
+              ...(unparseable.length === 0 && heldReason !== 'write-failed'
+                ? { points_before: before, points_after: after }
+                : {}),
               ...(heldReason !== undefined ? { held: heldReason } : {}),
             });
           }
