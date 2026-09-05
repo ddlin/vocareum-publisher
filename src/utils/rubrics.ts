@@ -210,6 +210,20 @@ export function projectedPoints(
     if (!isValidMaxscore(c.maxscore)) { unparseable.add(c.name); }
   }
 
+  const remoteById = new Map(remote.map(r => [r.id, r]));
+
+  // Check plan updates for unparseable maxscores. An update carries only the fields
+  // that changed, so `maxscore` may be absent — that's not a drift signal, skip it.
+  // Only an update that DOES carry a maxscore and it's unparseable belongs here.
+  // The update itself has no `name` when it wasn't part of what changed, so resolve
+  // the criterion's name from the matching remote row by id.
+  for (const u of plan.updates) {
+    if (u.maxscore === undefined) { continue; }
+    if (!isValidMaxscore(u.maxscore)) {
+      unparseable.add(u.name ?? remoteById.get(u.id)?.name ?? u.id);
+    }
+  }
+
   const before = remote.reduce((sum, r) => sum + score(r.maxscore, r.exclude), 0);
 
   const updateById = new Map(plan.updates.map(u => [u.id, u]));

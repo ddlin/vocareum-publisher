@@ -323,4 +323,24 @@ describe('projectedPoints', () => {
 
     expect(projectedPoints(remote, plan)).toEqual({ before: 0, after: 0, unparseable: ['A-Bad', 'Z-Bad'] });
   });
+
+  // FIX 5: an update carries only the fields that changed — a hand-edited local
+  // `maxscore: ''` against a remote row with a valid maxscore produces an update
+  // whose maxscore is unparseable. Before this fix only `remote` and `plan.creates`
+  // were scanned, so this landed in `after` as 0 without appearing in `unparseable`,
+  // printing a confident (and wrong) "Points would go from X to 0".
+  it('flags an update with unparseable maxscore as unparseable, resolving the name from the matching remote row', () => {
+    const remote = [{ id: 'r1', name: 'Foo', seqnum: '1', maxscore: '10', auto: false, exclude: false }];
+    const plan = { creates: [], updates: [{ id: 'r1', maxscore: '' }], orphans: [], duplicateNames: [] };
+
+    expect(projectedPoints(remote, plan)).toEqual({ before: 10, after: 0, unparseable: ['Foo'] });
+  });
+
+  it('does not flag an update with no maxscore field as unparseable', () => {
+    const remote = [{ id: 'r1', name: 'Foo', seqnum: '1', maxscore: '10', auto: false, exclude: false }];
+    // This update only changes `exclude` — maxscore is absent, not unparseable.
+    const plan = { creates: [], updates: [{ id: 'r1', exclude: true }], orphans: [], duplicateNames: [] };
+
+    expect(projectedPoints(remote, plan)).toEqual({ before: 10, after: 0, unparseable: [] });
+  });
 });
