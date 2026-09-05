@@ -98,8 +98,15 @@ export function emitRubricPlanSummary(
         `  Points total could not be computed — unparseable maxscore on: ${unparseable.join(', ')}`,
     });
   } else {
-    events.emit({ level: 'plain', message: `  Points would go from ${before} to ${after}` });
+    events.emit({
+      level: 'plain',
+      message: `  Points would go from ${before} to ${after} (projected from plan-time state, not a promise)`,
+    });
   }
+  events.emit({
+    level: 'plain',
+    message: '  This plan is a snapshot as of planning; changes made in Vocareum since then are not reflected.',
+  });
 
   events.emit({ level: 'plain', message: '  Push never deletes rubric criteria.' });
 }
@@ -218,6 +225,16 @@ export async function planPush(
 
   const assignmentFilters = parseCsv(req.assignment);
   const partFilters = parseCsv(req.part);
+
+  // --part is not unique across assignments, and rubric writes (which change
+  // a part's points) must never escape scope because a path collided across
+  // unrelated assignments. pull enforces the identical rule for the same
+  // reason (pull-service.ts) — mirror it here so both commands read consistently.
+  if (partFilters.length > 0 && assignmentFilters.length !== 1) {
+    throw new Error(
+      '--part requires exactly one --assignment (part selectors are not unique across assignments).'
+    );
+  }
 
   // Build working config (filtered copy)
   const workingConfig: Config = {
@@ -1063,10 +1080,18 @@ export async function executePush(
         if (abortOnError) { shouldAbort = true; break assignmentLoop; }
       }
 
-      if (rubricPlan !== undefined && assignmentIntent.action !== 'create' && !rubricsAvailable) {
-        // The scope was lost earlier in this run. Record every subsequently skipped part —
-        // the spec requires skipped writes to be recorded, and a silent skip would hide how
-        // much of the migration did not happen.
+      if (
+        rubricPlan !== undefined &&
+        assignmentIntent.action !== 'create' &&
+        !rubricsAvailable &&
+        (rubricPlan.creates.length > 0 || rubricPlan.updates.length > 0)
+      ) {
+        // The scope was lost earlier in this run. Record every subsequently skipped part
+        // that actually had work to do — the spec requires skipped writes to be recorded,
+        // and a silent skip would hide how much of the migration did not happen. An
+        // orphan-only part (no creates, no updates) had nothing to write and so nothing to
+        // skip; recording it here would report a failure that never occurred. It passes
+        // through silently, exactly as it would have without the 403.
         const message = `Rubrics not pushed for "${partAction.part.name ?? partAction.part.path}": token lacks rubric write permission.`;
         events.emit({ level: 'warn', message });
         result.failed.push({ type: 'part', id: partId, error: message });
@@ -1133,13 +1158,18 @@ export async function executePush(
                 await createRubrics(ctx.client, courseId, assignmentId, partId, rubricPlan.creates);
                 events.emit({ level: 'success', message: `Created ${rubricPlan.creates.length} rubric criteria on "${partLabel}"` });
                 createdOk = true;
+                // Set immediately, not once at the end of the try: if updateRubrics
+                // throws next, this create still really happened and really changed
+                // points, so result.updated must record it even though control jumps
+                // straight to catch below.
+                partWasUpdated = true;
               }
               if (rubricPlan.updates.length > 0) {
                 await updateRubrics(ctx.client, courseId, assignmentId, partId, rubricPlan.updates);
                 events.emit({ level: 'success', message: `Updated ${rubricPlan.updates.length} rubric criteria on "${partLabel}"` });
                 updatedOk = true;
+                partWasUpdated = true;
               }
-              if (createdOk || updatedOk) { partWasUpdated = true; }
             } catch (error) {
               if (error instanceof ForbiddenError) {
                 // Unlike the read side, this does NOT degrade to a warning: the write was the

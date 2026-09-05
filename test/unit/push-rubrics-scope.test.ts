@@ -166,7 +166,7 @@ describe('rubric write scope containment (spec §10)', () => {
     );
   });
 
-  it('--part limits rubric writes to the named part', async () => {
+  it('--part with --assignment limits rubric writes to the named part', async () => {
     const config = makeTwoAssignmentConfig();
 
     // partFilters drop assignment B's only part, and an assignment left with zero
@@ -175,7 +175,7 @@ describe('rubric write scope containment (spec §10)', () => {
     recorder.enqueue({ assignments: [{ id: 'asn-A', name: 'Lab A' }, { id: 'asn-B', name: 'Lab B' }] });
     enqueueAssignmentReconcileResponses('asn-A', 'part-A', 'Lab A');
 
-    await planAndExecute(config, { part: 'partA', nonInteractive: true });
+    await planAndExecute(config, { assignment: 'labA', part: 'partA', nonInteractive: true });
 
     expect(mockCreateRubrics).toHaveBeenCalledTimes(1);
     expect(mockCreateRubrics).toHaveBeenCalledWith(
@@ -184,6 +184,22 @@ describe('rubric write scope containment (spec §10)', () => {
     expect(mockCreateRubrics).not.toHaveBeenCalledWith(
       expect.anything(), COURSE_ID, 'asn-B', 'part-B', expect.anything(),
     );
+  });
+
+  it('--part without --assignment throws before any rubric write can escape scope', async () => {
+    // --part is not unique across assignments: "part1" may exist in every
+    // assignment. Without a single --assignment to disambiguate, a part-only
+    // filter would let rubric writes (which change points) fan out across
+    // every assignment that happens to share the part path/name. planPush
+    // must reject this before reconciliation ever runs.
+    const config = makeTwoAssignmentConfig();
+    const ctx = makeCtx(config);
+
+    await expect(planPush(ctx, { part: 'partA', nonInteractive: true })).rejects.toThrow(
+      '--part requires exactly one --assignment (part selectors are not unique across assignments).',
+    );
+
+    expect(mockCreateRubrics).not.toHaveBeenCalled();
   });
 
   it('vocareum.excluded_assignments prevents rubric writes on an excluded assignment', async () => {

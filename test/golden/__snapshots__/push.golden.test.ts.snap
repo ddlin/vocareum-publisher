@@ -8,7 +8,8 @@ Analyzing changes...
 Fetching current state from Vocareum...
 Found: 0 to create, 1 to update, 0 unchanged
 Rubrics for "Part Golden": 1 rubric criterion to create, 1 to update
-  Points would go from 13 to 20
+  Points would go from 13 to 20 (projected from plan-time state, not a promise)
+  This plan is a snapshot as of planning; changes made in Vocareum since then are not reflected.
   Push never deletes rubric criteria.
 
 Executing push...
@@ -41,7 +42,8 @@ Analyzing changes...
 Fetching current state from Vocareum...
 Found: 0 to create, 1 to update, 0 unchanged
 Rubrics for "Part Golden": 1 rubric criterion to create, 1 to update
-  Points would go from 13 to 20
+  Points would go from 13 to 20 (projected from plan-time state, not a promise)
+  This plan is a snapshot as of planning; changes made in Vocareum since then are not reflected.
   Push never deletes rubric criteria.
 
 Push completed successfully!
@@ -68,7 +70,8 @@ Analyzing changes...
 Fetching current state from Vocareum...
 Found: 0 to create, 1 to update, 0 unchanged
 Rubrics for "Part Golden": 1 rubric criterion to create, 1 to update
-  Points would go from 13 to 20
+  Points would go from 13 to 20 (projected from plan-time state, not a promise)
+  This plan is a snapshot as of planning; changes made in Vocareum since then are not reflected.
   Push never deletes rubric criteria.
 
 Executing push...

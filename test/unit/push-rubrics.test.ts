@@ -305,7 +305,7 @@ async function executePushWithForbiddenRubrics() {
  * single part, which cannot show that a part *after* the one that trips `ForbiddenError`
  * is still recorded rather than silently skipped.
  */
-function buildTwoPartForbiddenPlan() {
+function buildTwoPartForbiddenPlan(rubricPlan2Override?: RubricSyncPlan) {
   const config: Config = {
     version: '1.0',
     vocareum: {
@@ -336,7 +336,8 @@ function buildTwoPartForbiddenPlan() {
   } as unknown as Config;
 
   const rubricPlan1: RubricSyncPlan = { creates: [{ name: 'A', maxscore: '10' }], updates: [], orphans: [], duplicateNames: [] };
-  const rubricPlan2: RubricSyncPlan = { creates: [{ name: 'B', maxscore: '5' }], updates: [], orphans: [], duplicateNames: [] };
+  const rubricPlan2: RubricSyncPlan = rubricPlan2Override ??
+    { creates: [{ name: 'B', maxscore: '5' }], updates: [], orphans: [], duplicateNames: [] };
 
   const reconciliation = {
     config,
@@ -510,7 +511,7 @@ function buildTwoAssignmentDuplicateNamesFirstPlan() {
   return { plan, config };
 }
 
-async function executePushWithTwoPartsAndForbiddenFirst() {
+async function executePushWithTwoPartsAndForbiddenFirst(rubricPlan2Override?: RubricSyncPlan) {
   vi.clearAllMocks();
   getCommitShaMock.mockResolvedValue('abc123');
   getGitUserNameMock.mockResolvedValue('tester');
@@ -522,7 +523,7 @@ async function executePushWithTwoPartsAndForbiddenFirst() {
   createRubricsMock.mockResolvedValue([]);
   updateRubricsMock.mockResolvedValue([]);
 
-  const { plan, config } = buildTwoPartForbiddenPlan();
+  const { plan, config } = buildTwoPartForbiddenPlan(rubricPlan2Override);
   const { result, events, warnings } = await runExecutePush(plan, config, {});
 
   return { result, events, warnings };
@@ -662,6 +663,28 @@ describe('executePush — rubric writes', () => {
     expect(scopeWarnings).toHaveLength(1);
   });
 
+  // FIX 6: once the 403 has latched rubricsAvailable false, a later part whose plan is
+  // orphan-only (no creates, no updates) never had a write to skip. It must pass through
+  // silently — not be recorded as a failed/held "no-scope" skip for a write that never
+  // would have happened anyway.
+  it('after a 403, a later orphan-only part is not reported as a skipped write', async () => {
+    const orphanOnlyPlan: RubricSyncPlan = {
+      creates: [],
+      updates: [],
+      orphans: [{ id: 'r9', name: 'OLD', seqnum: '9', maxscore: '5' }],
+      duplicateNames: [],
+    };
+    const { result, warnings } = await executePushWithTwoPartsAndForbiddenFirst(orphanOnlyPlan);
+
+    // The first part (p1) still fails from the 403 itself.
+    expect(result.failed.some((f) => f.id === 'p1')).toBe(true);
+    // The second part (p2) had nothing to write — no create, no update — so it must not
+    // appear as a failed/skipped part at all.
+    expect(result.failed.some((f) => f.id === 'p2')).toBe(false);
+    // No "token lacks rubric write permission" warning should have been emitted for it.
+    expect(warnings.join('\n')).not.toMatch(/part2/);
+  });
+
   // FIX 4: every other failure site in executePush honours --abort-on-error; the four
   // rubric failure sites (no-scope skip, duplicate names, orphan hold, write failure)
   // did not. A user who passed --abort-on-error while mutating grading configuration
@@ -724,6 +747,12 @@ describe('executePush — rubric writes', () => {
     expect(history.changes.rubrics[0]).toMatchObject({ held: 'partial-write' });
     expect(history.changes.rubrics[0].points_before).toBeUndefined();
     expect(history.changes.rubrics[0].points_after).toBeUndefined();
+
+    // FIX 3: the create really happened and really changed points before updateRubrics
+    // threw. result.updated must agree with changes.rubrics that a write landed — it must
+    // not read as though nothing happened to this part just because `partWasUpdated` was
+    // only set once, at the end of the try block, after the throw already skipped past it.
+    expect(result.updated.some((u) => u.parts?.includes('p1') === true)).toBe(true);
   });
 
   // FIX 3: a rubric READ failure at plan time (rubricPlan undefined, rubricReadFailed
@@ -821,6 +850,9 @@ describe('emitRubricPlanSummary (plan-confirmation display)', () => {
     expect(out).toContain('1 rubric criterion to create');
     expect(out).toMatch(/no local counterpart/);
     expect(out).toMatch(/25 to 30/); // the sentence that makes the risk legible
+    // FIX 2: the projection must not read as a promise — it's a snapshot at plan time.
+    expect(out).toMatch(/projected from plan-time state, not a promise/);
+    expect(out).toMatch(/snapshot as of planning/);
     expect(out).toContain('never deletes');
   });
 
@@ -847,6 +879,10 @@ describe('emitRubricPlanSummary (plan-confirmation display)', () => {
     expect(out).toMatch(/could not be computed/);
     expect(out).toContain('Bad');
     expect(out).not.toMatch(/Points would go from/);
+    // FIX 2: the snapshot caveat must still appear even when the total itself
+    // couldn't be computed — the branch that can't say a number still owes the
+    // reader the same "this isn't live" caveat.
+    expect(out).toMatch(/snapshot as of planning/);
   });
 
   it('reports duplicate names and refuses to push, without a point projection', () => {
