@@ -69,3 +69,12 @@ docs/project-stats.md
 # Internal design/process docs (specs + plans) — kept local; document
 # Vocareum API quirks/workarounds and review history, not for public exposure.
 docs/superpowers/
+
+# Local working notes that must never enter the repo.
+# The codex-review skill writes its findings next to the artifact under review,
+# which lands in a tracked directory unless excluded — that is how three of these
+# were committed by accident. API probe findings are internal working notes too:
+# what belongs in the repo is the behaviour they establish, expressed in the code
+# and its comments, not the investigation that produced it.
+docs/*codex-review*.md
+docs/*-findings.md

@@ -344,8 +344,8 @@ describe('mapPartSettings — submission_filters normalization', () => {
 // max_points (part) and total_points (assignment) are computed by Vocareum from
 // rubric maxscore and are not storable: a part PUT setting max_points returns a
 // successful "Part updated" transaction and changes nothing, and an assignment PUT
-// is rejected outright with "No valid parameters to update the assignment"
-// (docs/vocareum-api-rubrics-findings.md §3). They belong in _observed_settings —
+// is rejected outright with "No valid parameters to update the assignment".
+// They belong in _observed_settings —
 // recorded for the reader, never sent back.
 describe('derived point fields are observed, not written', () => {
   it('mapPartSettings puts max_points under _observed_settings, not _unknown_settings', () => {

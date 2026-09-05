@@ -80,8 +80,8 @@ async function probePagination(http, c, a, p) {
 
 // PROBE 2 — write shapes. Scratch course only.
 //
-// These shapes are not guesses. They were established live on 2026-09-04 and are recorded
-// in docs/vocareum-api-rubrics-findings.md. The known-rejected variants are kept on purpose,
+// These shapes are not guesses; they were established live on 2026-09-04 against org 335.
+// The known-rejected variants are kept on purpose,
 // as a regression check that the contract has not shifted.
 async function probeWrite(http, c, a, p) {
   const rejected = [
