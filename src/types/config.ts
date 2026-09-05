@@ -576,7 +576,9 @@ export const HistoryRubricChangeSchema = z.object({
   points_after: z.number().optional(),
   /** Set when the part was refused, its write failed, or its plan-time read failed:
    *  'duplicate-names' | 'orphans-held' | 'no-scope' | 'write-failed' | 'read-failed' |
-   *  'partial-write'. */
+   *  'partial-write' | 'orphans-held+write-failed'. The last is a composite: creates were
+   *  held for orphans AND a later write on the same part threw. Free-form by design — no
+   *  code branches on this value, it exists to be read by a human auditing a push. */
   held: z.string().optional(),
 });
 
