@@ -241,7 +241,7 @@ publish_options:
 
 `sync_rubrics` is nested inside the settings-sync pass, not a separate one — `sync_settings: false` disables rubric sync too, regardless of `sync_rubrics`. There's no independent rubric-only traversal, so if you manage settings by hand in the Vocareum UI but still want rubrics synced from Git, that combination isn't supported yet. This only affects drift detection and push: importing an orphaned assignment on pull records its rubrics whenever `sync_rubrics` is on, the same way it records settings, regardless of `sync_settings`.
 
-The rubrics **write** token permissions (POST, PUT — see [Generating a Token](#generating-a-token)) are required for `push` to create or update criteria; without them, `push` fails the run with an error telling you to regenerate the token, rather than silently leaving points unmigrated. The **read** permission (GET) is optional for `pull`: a token without it logs a warning and pull continues normally, with settings and content drift unaffected. There are two independent read fetchers (drift detection and orphan import), each warning at most once, so a single pull run can log that at most twice.
+The rubrics **write** token permissions (POST, PUT — see [Generating a Token](#generating-a-token)) are required for `push` to create or update criteria; without them, `push` fails the run with an error telling you to regenerate the token, rather than silently leaving points unmigrated. The **read** permission (GET) is also required for `push`: before it can diff local criteria against remote, `push` reads each managed part's rubrics, and a failed read (missing scope included) now fails the run the same way a failed write does — a green push that silently migrated no points is exactly what this feature exists to prevent. GET is optional only for `pull`: a token without it logs a warning and pull continues normally, with settings and content drift unaffected. There are two independent read fetchers on the pull side (drift detection and orphan import), each warning at most once, so a single pull run can log that at most twice; push's own plan-time read is separate from both and is not counted in that limit.
 
 ## CLI Commands
 
@@ -626,7 +626,7 @@ Select the following permissions when creating your token:
 | **parts** | GET: List parts for an assignment | |
 | | PUT: Update a part's data content | |
 | **files** | GET: Get the URL of a content file | |
-| **rubrics** | GET: List rubrics for a part | Recommended — `pull` records grading rubrics when present |
+| **rubrics** | GET: List rubrics for a part | Required for `push` to diff local rubrics against remote (on by default — see [Rubrics](#rubrics)); without it, `push` fails the run rather than silently skipping points. Recommended for `pull`, which records grading rubrics when present but degrades to a warning without it |
 | | POST, PUT: Create/update rubric criteria for a part | Required for `push` to sync rubrics (on by default — see [Rubrics](#rubrics)); without it, `push` fails the run rather than silently skipping points |
 | | DELETE | Not used — vocgit never deletes a rubric criterion |
 

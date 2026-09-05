@@ -161,7 +161,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sync_settings: false` (same precedence as the pull-side read). Requires the
   rubrics token's POST and PUT permissions in addition to the existing GET —
   without them, `push` fails the run with an explanatory error rather than
-  silently leaving points unmigrated.
+  silently leaving points unmigrated. Unlike `pull`, where a missing GET scope
+  only logs a warning, `push` needs that same read to diff local criteria
+  against remote before it can write: a failed read (missing scope, a 403, or
+  a malformed response) now fails the run and records a `held: 'read-failed'`
+  entry, rather than reporting success having migrated no points.
+
+  `pull`'s own inspection never reads this plan, so `push`'s reconcile pass is
+  the only one that fetches rubrics during reconciliation — `pull` continues to
+  read them through its own two fetchers described above, unaffected by this.
 
 ## [1.3.8] — 2026-09-02
 
