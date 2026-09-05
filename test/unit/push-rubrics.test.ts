@@ -298,6 +298,124 @@ async function executePushWithForbiddenRubrics() {
   return { result, events, warnings };
 }
 
+/**
+ * Two parts on one assignment, each with its own non-empty create-only rubric plan.
+ * Used only by the post-403 recording test (Finding 2): `buildPlan` above models a
+ * single part, which cannot show that a part *after* the one that trips `ForbiddenError`
+ * is still recorded rather than silently skipped.
+ */
+function buildTwoPartForbiddenPlan() {
+  const config: Config = {
+    version: '1.0',
+    vocareum: {
+      org_id: '1',
+      course_id: 'c1',
+      api_base_url: 'https://api.vocareum.com',
+    },
+    assignments: [
+      {
+        assignment_id: 'a1',
+        name: 'Lab 1',
+        path: 'lab1',
+        create_from_template: false,
+        parts: [
+          { part_id: 'p1', path: 'part1' },
+          { part_id: 'p2', path: 'part2' },
+        ],
+      },
+    ],
+    publish_history: [],
+    publish_options: {
+      on_missing_id: 'skip',
+      auto_commit: false,
+      abort_on_error: false,
+      sync_deletes: false,
+      exclude_patterns: [],
+    },
+  } as unknown as Config;
+
+  const rubricPlan1: RubricSyncPlan = { creates: [{ name: 'A', maxscore: '10' }], updates: [], orphans: [], duplicateNames: [] };
+  const rubricPlan2: RubricSyncPlan = { creates: [{ name: 'B', maxscore: '5' }], updates: [], orphans: [], duplicateNames: [] };
+
+  const reconciliation = {
+    config,
+    course: { type: 'skip' },
+    assignments: [
+      {
+        type: 'update',
+        assignment: config.assignments[0],
+        parts: [
+          { type: 'update', part: config.assignments[0].parts[0], contentChanged: false, rubricPlan: rubricPlan1 },
+          { type: 'update', part: config.assignments[0].parts[1], contentChanged: false, rubricPlan: rubricPlan2 },
+        ],
+      },
+    ],
+    summary: {
+      coursesToUpdate: 0,
+      assignmentsToCreate: 0,
+      assignmentsToUpdate: 1,
+      assignmentsWithDiscoveredIds: 0,
+      assignmentsToSkip: 0,
+      partsToCreate: 0,
+      partsToUpdate: 0,
+      estimatedApiCalls: 1,
+    },
+    orphanedInVocareum: [],
+  } as unknown as ReconciliationPlan;
+
+  const intent = {
+    assignments: [
+      {
+        path: 'lab1',
+        name: 'Lab 1',
+        assignmentId: 'a1',
+        action: 'update' as const,
+        parts: [
+          { partId: 'p1', path: 'part1', contentHashes: {}, rubricPlan: rubricPlan1 },
+          { partId: 'p2', path: 'part2', contentHashes: {}, rubricPlan: rubricPlan2 },
+        ],
+      },
+    ],
+  };
+
+  const plan: PushPlan = {
+    intent,
+    preconditions: {
+      configDigest: 'digest',
+      contentHashes: {},
+      assignmentIds: ['a1'],
+      partIds: ['p1', 'p2'],
+      remoteAssumptions: [
+        { assignmentPath: 'lab1', assignmentId: 'a1', exists: true, partIds: ['p1', 'p2'] },
+      ],
+    },
+    semanticFingerprint: semanticFingerprint(intent),
+    summary: 'test plan',
+    hasChanges: true,
+    execution: { reconciliation, workingConfig: config },
+  };
+
+  return { plan, config };
+}
+
+async function executePushWithTwoPartsAndForbiddenFirst() {
+  vi.clearAllMocks();
+  getCommitShaMock.mockResolvedValue('abc123');
+  getGitUserNameMock.mockResolvedValue('tester');
+  readDirectoryMock.mockResolvedValue({});
+  syncDirectoryMock.mockResolvedValue({ succeeded: [], failed: [], directoryHash: 'hash' });
+  // Only the first call rejects; a second call (which should never happen once
+  // `rubricsAvailable` latches false) would otherwise resolve normally and mask the bug.
+  createRubricsMock.mockRejectedValueOnce(new ForbiddenError('Forbidden: rubrics scope missing'));
+  createRubricsMock.mockResolvedValue([]);
+  updateRubricsMock.mockResolvedValue([]);
+
+  const { plan, config } = buildTwoPartForbiddenPlan();
+  const { result, events, warnings } = await runExecutePush(plan, config, {});
+
+  return { result, events, warnings };
+}
+
 describe('executePush — rubric writes', () => {
   it('creates then updates, one batched call each', async () => {
     const { createMock, updateMock } = await executePushWithRubricPlan({
@@ -361,10 +479,59 @@ describe('executePush — rubric writes', () => {
     expect(result.success).toBe(false);
   });
 
+  // Rule 5, discriminating direction: the orphan-hold test above has an `updates` entry
+  // in the same plan, so `wroteAnything` would be `true` even if `partWasUpdated` were
+  // wired to always fire — it cannot tell correct behavior from that bug. These two tests
+  // pin it: nothing sent must not mark the part updated, and something sent must.
+  it('does not record the part in result.updated when creates are held and nothing else is sent', async () => {
+    const { createMock, updateMock, result } = await executePushWithRubricPlan(
+      {
+        creates: [{ name: 'NEW', maxscore: '5' }],
+        updates: [],
+        orphans: [{ id: 'r9', name: 'OLD', seqnum: '9', maxscore: '5' }],
+      },
+      { nonInteractive: true },
+    );
+
+    expect(createMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(result.updated.some((u) => u.parts?.includes('p1') === true)).toBe(false);
+  });
+
+  it('records the part in result.updated when a rubric write actually happens', async () => {
+    const { createMock, result } = await executePushWithRubricPlan({
+      creates: [{ name: 'A', maxscore: '10' }],
+      updates: [],
+    });
+
+    expect(createMock).toHaveBeenCalledTimes(1);
+    expect(result.updated.some((u) => u.parts?.includes('p1') === true)).toBe(true);
+  });
+
   it('a 403 disables rubric sync for the rest of the run and fails it', async () => {
     const { result, warnings } = await executePushWithForbiddenRubrics();
 
     expect(result.success).toBe(false);
     expect(warnings.join('\n')).toMatch(/rubrics/i);
+  });
+
+  it('after a 403, a later part is still recorded in result.failed and the scope warning fires once', async () => {
+    const { result, events } = await executePushWithTwoPartsAndForbiddenFirst();
+
+    // The second part's write must never be attempted once the scope is known lost.
+    expect(createRubricsMock).toHaveBeenCalledTimes(1);
+    // ...but it must still be recorded, not silently skipped — that's the whole point
+    // of the rule: a green push must never hide how much of the migration didn't happen.
+    expect(result.failed.some((f) => f.id === 'p2')).toBe(true);
+    expect(result.failed.some((f) => f.id === 'p1')).toBe(true);
+    expect(result.success).toBe(false);
+
+    // The scope-loss message is emitted once, from inside the ForbiddenError catch — not
+    // once per subsequently-skipped part. A regression that moved it inside the per-part
+    // loop would make this 2.
+    const scopeWarnings = events.filter(
+      (e) => e.message?.includes('Rubric writes are not permitted with this API token') === true,
+    );
+    expect(scopeWarnings).toHaveLength(1);
   });
 });
