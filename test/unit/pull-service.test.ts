@@ -888,9 +888,9 @@ describe('applyPull — rubrics', () => {
   });
 
   it('qualifies the keep message when the drift was rubric-only (FIX E)', async () => {
-    // The keep-result message must not unconditionally promise a push that
-    // will happen: rubrics are read-only, so push will never send this
-    // part's rubric drift regardless of "keep".
+    // The keep-result message must warn that push WILL act on the kept local
+    // rubric config: push now creates/updates rubric criteria to match, which
+    // can change the part's derived points.
     const { events } = await applyPullWithRubricDrift({
       local: [{ name: 'A', seqnum: '1', maxscore: '10' }],
       remote: [{ name: 'A', seqnum: '1', maxscore: '99' }],
@@ -900,8 +900,8 @@ describe('applyPull — rubrics', () => {
     const messages = messagesOf(events);
     expect(messages.some((m) =>
       m.includes('Keeping local settings') &&
-      m.includes('rubric changes are read-only') &&
-      m.includes('will not be pushed')
+      m.includes('created/updated to match') &&
+      m.includes('change points')
     )).toBe(true);
   });
 
@@ -916,7 +916,7 @@ describe('applyPull — rubrics', () => {
     const messages = messagesOf(events);
     const keepMessage = messages.find((m) => m.includes('Keeping local settings'));
     expect(keepMessage).toBeDefined();
-    expect(keepMessage).not.toContain('rubric changes are read-only');
+    expect(keepMessage).not.toContain('created/updated to match');
     expect(keepMessage).toBe('  Keeping local settings (will push to Vocareum on next publish)');
   });
 });

@@ -1260,7 +1260,7 @@ export async function applyPull(
           if (changes.added.length === 0 && changes.changed.length === 0 && changes.removed.length === 0) {
             events.emit({ level: 'plain', message: '    (order differs)' });
           }
-          events.emit({ level: 'plain', message: '    (rubrics are read-only: push will not send these to Vocareum)' });
+          events.emit({ level: 'plain', message: '    (push will create or update rubric criteria to match your local config)' });
         }
       }
 
@@ -1292,14 +1292,13 @@ export async function applyPull(
         result.settingsPulled++;
         events.emit({ level: 'success', message: `Will update local settings for "${drift.assignmentName}"` });
       } else if (action === 'keep') {
-        // If any part's drift included rubrics, the unqualified message below is
-        // false for that part: push never sends rubrics regardless of this
-        // choice (rubrics are read-only, see the display line emitted above).
-        // Left unconditional, "keep" is the last thing a user sees for a
-        // rubric-only-drift part and it promises a push that will not happen.
+        // If any part's drift included rubrics, push will create/update criteria
+        // to match the kept local config, which can change the part's derived
+        // max_points. Say so explicitly — this is the last message a user sees
+        // before that happens.
         const hasRubricsDrift = drift.partsDrift.some((partDrift) => partDrift.rubricsDrift !== undefined);
         const keepMessage = hasRubricsDrift
-          ? '  Keeping local settings (will push to Vocareum on next publish; rubric changes are read-only and will not be pushed)'
+          ? '  Keeping local settings (will push to Vocareum on next publish; rubric changes will be created/updated to match, which can change points)'
           : '  Keeping local settings (will push to Vocareum on next publish)';
         events.emit({ level: 'plain', message: keepMessage });
       } else {
