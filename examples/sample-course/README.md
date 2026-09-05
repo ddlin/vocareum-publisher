@@ -63,8 +63,26 @@ See `vocareum.yaml` for the full configuration. Key sections:
 
 - `vocareum`: Connection settings (org, course, template IDs)
 - `assignments`: List of assignments with parts
+- `parts[].rubrics`: Grading criteria — the only way to change a part's points
 - `publish_options`: Behavior settings
 - `publish_history`: Automatically updated after each publish
+
+## Rubrics
+
+Points are **derived** by Vocareum from each part's rubric criteria — the sum
+of `maxscore` for criteria not marked `exclude: true`. Setting `total_points`
+on an assignment or `max_points` on a part does nothing. To change a course's
+points, edit `parts[].rubrics` and push.
+
+`push` creates criteria that exist locally but not remotely and updates ones
+whose `maxscore`/`auto`/`exclude` drifted, matching **by name**. It never
+deletes. Because matching is by name, renaming a criterion here creates a new
+one and leaves the old behind as an orphan — inflating the part's points. The
+push confirmation names every orphan and shows the resulting point total
+before anything is written; read it before approving.
+
+Set `publish_options.sync_rubrics: false` to skip rubric fetch and write
+entirely.
 
 ## Notes
 

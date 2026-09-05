@@ -4,7 +4,11 @@ vocareum:
   # Replace these with your actual Vocareum IDs
   org_id: "YOUR_ORG_ID"
   course_id: "YOUR_COURSE_ID"
-  template_assignment_id: "YOUR_TEMPLATE_ID"
+  templates:                              # Preferred: named templates
+    - id: "YOUR_TEMPLATE_ID"
+      name: "Standard Lab"
+      course_id: "YOUR_COURSE_ID"     # Course the template lives in
+  template_assignment_id: "YOUR_TEMPLATE_ID"  # Legacy single-template fallback
 
 assignments:
   # Existing assignment (already in Vocareum)
@@ -12,24 +16,39 @@ assignments:
     name: "Lab 1: Introduction to Python"
     path: "lab1-intro"
     settings:
-      # Confirmed working fields (Feb 2026):
       description: "Introduction to Python programming"
       # nosubmit: false
       # auto_submit: false
       # grading_on_submit: true
-      # NOTE: due_date, points, published DO NOT work via API
-      # These must be set manually in Vocareum UI
+      # NOTE: due_date and published cannot be set via the API — set them in
+      # the Vocareum UI. Points are DERIVED from rubric criteria: edit the
+      # `rubrics` block below and push. Writing `total_points` (assignment) or
+      # `max_points` (part) has no effect.
     parts:
       - part_id: "22222"  # Replace with actual ID
         path: "part1"
         name: "Part 1: Hello World"
         directories: ["startercode", "scripts", "docs"]
         settings:
-          # Confirmed working fields (Feb 2026):
           submission_filters:
             include: ["*.py", "*.txt"]
             exclude: ["*.pyc", "__pycache__"]
           # session_length: "3600"  # seconds
+        # Grading rubric. `pull` records it; `push` creates and updates
+        # criteria (matched by name) but NEVER deletes them. Renaming a
+        # criterion here creates a new one and orphans the old, inflating
+        # the part's points — check the push confirmation before approving.
+        rubrics:
+          - name: "Program prints the expected greeting"
+            seqnum: "1"
+            maxscore: "10"
+            auto: true
+            exclude: false
+          - name: "Code follows PEP 8"
+            seqnum: "2"
+            maxscore: "5"
+            auto: false
+            exclude: false
 
   # New assignment (will be created from template)
   - assignment_id: null
@@ -39,6 +58,10 @@ assignments:
     settings:
       description: "Data analysis with pandas"
     parts:
+      # Rubrics are intentionally omitted here: a newly created assignment
+      # inherits its template's rubrics, and vocgit does not reconcile them
+      # in the same push that creates it. Pull after the first push to record
+      # what the template provided, then edit and push again.
       - part_id: null
         path: "part1"
         name: "Part 1: Data Loading"
@@ -56,6 +79,8 @@ assignments:
 publish_options:
   on_missing_id: "skip"
   auto_commit: false
+  sync_settings: true       # Set false to sync files only, not settings
+  sync_rubrics: true        # Set false to skip fetching/pushing rubrics
   abort_on_error: false
   sync_deletes: false
   exclude_patterns:
