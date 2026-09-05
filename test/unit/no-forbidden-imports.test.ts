@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
+import { DIAGNOSTIC_CODES } from '../../src/core/diagnostics';
 const walk = (d: string): string[] => readdirSync(d).flatMap((e) => {
   const p = join(d, e); return statSync(p).isDirectory() ? walk(p) : p.endsWith('.ts') ? [p] : [];
 });
@@ -30,5 +31,19 @@ describe('architecture guards', () => {
     // Any direct stdout write inside the Logger class would bypass json mode
     // and corrupt the report document.
     expect(source.includes('process.stdout.write')).toBe(false);
+  });
+  it('every code: literal at an emit site is a registered diagnostic code', () => {
+    // Static import at the top of this file:
+    //   import { DIAGNOSTIC_CODES } from '../../src/core/diagnostics';
+    // (require() does not work here - Vitest runs these as ESM.)
+    const offenders: string[] = [];
+    for (const file of walk('src')) {
+      if (file === 'src/core/diagnostics.ts') { continue; }
+      const source = readFileSync(file, 'utf8');
+      for (const match of source.matchAll(/code:\s*'([a-z_]+)'/g)) {
+        if (!(DIAGNOSTIC_CODES as readonly string[]).includes(match[1])) { offenders.push(`${file}: ${match[1]}`); }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });
