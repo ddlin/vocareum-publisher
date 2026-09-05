@@ -25,4 +25,10 @@ describe('architecture guards', () => {
     });
     expect(violations).toEqual([]);
   });
+  it('logger writes stdout only through this.out() so --json can redirect it', () => {
+    const source = readFileSync('src/utils/logger.ts', 'utf8');
+    // Any direct stdout write inside the Logger class would bypass json mode
+    // and corrupt the report document.
+    expect(source.includes('process.stdout.write')).toBe(false);
+  });
 });

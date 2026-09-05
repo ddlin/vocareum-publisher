@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { Logger, LogLevel, createLogger, getLogLevel } from '../../src/utils/logger';
+import { Logger, LogLevel, createLogger, getLogLevel, logger } from '../../src/utils/logger';
 
 describe('Logger', () => {
   let stdoutWrite: ReturnType<typeof vi.spyOn>;
@@ -220,5 +220,63 @@ describe('getLogLevel', () => {
   it('should be case insensitive', () => {
     process.env.VOCAREUM_LOG_LEVEL = 'debug';
     expect(getLogLevel()).toBe(LogLevel.DEBUG);
+  });
+});
+
+describe('logger JSON mode', () => {
+  const capture = () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const so = process.stdout.write.bind(process.stdout);
+    const se = process.stderr.write.bind(process.stderr);
+    // @ts-expect-error test double
+    process.stdout.write = (s: string) => { out.push(String(s)); return true; };
+    // @ts-expect-error test double
+    process.stderr.write = (s: string) => { err.push(String(s)); return true; };
+    return { out, err, restore: () => { process.stdout.write = so; process.stderr.write = se; } };
+  };
+
+  it('sends stdout-bound levels to stderr while enabled', () => {
+    const { out, err, restore } = capture();
+    try {
+      logger.setJsonMode(true);
+      logger.info('info line');
+      logger.success('success line');
+      logger.plain('plain line');
+    } finally {
+      logger.setJsonMode(false);
+      restore();
+    }
+    expect(out).toEqual([]);
+    expect(err.join('')).toContain('info line');
+    expect(err.join('')).toContain('success line');
+    expect(err.join('')).toContain('plain line');
+  });
+
+  it('restores stdout routing when disabled', () => {
+    const { out, restore } = capture();
+    try {
+      logger.setJsonMode(true);
+      logger.setJsonMode(false);
+      logger.info('back on stdout');
+    } finally {
+      restore();
+    }
+    expect(out.join('')).toContain('back on stdout');
+  });
+
+  it('leaves warn and error on stderr in both modes', () => {
+    const { out, err, restore } = capture();
+    try {
+      logger.setJsonMode(true);
+      logger.warn('warned');
+      logger.error('errored');
+    } finally {
+      logger.setJsonMode(false);
+      restore();
+    }
+    expect(out).toEqual([]);
+    expect(err.join('')).toContain('warned');
+    expect(err.join('')).toContain('errored');
   });
 });
