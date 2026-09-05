@@ -5,7 +5,7 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0] — 2026-09-04
 
 ### Fixed
 - **`pull` no longer silently skips `scripts/` and `startercode/` on Elite
@@ -72,6 +72,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   should be verified in the Vocareum UI after a push until VOC-4003 is fixed.
 
 ### Changed
+- **`push --part` now requires exactly one `--assignment`.** It was documented as
+  requiring one and did not enforce it, so `push --part part1` filtered *every*
+  assignment down to parts at that path and wrote to all of them. Harmless-ish while
+  push only sent content and settings; not harmless once it writes rubrics, since a
+  part path shared across ten assignments would have changed ten courses' worth of
+  points. `pull` already enforced this exact rule and threw the same error; push now
+  matches it.
+
 - **A declared directory that the API reports absent is now a warning rather than
   silence.** Returning an empty listing stays correct — throwing would make
   `pull` read the absence as remote deletions — but the silence is what hid both
@@ -79,8 +87,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code 0. The warning names the exact path requested, so a wrong prefix is
   visible as a wrong prefix. It fires only for directories a part declares, not
   for the walk's speculative probes.
-
-### Changed
 - **Point totals are no longer round-tripped as unknown settings.** A part's `max_points`
   and an assignment's `total_points` are derived by Vocareum from rubric criteria — the sum
   of each criterion's `maxscore` where `exclude` is not true — and are not storable. Probing
