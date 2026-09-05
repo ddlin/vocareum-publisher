@@ -818,7 +818,9 @@ describe('reconcile — rubric drift', () => {
     }
     const config = buildConfig(scenario);
     const sink = new RecordingEventSink();
-    const plan = await reconcile(config, client, publishHistory, { events: sink });
+    // This suite exercises the rubric fetch-and-diff path that only `push` opts into
+    // (FIX 2) — planRubrics: true mirrors push-service.ts's reconcile call.
+    const plan = await reconcile(config, client, publishHistory, { events: sink, planRubrics: true });
     return { plan, warnings: sink.messages };
   }
 
@@ -889,6 +891,24 @@ describe('reconcile — rubric drift', () => {
     expect(partAction.rubricPlan).toBeUndefined(); // rubrics unknown, not assumed empty
   });
 
+  // FIX 3: a failed rubric READ at plan time must not vanish into a bare 'skip' — that
+  // would let push report success having migrated no points. Unlike the test above, this
+  // part has no other drift (no content change, no settings change), so before FIX 3 it
+  // would stay 'skip' and rubricReadFailed would never reach executePush.
+  it('promotes an otherwise-unchanged part to update and records rubricReadFailed on a rubric read failure', async () => {
+    mockListRubrics.mockRejectedValueOnce(new Error('token lacks rubrics scope'));
+    const plan = await reconcileWithRubrics({
+      localRubrics: [{ name: 'A', seqnum: '1', maxscore: '10' }],
+      remoteRubrics: [],
+    });
+
+    const partAction = plan.assignments[0].parts[0];
+    expect(partAction.type).toBe('update');
+    expect(partAction.rubricPlan).toBeUndefined();
+    expect(partAction.rubricReadFailed).toContain('token lacks rubrics scope');
+    expect(partAction.reason).toContain('could not read');
+  });
+
   // The empty-array vs. absent-key distinction is the exact thing wantsRubrics exists to
   // preserve: `rubrics: []` means "no local criteria, report every remote row as an
   // orphan"; an absent `rubrics` key means "not managed here, skip without a fetch". A
@@ -917,6 +937,32 @@ describe('reconcile — rubric drift', () => {
 
     expect(mockListRubrics).not.toHaveBeenCalled();
     expect(plan.assignments[0].parts[0].type).toBe('skip');
+  });
+
+  // FIX 2: pull's inspection never reads rubricPlan/remoteRubrics off a PartAction, so
+  // reconcile must not fetch rubrics on its behalf — every such GET was pure waste, on
+  // top of the ones pull's own settings-drift and orphan-import fetchers already make,
+  // and it broke the "at most twice" warning-count promise on a read failure.
+  it('does not fetch rubrics when planRubrics is absent, even with rubrics in config', async () => {
+    const config = buildConfig({
+      localRubrics: [{ name: 'A', seqnum: '1', maxscore: '10' }],
+      remoteRubrics: [],
+    });
+    const plan = await reconcile(config, client, publishHistory, {});
+
+    expect(mockListRubrics).not.toHaveBeenCalled();
+    // No rubric plan means no drift signal either — this part must stay 'skip'.
+    expect(plan.assignments[0].parts[0].type).toBe('skip');
+  });
+
+  it('fetches rubrics when planRubrics is set, given rubrics in config', async () => {
+    const config = buildConfig({
+      localRubrics: [{ name: 'A', seqnum: '1', maxscore: '10' }],
+      remoteRubrics: [],
+    });
+    await reconcile(config, client, publishHistory, { planRubrics: true });
+
+    expect(mockListRubrics).toHaveBeenCalled();
   });
 
   it('names the orphan in the reason when creates and updates are both zero', async () => {

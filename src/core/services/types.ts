@@ -36,6 +36,11 @@ export interface PartIntent {
   /** Rubric criteria executePush will create/update on this part. Included in the
    *  fingerprint (see plan-fingerprint.ts) so a maxscore change shifts it. */
   rubricPlan?: RubricSyncPlan;
+  /** Set when the plan-time rubric read for this part failed. Carried through so
+   *  executePush can fail the run instead of reporting success having migrated no
+   *  points; included in the fingerprint so a newly-failing/newly-recovering read
+   *  shifts it. */
+  rubricReadFailed?: string;
 }
 export interface AssignmentIntent {
   path: string;

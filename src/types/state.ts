@@ -82,6 +82,12 @@ export interface PartAction {
   /** The part's remote rubric rows as read during reconciliation, carried so the push
    *  confirmation can project the point total without a second fetch. */
   remoteRubrics?: RemoteRubric[];
+  /** Set when the rubric read at plan time failed (403, body-encoded failure, pagination
+   *  shortfall, etc.) — the error message. `rubricPlan` stays undefined in this case, but
+   *  this must still reach execute: a green push that silently migrated no points is the
+   *  failure this feature exists to prevent, so a part with no other drift is promoted to
+   *  `update` (never a bare `skip`) when this is set, and executePush fails the run. */
+  rubricReadFailed?: string;
   reason?: string;
 }
 

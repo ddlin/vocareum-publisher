@@ -574,8 +574,9 @@ export const HistoryRubricChangeSchema = z.object({
   updated: z.array(z.string()).optional(),
   points_before: z.number().optional(),
   points_after: z.number().optional(),
-  /** Set when the part was refused or its write failed:
-   *  'duplicate-names' | 'orphans-held' | 'no-scope' | 'write-failed'. */
+  /** Set when the part was refused, its write failed, or its plan-time read failed:
+   *  'duplicate-names' | 'orphans-held' | 'no-scope' | 'write-failed' | 'read-failed' |
+   *  'partial-write'. */
   held: z.string().optional(),
 });
 

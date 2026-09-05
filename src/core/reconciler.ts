@@ -106,7 +106,21 @@ export async function reconcile(
   config: Config,
   client: VocareumClient,
   lastPublishHistory?: PublishHistory,
-  options: { forceAll?: boolean; onMissingId?: 'skip' | 'abort'; workspaceRoot?: string; events?: EventSink } = {}
+  options: {
+    forceAll?: boolean;
+    onMissingId?: 'skip' | 'abort';
+    workspaceRoot?: string;
+    events?: EventSink;
+    /**
+     * Fetch and diff each part's rubrics against config. Only `push` needs this
+     * plan; `pull`'s inspection never reads `rubricPlan`/`remoteRubrics` off
+     * the resulting PartAction, so leaving this off there saves a GET per
+     * rubric-managed part (on top of the GETs pull's own settings-drift and
+     * orphan-import fetchers already make) and avoids a second, unlatched
+     * "could not read rubrics" warning path outside push's guarantees.
+     */
+    planRubrics?: boolean;
+  } = {}
 ): Promise<ReconciliationPlan> {
   const events: EventSink = options.events ?? new LoggerEventSink();
   events.emit({ level: 'info', message: 'Fetching current state from Vocareum...' });
@@ -245,12 +259,16 @@ export async function reconcile(
           // and a rubrics-only migration plans as "No changes" and does nothing.
           let rubricPlan: RubricSyncPlan | undefined;
           let remoteRubrics: RemoteRubric[] | undefined;
+          let rubricReadFailed: string | undefined;
           // The spec distinguishes these deliberately: `rubrics: []` means "no local
           // criteria", so every remote row is an orphan to report; an ABSENT `rubrics` key
           // means "this part is not managed here" and is skipped without a fetch.
           const wantsRubrics = configPart.rubrics !== undefined;
 
-          if (wantsRubrics && shouldSyncRubrics(config)) {
+          // Only push needs a rubric plan at reconcile time; pull's inspection never
+          // reads rubricPlan/remoteRubrics off a PartAction (see the option's doc
+          // comment on `reconcile`), so gate the whole fetch-and-diff block behind it.
+          if (options.planRubrics === true && wantsRubrics && shouldSyncRubrics(config)) {
             if (!shouldSyncPartSettings(config, configAssignment, configPart)) {
               // Silence here would reproduce the original bug in a new place: the user has
               // sync_rubrics on, expects a migration, and gets nothing.
@@ -272,8 +290,11 @@ export async function reconcile(
                 if (hasWork) { rubricPlan = planned; }
               } catch (error) {
                 // Leave rubricPlan undefined — "unknown", not "nothing to do". Content and
-                // settings detection for this part must not be lost to a rubric read.
+                // settings detection for this part must not be lost to a rubric read: the
+                // part is still promoted to 'update' below (via rubricReadFailed) so the
+                // failure reaches execute, but content/settings diffing proceeds normally.
                 const message = error instanceof Error ? error.message : 'Unknown error';
+                rubricReadFailed = message;
                 events.emit({
                   level: 'warn',
                   message: `Could not read rubrics for part ${mapping.apiPartId}: ${message}`,
@@ -297,13 +318,19 @@ export async function reconcile(
 
           const rubricsChanged = rubricPlan !== undefined;
 
-          if (changedDirs.length > 0 || metadataChanged || rubricsChanged) {
+          if (changedDirs.length > 0 || metadataChanged || rubricsChanged || rubricReadFailed !== undefined) {
             const reasons: string[] = [];
             if (changedDirs.length > 0) {
               reasons.push(`Content: ${changedDirs.join(', ')}`);
             }
             if (metadataChanged) {
               reasons.push('Settings changed');
+            }
+            if (rubricReadFailed !== undefined) {
+              // A part with no other drift would otherwise stay 'skip' and this failure
+              // would never reach execute — promote it so the run reports it as failed
+              // instead of exiting green having migrated no points (see FIX 3).
+              reasons.push(`Rubrics: could not read (${rubricReadFailed})`);
             }
             if (rubricPlan) {
               // Compose from whatever actually drove the promotion. Creates/updates are
@@ -333,6 +360,7 @@ export async function reconcile(
               metadataChanged,
               rubricPlan,
               remoteRubrics,
+              rubricReadFailed,
               reason: reasons.join('; ')
             });
           } else {

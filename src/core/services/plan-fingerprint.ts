@@ -33,7 +33,7 @@ function canonicalizeValue(value: unknown): unknown {
  * The fingerprint includes:
  * - assignment paths, assignmentIds, templateAssignmentIds, actions, settingsPayloads
  * - part paths, partIds, contentHashes, settingsPayloads, deletePaths,
- *   reconcileDeleteDirectories, rubricPlan
+ *   reconcileDeleteDirectories, rubricPlan, rubricReadFailed
  *
  * Canonicalization:
  * 1. Sort assignments by path
@@ -72,6 +72,9 @@ export function semanticFingerprint(intent: PushIntent): string {
           // Carries the actual criteria to be written, not counts: a count would not
           // shift when a maxscore changes, which is the facade AGENTS.md #15 forbids.
           rubricPlan: part.rubricPlan,
+          // A newly-failing (or newly-recovering) rubric read must shift the plan's
+          // identity too — otherwise a stale fingerprint could mask the failure.
+          rubricReadFailed: part.rubricReadFailed,
         })),
     })),
   };
