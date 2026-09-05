@@ -139,6 +139,14 @@ const mockConfig: Config = {
           name: 'Part Golden',
           part_id: PART_ID,
           directories: ['startercode'],
+          // Drives a rubric plan: "Criterion A" drifts (8 -> 10), "Criterion B" is new
+          // (a create), and remote's "Old Criterion" has no local counterpart (an
+          // orphan, reported but never deleted). Exercises Task 3's GET .../rubrics
+          // during reconciliation and Task 5's POST/PUT during execute.
+          rubrics: [
+            { name: 'Criterion A', seqnum: '1', maxscore: '10' },
+            { name: 'Criterion B', seqnum: '2', maxscore: '5' },
+          ],
         },
       ],
     },
@@ -174,6 +182,28 @@ const partsListResponse = {
 // getPart response (called by reconciler when shouldSyncPartSettings = true)
 const getPartResponse = {
   parts: [{ id: PART_ID, name: 'Part Golden', seqnum: '1', deleted: '0' }],
+};
+// GET .../rubrics response (Task 3 — fetched during reconciliation for any part
+// whose config has a `rubrics` key). "Criterion A" drifts (8 -> 10, an update);
+// "Old Criterion" has no local counterpart (an orphan); "Criterion B" is local-only
+// (a create).
+const rubricsListResponse = {
+  status: 'success',
+  rubrics: [
+    { id: 'rub-1', name: 'Criterion A', seqnum: '1', maxscore: '8' },
+    { id: 'rub-2', name: 'Old Criterion', seqnum: '2', maxscore: '5' },
+  ],
+  total_records: '2',
+};
+// POST .../rubrics response (Task 5 — creates "Criterion B")
+const rubricsPostResponse = {
+  status: 'success',
+  rubrics: [{ id: 'rub-3', name: 'Criterion B', seqnum: '3', maxscore: '5' }],
+};
+// PUT .../rubrics response (Task 5 — updates "Criterion A" to maxscore 10)
+const rubricsPutResponse = {
+  status: 'success',
+  rubrics: [{ id: 'rub-1', name: 'Criterion A', seqnum: '1', maxscore: '10' }],
 };
 // PUT response for content upload (no transaction polling needed)
 const putSuccessResponse = { status: 'success', state: 'success' };
@@ -216,7 +246,13 @@ describe('golden: push', () => {
     recorder.enqueue(partsListResponse);
     // 5. getPart (reconciler settings sync check — shouldSyncPartSettings defaults true)
     recorder.enqueue(getPartResponse);
-    // 6. PUT content upload
+    // 6. GET rubrics (reconciler — part has a `rubrics` key)
+    recorder.enqueue(rubricsListResponse);
+    // 7. POST rubrics (execute — creates "Criterion B")
+    recorder.enqueue(rubricsPostResponse);
+    // 8. PUT rubrics (execute — updates "Criterion A")
+    recorder.enqueue(rubricsPutResponse);
+    // 9. PUT content upload
     recorder.enqueue(putSuccessResponse);
 
     await publishCommand({ ...CMD_OPTS });
@@ -237,6 +273,9 @@ describe('golden: push', () => {
     recorder.enqueue(partsListResponse);
     // getPart for settings sync
     recorder.enqueue(getPartResponse);
+    // GET rubrics — reconciliation runs (and is displayed) before the confirm
+    // prompt, so this happens even though the user is about to decline.
+    recorder.enqueue(rubricsListResponse);
 
     await publishCommand({ ...CMD_OPTS });
 
@@ -253,6 +292,11 @@ describe('golden: push', () => {
     recorder.enqueue(partsListResponse);
     // getPart for settings sync
     recorder.enqueue(getPartResponse);
+    // GET/POST/PUT rubrics — rubric writes happen before content upload and succeed
+    // independently of the content PUT failure enqueued below.
+    recorder.enqueue(rubricsListResponse);
+    recorder.enqueue(rubricsPostResponse);
+    recorder.enqueue(rubricsPutResponse);
     // Enqueue the failure response for the PUT call (triggers APIError in uploadContent)
     recorder.enqueue(putFailureResponse);
 

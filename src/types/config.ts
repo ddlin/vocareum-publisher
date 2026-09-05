@@ -333,8 +333,10 @@ export const PartSchema = z.object({
   /** Override settings sync for this part. Defaults to assignment/global setting. */
   sync_settings: z.boolean().optional(),
   directories: z.array(DirectoryTypeSchema).optional(),
-  /** Grading rubric criteria, seqnum-ordered. Read-only in this release:
-   *  pull records them; push does not send them. */
+  /** Grading rubric criteria, seqnum-ordered. `pull` records them; `push` creates
+   *  and updates criteria to match (never deletes — a remote criterion with no
+   *  local counterpart is reported as an orphan, not removed). Disabled by
+   *  `sync_rubrics: false` or `sync_settings: false`. */
   rubrics: z.array(RubricSchema).optional(),
   settings: PartSettingsSchema,
 }).passthrough();
@@ -559,11 +561,36 @@ export const HistoryFileChangeSchema = z.object({
 export type HistoryFileChange = z.infer<typeof HistoryFileChangeSchema>;
 
 /**
+ * Rubric changes applied to one part during a push. A rubric write changes
+ * student-visible points — `max_points` is derived from criteria — so it gets
+ * its own audit record rather than folding into `settings` or `files`: which
+ * criteria were created and updated by name, the point delta, and (when the
+ * part was refused) why nothing was written.
+ */
+export const HistoryRubricChangeSchema = z.object({
+  assignment_id: z.string(),
+  part_id: z.string(),
+  created: z.array(z.string()).optional(),
+  updated: z.array(z.string()).optional(),
+  points_before: z.number().optional(),
+  points_after: z.number().optional(),
+  /** Set when the part was refused, its write failed, or its plan-time read failed:
+   *  'duplicate-names' | 'orphans-held' | 'no-scope' | 'write-failed' | 'read-failed' |
+   *  'partial-write' | 'orphans-held+write-failed'. The last is a composite: creates were
+   *  held for orphans AND a later write on the same part threw. Free-form by design — no
+   *  code branches on this value, it exists to be read by a human auditing a push. */
+  held: z.string().optional(),
+});
+
+export type HistoryRubricChange = z.infer<typeof HistoryRubricChangeSchema>;
+
+/**
  * Detailed change summary for a publish run
  */
 export const HistoryChangesSchema = z.object({
   settings: z.array(HistorySettingChangeSchema).optional(),
   files: z.array(HistoryFileChangeSchema).optional(),
+  rubrics: z.array(HistoryRubricChangeSchema).optional(),
 });
 
 export type HistoryChanges = z.infer<typeof HistoryChangesSchema>;

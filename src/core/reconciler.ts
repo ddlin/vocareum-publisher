@@ -7,7 +7,7 @@
 import type { Config, PublishHistory, Part, Assignment } from '../types/config';
 import { normalizeSubmissionFilters } from '../types/config';
 import { detectChangedDirectories, directoriesForPart, publishExcludePatterns } from './local-scan';
-import type { VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
+import type { VocareumAssignmentResponse, VocareumPartResponse, RubricSyncPlan, RemoteRubric } from '../types/api';
 import type {
   ReconciliationPlan,
   AssignmentAction,
@@ -20,6 +20,7 @@ import { VocareumClient } from '../api/client';
 import { getCourse } from '../api/courses';
 import { listAssignments, getAssignment } from '../api/assignments';
 import { listParts, getPart } from '../api/parts';
+import { listRubrics } from '../api/rubrics';
 import { mapParts } from './mapper';
 import { LoggerEventSink } from '../utils/logger-event-sink';
 import type { EventSink } from './services/event-sink';
@@ -27,7 +28,9 @@ import {
   shouldSyncAssignmentSettings,
   shouldSyncCourseSettings,
   shouldSyncPartSettings,
+  shouldSyncRubrics,
 } from '../utils/settings-sync';
+import { mapRubrics, planRubricSync } from '../utils/rubrics';
 import { deepEqual } from '../utils/deep-equal';
 
 const ACCEPTED_UNVERIFIED_ASSIGNMENT_KEYS = [
@@ -103,7 +106,21 @@ export async function reconcile(
   config: Config,
   client: VocareumClient,
   lastPublishHistory?: PublishHistory,
-  options: { forceAll?: boolean; onMissingId?: 'skip' | 'abort'; workspaceRoot?: string; events?: EventSink } = {}
+  options: {
+    forceAll?: boolean;
+    onMissingId?: 'skip' | 'abort';
+    workspaceRoot?: string;
+    events?: EventSink;
+    /**
+     * Fetch and diff each part's rubrics against config. Only `push` needs this
+     * plan; `pull`'s inspection never reads `rubricPlan`/`remoteRubrics` off
+     * the resulting PartAction, so leaving this off there saves a GET per
+     * rubric-managed part (on top of the GETs pull's own settings-drift and
+     * orphan-import fetchers already make) and avoids a second, unlatched
+     * "could not read rubrics" warning path outside push's guarantees.
+     */
+    planRubrics?: boolean;
+  } = {}
 ): Promise<ReconciliationPlan> {
   const events: EventSink = options.events ?? new LoggerEventSink();
   events.emit({ level: 'info', message: 'Fetching current state from Vocareum...' });
@@ -237,6 +254,55 @@ export async function reconcile(
               hasAcceptedUnverifiedPartChange(configAssignment, configPart, lastPublishHistory);
           }
 
+          // Rubric drift is a third change signal alongside content and settings. Without
+          // it a part whose files and settings already match produces no action at all,
+          // and a rubrics-only migration plans as "No changes" and does nothing.
+          let rubricPlan: RubricSyncPlan | undefined;
+          let remoteRubrics: RemoteRubric[] | undefined;
+          let rubricReadFailed: string | undefined;
+          // The spec distinguishes these deliberately: `rubrics: []` means "no local
+          // criteria", so every remote row is an orphan to report; an ABSENT `rubrics` key
+          // means "this part is not managed here" and is skipped without a fetch.
+          const wantsRubrics = configPart.rubrics !== undefined;
+
+          // Only push needs a rubric plan at reconcile time; pull's inspection never
+          // reads rubricPlan/remoteRubrics off a PartAction (see the option's doc
+          // comment on `reconcile`), so gate the whole fetch-and-diff block behind it.
+          if (options.planRubrics === true && wantsRubrics && shouldSyncRubrics(config)) {
+            if (!shouldSyncPartSettings(config, configAssignment, configPart)) {
+              // Silence here would reproduce the original bug in a new place: the user has
+              // sync_rubrics on, expects a migration, and gets nothing.
+              events.emit({
+                level: 'warn',
+                message:
+                  `Part "${configPart.name ?? configPart.path}" has rubrics in config but ` +
+                  `settings sync is disabled for it, so rubrics will not be pushed. ` +
+                  `Set sync_settings: true for this part to migrate them.`,
+              });
+            } else {
+              try {
+                const rows = await listRubrics(client, config.vocareum.course_id, remoteAssignment.id, mapping.apiPartId);
+                remoteRubrics = mapRubrics(rows).map((r, i) => ({ ...r, id: String(rows[i].id) }));
+                const planned = planRubricSync(configPart.rubrics ?? [], remoteRubrics);
+                const hasWork =
+                  planned.creates.length > 0 || planned.updates.length > 0 ||
+                  planned.orphans.length > 0 || planned.duplicateNames.length > 0;
+                if (hasWork) { rubricPlan = planned; }
+              } catch (error) {
+                // Leave rubricPlan undefined — "unknown", not "nothing to do". Content and
+                // settings detection for this part must not be lost to a rubric read: the
+                // part is still promoted to 'update' below (via rubricReadFailed) so the
+                // failure reaches execute, but content/settings diffing proceeds normally.
+                const message = error instanceof Error ? error.message : 'Unknown error';
+                rubricReadFailed = message;
+                events.emit({
+                  level: 'warn',
+                  message: `Could not read rubrics for part ${mapping.apiPartId}: ${message}`,
+                });
+              }
+            }
+          }
+
           const effectiveDirs = directoriesForPart(config, configPart);
 
           const excludePatterns = publishExcludePatterns(config);
@@ -250,13 +316,38 @@ export async function reconcile(
             options.workspaceRoot ?? process.cwd()
           );
 
-          if (changedDirs.length > 0 || metadataChanged) {
+          const rubricsChanged = rubricPlan !== undefined;
+
+          if (changedDirs.length > 0 || metadataChanged || rubricsChanged || rubricReadFailed !== undefined) {
             const reasons: string[] = [];
             if (changedDirs.length > 0) {
               reasons.push(`Content: ${changedDirs.join(', ')}`);
             }
             if (metadataChanged) {
               reasons.push('Settings changed');
+            }
+            if (rubricReadFailed !== undefined) {
+              // A part with no other drift would otherwise stay 'skip' and this failure
+              // would never reach execute — promote it so the run reports it as failed
+              // instead of exiting green having migrated no points (see FIX 3).
+              reasons.push(`Rubrics: could not read (${rubricReadFailed})`);
+            }
+            if (rubricPlan) {
+              // Compose from whatever actually drove the promotion. Creates/updates are
+              // the common case; duplicateNames is mutually exclusive with the other three
+              // (planRubricSync short-circuits to it), so it gets its own message rather
+              // than reading as "0 to create, 0 to update" when it's the sole reason.
+              if (rubricPlan.duplicateNames.length > 0) {
+                reasons.push(`Rubrics: duplicate criterion names (${rubricPlan.duplicateNames.join(', ')})`);
+              } else {
+                const segments: string[] = [];
+                if (rubricPlan.creates.length > 0) { segments.push(`${rubricPlan.creates.length} to create`); }
+                if (rubricPlan.updates.length > 0) { segments.push(`${rubricPlan.updates.length} to update`); }
+                if (rubricPlan.orphans.length > 0) {
+                  segments.push(`${rubricPlan.orphans.length} orphan${rubricPlan.orphans.length === 1 ? '' : 's'}`);
+                }
+                reasons.push(`Rubrics: ${segments.join(', ')}`);
+              }
             }
             partActions.push({
               type: 'update',
@@ -267,6 +358,9 @@ export async function reconcile(
               // can read them directly instead of recomputing (Stage 1a Fix 3).
               dirHashes: Object.keys(dirHashes).length > 0 ? dirHashes : undefined,
               metadataChanged,
+              rubricPlan,
+              remoteRubrics,
+              rubricReadFailed,
               reason: reasons.join('; ')
             });
           } else {

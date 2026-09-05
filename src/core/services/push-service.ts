@@ -19,15 +19,20 @@ import type {
   AssignmentSettingsPayload,
   VocareumAssignmentResponse,
   VocareumPartResponse,
+  RubricSyncPlan,
+  RemoteRubric,
 } from '../../types/api';
-import type { HistorySettingChange, HistoryFileChange, AssignmentSettings } from '../../types/config';
-import type { PublishResult } from '../../types/state';
+import type { HistorySettingChange, HistoryFileChange, HistoryRubricChange, AssignmentSettings } from '../../types/config';
+import type { PublishResult, ReconciliationPlan } from '../../types/state';
 import { reconcile, displayPlan } from '../reconciler';
 import { assertConfinedToWorkspace, publishExcludePatterns } from '../local-scan';
 import { calculateDirectoryHash, readFile as readTextFile } from '../../utils/files';
 import { copyAssignment, getAssignment, updateAssignment } from '../../api/assignments';
 import { updateCourse } from '../../api/courses';
 import { getPart, updatePart } from '../../api/parts';
+import { createRubrics, updateRubrics } from '../../api/rubrics';
+import { projectedPoints } from '../../utils/rubrics';
+import { ForbiddenError } from '../../api/client';
 import { mapParts } from '../mapper';
 import { readDirectory as readLocalDirectory, syncDirectory } from '../uploader';
 import { listFiles } from '../../api/content';
@@ -42,7 +47,85 @@ import {
 import type { PushContext } from './context';
 import type { LockedSession } from '../session';
 import type { PushRequest, PushPlan, PushIntent, PushPreconditions, AssignmentIntent, PartIntent } from './types';
+import type { EventSink } from './event-sink';
 import { semanticFingerprint } from './plan-fingerprint';
+
+/**
+ * Render one part's rubric plan into confirmation-facing lines: creates/updates
+ * counts, each orphan by name, the projected point total, and the never-deletes
+ * reminder. Exported so both plan-display branches in `planPush` (verbose
+ * `displayPlan` and the compact "Found:" summary) share one rendering, and so the
+ * rename hazard — a renamed criterion reads as a duplicate, inflating the part's
+ * points — is visible in the ordinary interactive confirmation, not only
+ * `--verbose`/`--dry-run`.
+ */
+export function emitRubricPlanSummary(
+  events: EventSink,
+  partLabel: string,
+  rubricPlan: RubricSyncPlan,
+  remoteRubrics: RemoteRubric[] | undefined,
+): void {
+  if (rubricPlan.duplicateNames.length > 0) {
+    events.emit({
+      level: 'warn',
+      message:
+        `Rubrics for "${partLabel}": duplicate criterion names ` +
+        `(${rubricPlan.duplicateNames.join(', ')}); rubrics will not be pushed for this part.`,
+    });
+    return;
+  }
+
+  const criterionWord = rubricPlan.creates.length === 1 ? 'criterion' : 'criteria';
+  events.emit({
+    level: 'plain',
+    message:
+      `Rubrics for "${partLabel}": ${rubricPlan.creates.length} rubric ${criterionWord} to create, ` +
+      `${rubricPlan.updates.length} to update`,
+  });
+
+  for (const orphan of rubricPlan.orphans) {
+    events.emit({
+      level: 'warn',
+      message: `  "${orphan.name}" has no local counterpart and will be left in place`,
+    });
+  }
+
+  const { before, after, unparseable } = projectedPoints(remoteRubrics ?? [], rubricPlan);
+  if (unparseable.length > 0) {
+    events.emit({
+      level: 'warn',
+      message:
+        `  Points total could not be computed — unparseable maxscore on: ${unparseable.join(', ')}`,
+    });
+  } else {
+    events.emit({
+      level: 'plain',
+      message: `  Points would go from ${before} to ${after} (projected from plan-time state, not a promise)`,
+    });
+  }
+  events.emit({
+    level: 'plain',
+    message: '  This plan is a snapshot as of planning; changes made in Vocareum since then are not reflected.',
+  });
+
+  events.emit({ level: 'plain', message: '  Push never deletes rubric criteria.' });
+}
+
+/** Emit `emitRubricPlanSummary` for every part in the plan that carries a rubricPlan. */
+function emitRubricPlanSummaries(reconPlan: ReconciliationPlan, events: EventSink): void {
+  for (const assignmentAction of reconPlan.assignments) {
+    if (assignmentAction.type === 'error' || assignmentAction.type === 'skip') { continue; }
+    for (const partAction of assignmentAction.parts) {
+      if (partAction.type === 'skip' || partAction.rubricPlan === undefined) { continue; }
+      emitRubricPlanSummary(
+        events,
+        partAction.part.name ?? partAction.part.path,
+        partAction.rubricPlan,
+        partAction.remoteRubrics,
+      );
+    }
+  }
+}
 
 function validateExecutableIntent(plan: PushPlan): void {
   const actionableAssignments = plan.execution.reconciliation.assignments.filter(
@@ -143,6 +226,16 @@ export async function planPush(
   const assignmentFilters = parseCsv(req.assignment);
   const partFilters = parseCsv(req.part);
 
+  // --part is not unique across assignments, and rubric writes (which change
+  // a part's points) must never escape scope because a path collided across
+  // unrelated assignments. pull enforces the identical rule for the same
+  // reason (pull-service.ts) — mirror it here so both commands read consistently.
+  if (partFilters.length > 0 && assignmentFilters.length !== 1) {
+    throw new Error(
+      '--part requires exactly one --assignment (part selectors are not unique across assignments).'
+    );
+  }
+
   // Build working config (filtered copy)
   const workingConfig: Config = {
     ...effectiveConfig,
@@ -184,6 +277,7 @@ export async function planPush(
     onMissingId: req.onMissingId,
     workspaceRoot,
     events,
+    planRubrics: true,
   });
 
   if (assignmentFilters.length > 0 || partFilters.length > 0) {
@@ -203,6 +297,7 @@ export async function planPush(
 
   if ((req.verbose ?? false) || (req.dryRun ?? false)) {
     displayPlan(reconPlan, events);
+    emitRubricPlanSummaries(reconPlan, events);
   } else if (hasChanges) {
     const extras: string[] = [];
     if (reconPlan.summary.coursesToUpdate > 0) { extras.push('course settings update'); }
@@ -215,6 +310,11 @@ export async function planPush(
         `${reconPlan.summary.assignmentsToSkip} unchanged` +
         (extras.length > 0 ? ` (${extras.join(', ')})` : ''),
     });
+    // The rename hazard (a renamed criterion re-creates as a duplicate and
+    // inflates the part's points) must be visible here too — this compact
+    // branch, not displayPlan's --verbose/--dry-run form, is the summary the
+    // ordinary interactive user confirms from.
+    emitRubricPlanSummaries(reconPlan, events);
   }
 
   // Build the configDigest from the persisted YAML text.
@@ -394,6 +494,8 @@ export async function planPush(
         ...(partSettingsPayload !== undefined ? { settingsPayload: partSettingsPayload } : {}),
         ...(deletePaths !== undefined ? { deletePaths } : {}),
         ...(reconcileDeleteDirectories !== undefined ? { reconcileDeleteDirectories } : {}),
+        rubricPlan: partAction.rubricPlan,
+        rubricReadFailed: partAction.rubricReadFailed,
       });
     }
 
@@ -560,8 +662,13 @@ export async function executePush(
   const configUpdates: Config['assignments'] = [];
   let configChanged = false;
   let shouldAbort = false;
+  // Once a 403 is hit, the token lacks the rubrics scope for the rest of this
+  // run — every subsequently planned rubric write must be recorded as failed,
+  // never silently skipped (rule: a 403 fails the run, it does not degrade).
+  let rubricsAvailable = true;
   const settingChanges: HistorySettingChange[] = [];
   const fileChanges: HistoryFileChange[] = [];
+  const rubricChanges: HistoryRubricChange[] = [];
   const fileSizeState: Record<string, number> = { ...(lastHistory?.file_size_state ?? {}) };
   const intentAssignmentsByPath = new Map(
     plan.intent.assignments.map((assignmentIntent) => [assignmentIntent.path, assignmentIntent]),
@@ -650,6 +757,16 @@ export async function executePush(
           assignmentIntent.templateCourseId,
         );
         events.emit({ level: 'success', message: `Created assignment ${action.assignment.name} (${copyResult.assignment_id})` });
+
+        if ((action.assignment.parts ?? []).some((part) => part.rubrics !== undefined)) {
+          events.emit({
+            level: 'warn',
+            message:
+              `Rubrics for "${action.assignment.name}" were not reconciled: it was created ` +
+              `in this run and carries its template's criteria. Run push again to reconcile ` +
+              `them against vocareum.yaml.`,
+          });
+        }
 
         action.assignment.assignment_id = copyResult.assignment_id;
         const mapped = mapParts(
@@ -944,6 +1061,189 @@ export async function executePush(
         }
       }
 
+      const rubricPlan = partIntent.rubricPlan;
+
+      if (partIntent.rubricReadFailed !== undefined) {
+        // The plan-time read failed (403, body-encoded failure, pagination shortfall,
+        // etc.) — rubricPlan stayed undefined so content/settings detection for this part
+        // wasn't lost, but that must not read as success here. A green push that silently
+        // migrated no points is exactly the failure this feature exists to prevent.
+        const message = `Could not read rubrics for "${partAction.part.name ?? partAction.part.path}": ${partIntent.rubricReadFailed}`;
+        events.emit({ level: 'error', message });
+        result.failed.push({ type: 'part', id: partId, error: message });
+        result.success = false;
+        rubricChanges.push({
+          assignment_id: action.assignment.assignment_id ?? 'unknown',
+          part_id: partId,
+          held: 'read-failed',
+        });
+        if (abortOnError) { shouldAbort = true; break assignmentLoop; }
+      }
+
+      if (
+        rubricPlan !== undefined &&
+        assignmentIntent.action !== 'create' &&
+        !rubricsAvailable &&
+        (rubricPlan.creates.length > 0 || rubricPlan.updates.length > 0)
+      ) {
+        // The scope was lost earlier in this run. Record every subsequently skipped part
+        // that actually had work to do — the spec requires skipped writes to be recorded,
+        // and a silent skip would hide how much of the migration did not happen. An
+        // orphan-only part (no creates, no updates) had nothing to write and so nothing to
+        // skip; recording it here would report a failure that never occurred. It passes
+        // through silently, exactly as it would have without the 403.
+        const message = `Rubrics not pushed for "${partAction.part.name ?? partAction.part.path}": token lacks rubric write permission.`;
+        events.emit({ level: 'warn', message });
+        result.failed.push({ type: 'part', id: partId, error: message });
+        result.success = false;
+        rubricChanges.push({
+          assignment_id: action.assignment.assignment_id ?? 'unknown',
+          part_id: partId,
+          held: 'no-scope',
+        });
+        if (abortOnError) { shouldAbort = true; break assignmentLoop; }
+      } else if (rubricPlan !== undefined && assignmentIntent.action !== 'create' && rubricsAvailable) {
+        const partLabel = partAction.part.name ?? partAction.part.path;
+        // `courseId` does not exist in executePush — the surrounding code reads
+        // workingConfig.vocareum.course_id directly. And assignment_id is `string | null`
+        // (config.ts), so it must be narrowed before the string-typed API calls.
+        const courseId = workingConfig.vocareum.course_id;
+        const assignmentId = action.assignment.assignment_id;
+        if (assignmentId === null || assignmentId === '') {
+          events.emit({ level: 'warn', message: `Skipping rubrics for "${partLabel}": assignment has no id yet.` });
+        } else {
+          if (rubricPlan.duplicateNames.length > 0) {
+            // Name matching is undefined against duplicates; guessing risks updating the
+            // wrong row's points.
+            const message =
+              `Part "${partLabel}" has duplicate rubric criterion names ` +
+              `(${rubricPlan.duplicateNames.join(', ')}); rubrics not pushed for this part.`;
+            events.emit({ level: 'error', message });
+            result.failed.push({ type: 'part', id: partId, error: message });
+            result.success = false;
+            rubricChanges.push({
+              assignment_id: assignmentId,
+              part_id: partId,
+              held: 'duplicate-names',
+            });
+            if (abortOnError) { shouldAbort = true; break assignmentLoop; }
+          } else {
+            // Both conditions matter: a part with orphans but nothing to create has
+            // nothing for non-interactive mode to withhold — its updates should proceed
+            // normally, not be marked failed/held over an orphan alone.
+            const holdCreates =
+              req.nonInteractive === true &&
+              rubricPlan.orphans.length > 0 &&
+              rubricPlan.creates.length > 0;
+            // Collected rather than pushed to result.failed immediately: a part that hits
+            // both the orphan hold and a later write failure previously recorded two
+            // result.failed entries for the same part id, splitting one story across the
+            // array. One entry naming every reason instead.
+            const failureMessages: string[] = [];
+            if (holdCreates) {
+              const message =
+                `Part "${partLabel}" has ${rubricPlan.orphans.length} remote rubric ` +
+                `criterion(s) with no local counterpart; creating in non-interactive mode ` +
+                `could duplicate a renamed criterion and inflate the part's points. ` +
+                `Creates held — re-run interactively to confirm.`;
+              events.emit({ level: 'error', message });
+              failureMessages.push(message);
+            }
+
+            let createdOk = false;
+            let updatedOk = false;
+            let writeFailed = false;
+            try {
+              if (!holdCreates && rubricPlan.creates.length > 0) {
+                await createRubrics(ctx.client, courseId, assignmentId, partId, rubricPlan.creates);
+                events.emit({ level: 'success', message: `Created ${rubricPlan.creates.length} rubric criteria on "${partLabel}"` });
+                createdOk = true;
+                // Set immediately, not once at the end of the try: if updateRubrics
+                // throws next, this create still really happened and really changed
+                // points, so result.updated must record it even though control jumps
+                // straight to catch below.
+                partWasUpdated = true;
+              }
+              if (rubricPlan.updates.length > 0) {
+                await updateRubrics(ctx.client, courseId, assignmentId, partId, rubricPlan.updates);
+                events.emit({ level: 'success', message: `Updated ${rubricPlan.updates.length} rubric criteria on "${partLabel}"` });
+                updatedOk = true;
+                partWasUpdated = true;
+              }
+            } catch (error) {
+              if (error instanceof ForbiddenError) {
+                // Unlike the read side, this does NOT degrade to a warning: the write was the
+                // point. A green push that silently left grading points unmigrated is the
+                // failure this feature exists to prevent.
+                rubricsAvailable = false;
+                events.emit({
+                  level: 'error',
+                  message:
+                    'Rubric writes are not permitted with this API token; rubric sync is ' +
+                    'disabled for the rest of this run. Regenerate the token with the rubrics ' +
+                    'POST and PUT permissions enabled.',
+                });
+              } else {
+                events.emit({ level: 'error', message: `Rubric write failed for "${partLabel}": ${describeApiError(error)}` });
+              }
+              failureMessages.push(describeApiError(error));
+              writeFailed = true;
+            }
+
+            if (failureMessages.length > 0) {
+              result.failed.push({ type: 'part', id: partId, error: failureMessages.join('; ') });
+              result.success = false;
+            }
+
+            // Record what actually happened to this part's rubrics — the criteria written
+            // (by name), the resulting point delta, and the hold reason when creates were
+            // withheld, the write itself failed, or a write succeeded and a later one then
+            // failed. Only the applied portion of the plan (not the full plan) feeds the
+            // point projection, so a held create doesn't get counted as though it landed.
+            const partialWrite = writeFailed && (createdOk || updatedOk);
+            const heldReason = partialWrite
+              // Something was written and something then failed: the entry must not read as
+              // a clean success with a point delta while result.failed records a failure —
+              // the true total is unknown.
+              ? 'partial-write'
+              : holdCreates
+                ? (writeFailed ? 'orphans-held+write-failed' : 'orphans-held')
+                : (writeFailed ? 'write-failed' : undefined);
+            if (createdOk || updatedOk || heldReason !== undefined) {
+              const appliedPlan: RubricSyncPlan = {
+                creates: createdOk ? rubricPlan.creates : [],
+                updates: updatedOk ? rubricPlan.updates : [],
+                orphans: rubricPlan.orphans,
+                duplicateNames: [],
+              };
+              const { before, after, unparseable } = projectedPoints(partAction.remoteRubrics ?? [], appliedPlan);
+              const remoteNameById = new Map((partAction.remoteRubrics ?? []).map((r) => [r.id, r.name]));
+              // Omit the point projection whenever the total written is not fully known:
+              // a write failure, a partial write, or an unparseable maxscore would otherwise
+              // misleadingly read as a confirmed total. 'orphans-held' alone (no write
+              // failure) still gets a delta — only the withheld creates are excluded from
+              // appliedPlan above, so the projection reflects exactly what was written.
+              const pointsKnown =
+                unparseable.length === 0 &&
+                heldReason !== 'write-failed' &&
+                heldReason !== 'partial-write' &&
+                heldReason !== 'orphans-held+write-failed';
+              rubricChanges.push({
+                assignment_id: assignmentId,
+                part_id: partId,
+                created: createdOk ? rubricPlan.creates.map((c) => c.name) : undefined,
+                updated: updatedOk
+                  ? rubricPlan.updates.map((u) => u.name ?? remoteNameById.get(u.id) ?? u.id)
+                  : undefined,
+                ...(pointsKnown ? { points_before: before, points_after: after } : {}),
+                ...(heldReason !== undefined ? { held: heldReason } : {}),
+              });
+            }
+            if (abortOnError && failureMessages.length > 0) { shouldAbort = true; break assignmentLoop; }
+          }
+        }
+      }
+
       // Upload exactly the directories represented by the confirmed intent.
       const contentDirectories = Object.keys(partIntent.contentHashes) as DirectoryType[];
       if (contentDirectories.length > 0) {
@@ -1077,10 +1377,11 @@ export async function executePush(
     settings_state: settingsState,
     file_size_state: fileSizeState,
     changes:
-      settingChanges.length > 0 || fileChanges.length > 0
+      settingChanges.length > 0 || fileChanges.length > 0 || rubricChanges.length > 0
         ? {
             settings: settingChanges.length > 0 ? settingChanges : undefined,
             files: fileChanges.length > 0 ? fileChanges : undefined,
+            rubrics: rubricChanges.length > 0 ? rubricChanges : undefined,
           }
         : undefined,
     created: result.created.map((c) => ({ assignment: c.id, parts: c.parts ?? [] })),

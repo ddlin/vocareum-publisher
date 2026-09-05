@@ -6,6 +6,8 @@
  * CRITICAL: seqnum is a string that must be parsed for sorting
  */
 
+import type { Rubric } from './config';
+
 /**
  * Course response from Vocareum API
  */
@@ -160,6 +162,39 @@ export interface RubricsListResponse {
   parent?: { courseid: string; assignmentid: string; partid: string };
   rubrics?: VocareumRubricResponse[];
   total_records?: number | string;
+}
+
+/** Body row for POST .../rubrics. `seqnum` is deliberately absent — the API rejects it
+ *  (400 "Invalid attribure post rubric request: seqnum") and assigns it by append order. */
+export interface RubricCreate {
+  name: string;
+  maxscore: string;
+  auto?: boolean;
+  exclude?: boolean;
+}
+
+/** Body row for PUT .../rubrics. Partial: sending only `maxscore` preserves `name`.
+ *  `seqnum` is absent because PUT accepts and silently ignores it — criterion order is
+ *  create-order and cannot be changed. */
+export interface RubricUpdate {
+  id: string;
+  name?: string;
+  maxscore?: string;
+  auto?: boolean;
+  exclude?: boolean;
+}
+
+/** A rubric row as it exists remotely: the config shape plus the server id. */
+export type RemoteRubric = Rubric & { id: string };
+
+/** What push will do to one part's rubrics. Empty on every axis means no work. */
+export interface RubricSyncPlan {
+  creates: RubricCreate[];
+  updates: RubricUpdate[];
+  /** Remote criteria with no local counterpart. Reported, never deleted. */
+  orphans: RemoteRubric[];
+  /** Names duplicated within local, or within remote. Non-empty means the part is refused. */
+  duplicateNames: string[];
 }
 
 /**

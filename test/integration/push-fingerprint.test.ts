@@ -12,6 +12,19 @@
 // After the fix: all three assertions pass.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { Rubric } from '../../src/types/config';
+
+// ── rubrics API mock — Task 3 makes reconciliation fetch rubrics for any part
+// whose config carries a `rubrics` key. Mocking the module directly (rather than
+// enqueueing another RecordingClient response) keeps this fetch off the shared
+// response queue so it can't desynchronize the reconcile-response sequence.
+const { mockListRubrics } = vi.hoisted(() => ({
+  mockListRubrics: vi.fn(),
+}));
+
+vi.mock('../../src/api/rubrics', () => ({
+  listRubrics: mockListRubrics,
+}));
 
 // ── files mock — controls calculateDirectoryHash and readFile return values ───
 const { mockCalculateDirectoryHash, mockReadDirectory, mockReadFile } = vi.hoisted(() => ({
@@ -130,6 +143,36 @@ function enqueueReconcileResponses(getPartResponse = getPartResponseDefault): vo
   recorder.enqueue(fullAssignmentResponse);
   recorder.enqueue(partsListResponse);
   recorder.enqueue(getPartResponse);
+}
+
+/**
+ * Plan a push for a config whose single part carries the given rubrics, with an
+ * always-empty remote rubric list (every local criterion reads as a create). Task 3
+ * makes reconciliation fetch rubrics for any part whose config has a `rubrics` key,
+ * so `mockListRubrics` (not the RecordingClient queue) supplies that response —
+ * see the `vi.mock('../../src/api/rubrics')` above.
+ */
+async function planWithRubrics(rubrics: Rubric[]) {
+  const config = makeConfig({
+    parts: [
+      {
+        path: 'part1',
+        name: 'FP Part',
+        part_id: PART_ID,
+        directories: ['startercode'],
+        rubrics,
+      },
+    ],
+  } as Partial<Config['assignments'][0]>);
+
+  recorder = new RecordingClient();
+  mockCalculateDirectoryHash.mockResolvedValue(CONTENT_HASH_V1);
+  mockReadDirectory.mockResolvedValue({ 'hello.txt': Buffer.from('hello') });
+  mockListRubrics.mockResolvedValue([]);
+
+  enqueueReconcileResponses();
+
+  return planPush(makeCtx(config), {});
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -396,5 +439,31 @@ describe('push-fingerprint: planPush fails closed when preconditions cannot be c
     await expect(
       planPush(makeCtx(createConfig), { dryRun: false })
     ).rejects.toThrow(/Cannot compute push preconditions.*hash/);
+  });
+});
+
+describe('push-fingerprint: rubric plans are covered', () => {
+  it('a changed rubric maxscore shifts the semanticFingerprint', async () => {
+    const baseline = await planWithRubrics([{ name: 'A', seqnum: '1', maxscore: '10' }]);
+    const changed  = await planWithRubrics([{ name: 'A', seqnum: '1', maxscore: '12' }]);
+
+    expect(baseline.semanticFingerprint).not.toBe(changed.semanticFingerprint);
+  });
+
+  it('an added criterion shifts the semanticFingerprint', async () => {
+    const baseline = await planWithRubrics([{ name: 'A', seqnum: '1', maxscore: '10' }]);
+    const added    = await planWithRubrics([
+      { name: 'A', seqnum: '1', maxscore: '10' },
+      { name: 'B', seqnum: '2', maxscore: '5' },
+    ]);
+
+    expect(baseline.semanticFingerprint).not.toBe(added.semanticFingerprint);
+  });
+
+  it('an identical rubric plan produces a stable fingerprint across two plans', async () => {
+    const a = await planWithRubrics([{ name: 'A', seqnum: '1', maxscore: '10' }]);
+    const b = await planWithRubrics([{ name: 'A', seqnum: '1', maxscore: '10' }]);
+
+    expect(a.semanticFingerprint).toBe(b.semanticFingerprint);
   });
 });

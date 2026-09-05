@@ -1260,7 +1260,13 @@ export async function applyPull(
           if (changes.added.length === 0 && changes.changed.length === 0 && changes.removed.length === 0) {
             events.emit({ level: 'plain', message: '    (order differs)' });
           }
-          events.emit({ level: 'plain', message: '    (rubrics are read-only: push will not send these to Vocareum)' });
+          // Accurate about the limits, not just the mechanism: push can create a
+          // criterion missing remotely and update one whose values differ, but it
+          // never deletes a remote criterion that's absent locally (an orphan-only
+          // drift here — remote has it, local doesn't — is never resolved by push,
+          // it will keep showing up on every future pull) and criterion order is
+          // immutable server-side (an order-only drift is never resolved either).
+          events.emit({ level: 'plain', message: '    (push can create/update criteria from local, but never deletes a remote-only criterion or reorders them)' });
         }
       }
 
@@ -1292,14 +1298,15 @@ export async function applyPull(
         result.settingsPulled++;
         events.emit({ level: 'success', message: `Will update local settings for "${drift.assignmentName}"` });
       } else if (action === 'keep') {
-        // If any part's drift included rubrics, the unqualified message below is
-        // false for that part: push never sends rubrics regardless of this
-        // choice (rubrics are read-only, see the display line emitted above).
-        // Left unconditional, "keep" is the last thing a user sees for a
-        // rubric-only-drift part and it promises a push that will not happen.
+        // If any part's drift included rubrics, push will create/update criteria
+        // to match the kept local config, which can change the part's derived
+        // max_points — but push cannot delete a remote-only criterion or reorder
+        // criteria, so a kept local deletion or reordering will not be honoured
+        // (that drift will keep reappearing on future pulls). Say so explicitly —
+        // this is the last message a user sees before that happens.
         const hasRubricsDrift = drift.partsDrift.some((partDrift) => partDrift.rubricsDrift !== undefined);
         const keepMessage = hasRubricsDrift
-          ? '  Keeping local settings (will push to Vocareum on next publish; rubric changes are read-only and will not be pushed)'
+          ? '  Keeping local settings (will push to Vocareum on next publish; rubric creates/updates apply, but push never deletes a remote-only criterion or reorders them)'
           : '  Keeping local settings (will push to Vocareum on next publish)';
         events.emit({ level: 'plain', message: keepMessage });
       } else {

@@ -1,5 +1,6 @@
 import type { Config, PublishHistory } from '../../types/config';
 import type { ReconciliationPlan } from '../../types/state';
+import type { RubricSyncPlan } from '../../types/api';
 
 // Per-invocation options (NOT in the context — the context is the durable
 // environment; the request is what this call does). Mirror today's options.
@@ -32,6 +33,14 @@ export interface PartIntent {
   deletePaths?: string[];
   /** Deletion sets that can only be resolved after a new assignment is copied. */
   reconcileDeleteDirectories?: string[];
+  /** Rubric criteria executePush will create/update on this part. Included in the
+   *  fingerprint (see plan-fingerprint.ts) so a maxscore change shifts it. */
+  rubricPlan?: RubricSyncPlan;
+  /** Set when the plan-time rubric read for this part failed. Carried through so
+   *  executePush can fail the run instead of reporting success having migrated no
+   *  points; included in the fingerprint so a newly-failing/newly-recovering read
+   *  shifts it. */
+  rubricReadFailed?: string;
 }
 export interface AssignmentIntent {
   path: string;

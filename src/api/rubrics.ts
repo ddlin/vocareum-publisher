@@ -17,7 +17,7 @@
  */
 
 import { VocareumClient, APIError } from './client';
-import type { VocareumRubricResponse, RubricsListResponse } from '../types/api';
+import type { VocareumRubricResponse, RubricsListResponse, RubricCreate, RubricUpdate } from '../types/api';
 
 /**
  * Parse one page's `total_records` field for the pagination guard below.
@@ -151,4 +151,95 @@ export async function listRubrics(
   }
 
   return all.sort((a, b) => parseInt(a.seqnum, 10) - parseInt(b.seqnum, 10));
+}
+
+/**
+ * Normalize one API rubric row to the string-typed shape the rest of vocgit assumes.
+ *
+ * POST responses have been observed returning `id` and `seqnum` as NUMBERS while GET
+ * returns both as strings. This function coerces numbers and numeric strings to strings,
+ * but throws APIError if either field is missing, null, or undefined — those are genuine
+ * API anomalies, not shape variations. AGENTS.md constraint 1 requires ids to be strings
+ * everywhere downstream; a fabricated "undefined" id would silently flow into the config.
+ *
+ * @throws APIError if `id` or `seqnum` is missing, null, or undefined
+ */
+function normalizeRubricRow(row: VocareumRubricResponse): VocareumRubricResponse {
+  if (row.id === null || row.id === undefined) {
+    throw new APIError(
+      'Rubrics response row missing or null id',
+      undefined,
+      row
+    );
+  }
+  if (row.seqnum === null || row.seqnum === undefined) {
+    throw new APIError(
+      'Rubrics response row missing or null seqnum',
+      undefined,
+      row
+    );
+  }
+  return { ...row, id: String(row.id), seqnum: String(row.seqnum) };
+}
+
+async function writeRubrics(
+  client: VocareumClient,
+  method: 'POST' | 'PUT',
+  courseId: string,
+  assignmentId: string,
+  partId: string,
+  rows: RubricCreate[] | RubricUpdate[],
+  verb: string
+): Promise<VocareumRubricResponse[]> {
+  if (rows.length === 0) { return []; }
+
+  const response = await client.request<RubricsListResponse>({
+    method,
+    url: `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/rubrics`,
+    data: { rubrics: rows },
+  });
+
+  // Same body-encoded-failure guard as listRubrics. A write reported as success that did
+  // nothing is worse here than a thrown error: the caller would record a migration that
+  // never happened, and max_points would silently stay wrong.
+  if (response.status !== 'success') {
+    throw new APIError(
+      `Rubrics ${verb} for part ${partId} returned a non-success status`,
+      undefined,
+      response
+    );
+  }
+
+  return (response.rubrics ?? []).map(normalizeRubricRow);
+}
+
+/**
+ * Create rubric criteria on a part. One batched request.
+ *
+ * @throws APIError if the response body reports a non-success status
+ */
+export async function createRubrics(
+  client: VocareumClient,
+  courseId: string,
+  assignmentId: string,
+  partId: string,
+  rubrics: RubricCreate[]
+): Promise<VocareumRubricResponse[]> {
+  return writeRubrics(client, 'POST', courseId, assignmentId, partId, rubrics, 'create');
+}
+
+/**
+ * Update rubric criteria on a part, keyed by server id. Partial — omitted fields are
+ * preserved. One batched request.
+ *
+ * @throws APIError if the response body reports a non-success status
+ */
+export async function updateRubrics(
+  client: VocareumClient,
+  courseId: string,
+  assignmentId: string,
+  partId: string,
+  updates: RubricUpdate[]
+): Promise<VocareumRubricResponse[]> {
+  return writeRubrics(client, 'PUT', courseId, assignmentId, partId, updates, 'update');
 }
