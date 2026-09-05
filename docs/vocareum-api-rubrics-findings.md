@@ -35,14 +35,30 @@ one of six rows shown:
 `id`/`seqnum`/`maxscore` are strings; `exclude`/`auto` are real booleans. `VocareumRubricResponse`
 as shipped is correct.
 
-### ⚠️ Pagination is UNANSWERED
+### Pagination — ANSWERED: the endpoint pages at 10, and `size` is ignored
 
-The bare request above returned all six rows, so nothing forced a second page. **`page=0`
-vs `page=1` behaviour was never tested, and no part with more than one page of criteria was
-found** (the largest observed is 6 rows). `listRubrics`'s pagination loop therefore still
-rests on an inference from `listAssignments`, exactly as it did before this probe. This was
-Task 2 Step 4 and it remains open. Its defensive shortfall guard is the mitigation, not a
-substitute.
+Settled 2026-09-04 during the org 265 → 335 migration, not by a probe but by the migration
+itself. Course 229463 has eight parts with more than ten criteria, and every one of them
+returned exactly **10 rows against a larger `total_records`**:
+
+```
+3-[ACACAD]-Lab - Module 5 - Challenge Lab     returned 10 of total_records=14
+7-[ACACAD]-Lab - Module 7 - Challenge Lab     returned 10 of total_records=16
+12-[ACACAD]-Lab - Module 10 - Guided Lab      returned 10 of total_records=15
+19-[ACACAD]-Lab - (Optional) Module 14        returned 10 of total_records=15
+```
+
+So the page size is **10 and `size=100` does not raise it** — the same cap already recorded
+for the assignments endpoint. Only `page` advances. Multi-page parts are not hypothetical:
+they are roughly a third of one real course.
+
+`listRubrics` handles this correctly, and the defensive design earned itself. A naive
+single-`GET` verification script written during the same migration undercounted 458 criteria
+as 425 — it read one page per part and reported the result as authoritative. `listRubrics`
+returned the true count because its loop follows `total_records`, and its shortfall guard
+turns a truncated read into an error rather than a short authoritative list. Written the
+obvious way, the migration would have planned against 10 of 14 criteria on those eight parts
+and silently under-set their points.
 
 ## 2. The gap is real and total
 
@@ -285,9 +301,8 @@ None of these was probed, and each changes the design:
 
 1. **Answer §7 before designing push** — grade impact above all. It is the one question
    whose answer could make rubric sync unsafe rather than merely complex.
-2. **Settle pagination** (§1). Still the only untested part of the read path, and
-   `listRubrics`'s loop rests on it. Needs a part with >100 criteria, or a deliberate
-   `size=1` request to force a second page.
+2. ~~**Settle pagination**~~ — done (§1): the endpoint pages at 10, `size` is ignored, and
+   `listRubrics` handles it. Confirmed against eight real multi-page parts in course 229463.
 3. **Decide the reordering trade.** Order is immutable without delete-and-recreate. Either
    push declines to reorder and says so, or it recreates and accepts the id churn.
 4. **Stop sending `max_points`.** It reaches the part `PUT` only as a passenger inside
@@ -295,6 +310,26 @@ None of these was probed, and each changes the design:
    reconciler does not treat a `max_points` difference as a change, and the create path sends
    no settings payload. So not *every* push, but when sent it is ignored, and it should not
    be sent at all.
+
+## Migration outcome — 2026-09-04
+
+The 11 elite → vnb course pairs were migrated and verified against the live API:
+**458 criteria carrying 2,566 points**, every target matching its source config exactly.
+Courses that read `max_points: 0` on every part now read their real totals, and 229677
+matches the hand-built reference course 229751 lab for lab.
+
+Two things the run established that probing had not:
+
+- **Pagination** (§1) — the endpoint pages at 10.
+- **Idempotency on live data.** 229466 was pushed twice; it held 20 criteria / 100 points
+  before and after. Reconcile-by-name created no duplicates.
+
+Three courses (229463, 229466, 229468) reported a failed *content* upload while creating
+their full rubric payload. All three are **VOC-4000**, already filed: Vocareum rejects a
+payload containing a file with `<script>` in it. One refinement for that ticket — the
+trigger in 229466 was `lang/en-us/activity-1-install-cli.md`, a **Markdown** file. The
+existing write-up describes it as "an HTML file carrying `<script>` tags"; the extension is
+irrelevant, the scan is on content.
 
 ## Scratch state left behind
 
