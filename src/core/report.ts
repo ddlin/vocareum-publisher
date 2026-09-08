@@ -6,8 +6,10 @@
  * `payload_schema_version`. Adding a diagnostic code bumps the envelope;
  * reshaping pull's payload bumps only pull's.
  */
+import { classifyFailure } from '../utils/failure-classifier';
+import { CommandFailureError } from '../utils/command-failure';
 import { collectDiagnostics, type Diagnostic } from './diagnostics';
-import type { ServiceEvent } from './services/event-sink';
+import type { CollectingEventSink, ServiceEvent } from './services/event-sink';
 
 export const ENVELOPE_SCHEMA_VERSION = '1.0';
 
@@ -85,4 +87,41 @@ export function writeReport(report: CommandReport): void {
     serialized = JSON.stringify(fallback);
   }
   process.stdout.write(serialized + '\n');
+}
+
+/**
+ * Run a --json command body so that a failure still produces a document.
+ *
+ * Without this, a ConfigError or an auth rejection exits non-zero with empty
+ * stdout: the caller learns that something broke but not what, and not whether
+ * retrying could help -- the exact gap this feature exists to close.
+ */
+export async function reportingFailures<T>(
+  command: CommandName,
+  json: boolean,
+  collector: CollectingEventSink,
+  body: () => Promise<T>
+): Promise<T> {
+  try {
+    return await body();
+  } catch (error) {
+    const category = classifyFailure(error);
+    if (json) {
+      writeReport(buildReport({
+        command,
+        result: 'failed',
+        payload: {},
+        events: collector.drain(),
+        error: {
+          code: category,
+          message: error instanceof Error ? error.message : 'Unknown error',
+          retryable: category === 'transient',
+        },
+      }));
+    }
+    throw error instanceof CommandFailureError
+      ? error
+      : new CommandFailureError(
+          error instanceof Error ? error.message : 'Unknown error', category);
+  }
 }

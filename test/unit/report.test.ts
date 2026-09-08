@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { buildReport, writeReport } from '../../src/core/report';
+import { ConfigError } from '../../src/core/config';
+import { RateLimitError } from '../../src/api/client';
+import { CollectingEventSink } from '../../src/core/services/event-sink';
+import { buildReport, reportingFailures, writeReport } from '../../src/core/report';
 
 const base = { command: 'pull' as const, payload: { payload_schema_version: 1 }, events: [] };
 
@@ -70,5 +73,52 @@ describe('writeReport', () => {
     const parsed = JSON.parse(chunks[0]) as { result: string; error: { code: string } };
     expect(parsed.result).toBe('failed');
     expect(parsed.error.code).toBe('report_serialization_failed');
+  });
+});
+
+describe('reportingFailures', () => {
+  async function captureFailure(run: () => Promise<void>): Promise<unknown> {
+    const chunks: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((s) => { chunks.push(String(s)); return true; });
+    try {
+      await run();
+    } catch (error) {
+      return { error, chunks };
+    } finally {
+      spy.mockRestore();
+    }
+    return { error: null, chunks };
+  }
+
+  it('writes a failed envelope for config errors in json mode', async () => {
+    const collector = new CollectingEventSink();
+    const result = await captureFailure(async () => {
+      await reportingFailures('status', true, collector, async () => {
+        throw new ConfigError('bad yaml', 'INVALID_CONFIG');
+      });
+    }) as { error: unknown; chunks: string[] };
+
+    expect(result.chunks).toHaveLength(1);
+    const doc = JSON.parse(result.chunks[0]) as { result: string; retryable: boolean; error: { code: string; retryable: boolean } };
+    expect(doc.result).toBe('failed');
+    expect(doc.retryable).toBe(false);
+    expect(doc.error.code).toBe('usage');
+    expect(doc.error.retryable).toBe(false);
+    expect(result.error).toBeInstanceOf(Error);
+  });
+
+  it('writes a retryable failed envelope for rate limits in json mode', async () => {
+    const collector = new CollectingEventSink();
+    const result = await captureFailure(async () => {
+      await reportingFailures('push', true, collector, async () => {
+        throw new RateLimitError(30);
+      });
+    }) as { error: unknown; chunks: string[] };
+
+    expect(result.chunks).toHaveLength(1);
+    const doc = JSON.parse(result.chunks[0]) as { retryable: boolean; error: { code: string; retryable: boolean } };
+    expect(doc.retryable).toBe(true);
+    expect(doc.error.code).toBe('transient');
+    expect(doc.error.retryable).toBe(true);
   });
 });

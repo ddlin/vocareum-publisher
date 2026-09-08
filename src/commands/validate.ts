@@ -10,6 +10,7 @@ import { validateWorkspace } from '../core/services/validate-service';
 import { LoggerEventSink } from '../utils/logger-event-sink';
 import { InteractivePrompter } from '../core/services/context';
 import { CommandFailureError } from '../utils/command-failure';
+import { commandFailureFromError } from '../utils/failure-classifier';
 
 export interface ValidateOptions {
   config?: string;
@@ -56,6 +57,6 @@ export async function validateCommand(options: ValidateOptions): Promise<void> {
   } catch (error) {
     if (error instanceof CommandFailureError) { throw error; }
     events.emit({ level: 'error', message: `Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}` });
-    throw new CommandFailureError(`Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw commandFailureFromError(`Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`, error);
   }
 }

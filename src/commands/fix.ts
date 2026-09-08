@@ -13,6 +13,7 @@ import { resolveWorkspaceContext } from '../core/workspace';
 import { ensureDirectory } from '../utils/files';
 import { logger } from '../utils/logger';
 import { CommandFailureError } from '../utils/command-failure';
+import { commandFailureFromError } from '../utils/failure-classifier';
 import { promptConfirm } from '../utils/prompts';
 
 export interface FixOptions {
@@ -87,6 +88,6 @@ export async function fixCommand(options: FixOptions): Promise<void> {
   } catch (error) {
     if (error instanceof CommandFailureError) { throw error; }
     logger.error(`Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    throw new CommandFailureError(`Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw commandFailureFromError(`Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`, error);
   }
 }

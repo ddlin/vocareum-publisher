@@ -9,6 +9,8 @@ import { loadConfig } from '../core/config';
 import { resolveWorkspaceContext } from '../core/workspace';
 import { loadDotEnvIfPresent, isCI, getCIProvider, getAuthModeEnv, getOAuthClientId, getOAuthClientSecret } from '../utils/env';
 import { CommandFailureError } from '../utils/command-failure';
+import { commandFailureFromError } from '../utils/failure-classifier';
+import { logger } from '../utils/logger';
 import { LoggerEventSink } from '../utils/logger-event-sink';
 import { InteractivePrompter } from '../core/services/context';
 import { inspectStatus, renderStatusHuman } from '../core/services/status-service';
@@ -135,8 +137,8 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
     });
   } catch (error) {
     if (error instanceof CommandFailureError) { throw error; }
-    const { logger } = await import('../utils/logger');
-    logger.error(`Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    throw new CommandFailureError(`Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    const msg = `Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+    logger.error(msg);
+    throw commandFailureFromError(msg, error);
   }
 }

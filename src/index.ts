@@ -36,8 +36,10 @@ import { pullCommand, PullOptions } from './commands/pull';
 import { statusCommand, StatusCommandOptions } from './commands/status';
 import { ValidateOptions } from './commands/validate';
 import { FixOptions } from './commands/fix';
+import { buildReport, type CommandName, writeReport } from './core/report';
 import { logger } from './utils/logger';
 import { CommandFailureError } from './utils/command-failure';
+import { commandFailureFromError, reportErrorFromFailure } from './utils/failure-classifier';
 
 // Init command - initialize a new course repository
 program
@@ -111,6 +113,34 @@ Examples:
 import { validateCommand } from './commands/validate';
 import { fixCommand } from './commands/fix';
 
+async function runCommandWithFailureClassification<TOptions>(
+  command: CommandName | undefined,
+  options: TOptions,
+  action: () => Promise<void>,
+  failurePrefix: string,
+  payloadSchemaVersion = 1,
+): Promise<void> {
+  try {
+    await action();
+  } catch (error) {
+    if (error instanceof CommandFailureError) { throw error; }
+    const message = `${failurePrefix}: ${error instanceof Error ? error.message : 'Unknown error'}`;
+    const failure = commandFailureFromError(message, error);
+    logger.error(message);
+    const json = (options as { json?: boolean }).json === true;
+    if (json && command !== undefined) {
+      writeReport(buildReport({
+        command,
+        result: 'failed',
+        payload: { payload_schema_version: payloadSchemaVersion },
+        events: [],
+        error: reportErrorFromFailure(failure),
+      }));
+    }
+    throw failure;
+  }
+}
+
 // Validate command
 program
   .command('validate')
@@ -141,14 +171,7 @@ Examples:
   $ vocgit validate --vocareum  # Include API validation
 `)
   .action(async (options: ValidateOptions) => {
-    try {
-      await validateCommand(options);
-    } catch (error) {
-      if (error instanceof CommandFailureError) { throw error; }
-      const msg = `Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      logger.error(msg);
-      throw new CommandFailureError(msg);
-    }
+    await runCommandWithFailureClassification('validate', options, () => validateCommand(options), 'Validation failed');
   });
 
 // Fix command
@@ -177,14 +200,7 @@ Examples:
   $ vocgit fix --non-interactive  # Report only, no changes
 `)
   .action(async (options: FixOptions) => {
-    try {
-      await fixCommand(options);
-    } catch (error) {
-      if (error instanceof CommandFailureError) { throw error; }
-      const msg = `Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      logger.error(msg);
-      throw new CommandFailureError(msg);
-    }
+    await runCommandWithFailureClassification('fix', options, () => fixCommand(options), 'Fix failed');
   });
 
 const collectFlag = (value: string, acc: string[]): string[] => { acc.push(value); return acc; };
@@ -253,14 +269,7 @@ Examples:
   $ vocgit pull --content --assignment lab1 --part <part_id>   # scope to one part
 `)
   .action(async (options: PullOptions) => {
-    try {
-      await pullCommand(options);
-    } catch (error) {
-      if (error instanceof CommandFailureError) { throw error; }
-      const msg = `Pull failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      logger.error(msg);
-      throw new CommandFailureError(msg);
-    }
+    await runCommandWithFailureClassification('pull', options, () => pullCommand(options), 'Pull failed');
   });
 
 // Status command (default action)
@@ -295,14 +304,7 @@ Examples:
   $ vocgit status --json
 `)
   .action(async (options: StatusCommandOptions) => {
-    try {
-      await statusCommand(options);
-    } catch (error) {
-      if (error instanceof CommandFailureError) { throw error; }
-      const msg = `Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      logger.error(msg);
-      throw new CommandFailureError(msg);
-    }
+    await runCommandWithFailureClassification('status', options, () => statusCommand(options), 'Status failed', 2);
   });
 
 // Push command
@@ -360,16 +362,7 @@ Examples:
   $ vocgit push --non-interactive  # CI/CD mode (no prompts)
 `)
   .action(async (options: PublishCommandOptions) => {
-    try {
-      await publishCommand(options);
-    } catch (error) {
-      if (error instanceof CommandFailureError) { throw error; }
-      // A genuinely unexpected throw: render it once here, then hand a
-      // categorized failure to the entrypoint, which stays silent.
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      logger.error(msg);
-      throw new CommandFailureError(msg, 'internal');
-    }
+    await runCommandWithFailureClassification('push', options, () => publishCommand(options), 'Push failed');
   });
 
 program.parseAsync().catch((error) => {

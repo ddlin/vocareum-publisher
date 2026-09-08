@@ -32,7 +32,12 @@ export class VocareumError extends Error {
  * Error for general API failures
  */
 export class APIError extends VocareumError {
-  constructor(message: string, statusCode?: number, details?: unknown) {
+  constructor(
+    message: string,
+    statusCode?: number,
+    details?: unknown,
+    public readonly retryable = statusCode !== undefined && statusCode >= 500 && statusCode < 600,
+  ) {
     super(message, 'API_ERROR', statusCode, details);
     this.name = 'APIError';
   }
@@ -444,7 +449,10 @@ export class VocareumClient {
             retryAfterFromAxiosError(error)
           );
         default:
-          return new APIError(message, status, data);
+          const retryableTransport =
+            (status !== undefined && status >= 500 && status < 600) ||
+            (error.code !== undefined && RETRYABLE_NETWORK_CODES.has(error.code));
+          return new APIError(message, status, data, retryableTransport);
       }
     }
 
