@@ -364,10 +364,11 @@ Examples:
       await publishCommand(options);
     } catch (error) {
       if (error instanceof CommandFailureError) { throw error; }
-      // logger.error handled in publishCommand mostly, but top level catch safety
-      const msg = `Unhandled error: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      // A genuinely unexpected throw: render it once here, then hand a
+      // categorized failure to the entrypoint, which stays silent.
+      const msg = error instanceof Error ? error.message : 'Unknown error';
       logger.error(msg);
-      throw new CommandFailureError(msg);
+      throw new CommandFailureError(msg, 'internal');
     }
   });
 

@@ -87,7 +87,6 @@ export async function fixCommand(options: FixOptions): Promise<void> {
   } catch (error) {
     if (error instanceof CommandFailureError) { throw error; }
     logger.error(`Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    throw new CommandFailureError(`Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 1);
+    throw new CommandFailureError(`Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
-

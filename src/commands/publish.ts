@@ -13,6 +13,7 @@ import { resolveThrottle } from '../api/throttle';
 import { logger } from '../utils/logger';
 import { loadDotEnvIfPresent, isCI } from '../utils/env';
 import { UnknownFieldReporter } from '../utils/unknown-field-reporter';
+import { CommandFailureError } from '../utils/command-failure';
 import type { PublishOperationOptions } from '../types/state';
 import { planPush, executePush } from '../core/services/push-service';
 import { withSession } from '../core/session';
@@ -143,7 +144,11 @@ async function publishCommandLocked(
           logger.error(`- ${f.type} ${f.id}: ${errorMsg}`);
         });
       }
-      throw new Error('Push completed with errors');
+      // Rendered above, one line per failure. Throwing CommandFailureError (not
+      // a plain Error) keeps the entrypoint silent: a plain Error was caught by
+      // the push action in index.ts and logged a second time as
+      // "Unhandled error: ...", double-reporting every push failure.
+      throw new CommandFailureError('Push completed with errors', 'partial');
     }
 
   } finally {

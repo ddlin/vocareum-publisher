@@ -137,6 +137,6 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
     if (error instanceof CommandFailureError) { throw error; }
     const { logger } = await import('../utils/logger');
     logger.error(`Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    throw new CommandFailureError(`Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 1);
+    throw new CommandFailureError(`Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }

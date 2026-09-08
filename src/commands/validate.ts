@@ -50,12 +50,12 @@ export async function validateCommand(options: ValidateOptions): Promise<void> {
     const hasWarnings = report.warnings.length > 0;
 
     if (hasErrors || (options.strict === true && hasWarnings)) {
-      throw new CommandFailureError('Validation failed', 1);
+      throw new CommandFailureError('Validation failed', 'findings');
     }
 
   } catch (error) {
     if (error instanceof CommandFailureError) { throw error; }
     events.emit({ level: 'error', message: `Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}` });
-    throw new CommandFailureError(`Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 1);
+    throw new CommandFailureError(`Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
