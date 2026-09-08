@@ -46,12 +46,46 @@ export function isDiagnosticCode(value: string): value is DiagnosticCode {
 /**
  * Key-order-independent serialization, so two emit sites that build the same
  * data object in different orders collapse into one diagnostic.
+ *
+ * Three properties this has to get right, each learned from a real defect:
+ *
+ *  - **It must agree with `JSON.stringify`.** The key decides whether two
+ *    diagnostics merge; `JSON.stringify` decides what the reader sees. When they
+ *    disagreed, `{}` and `{ path: undefined }` produced two entries whose
+ *    rendered payloads were both `{}` — a duplicate, not a dedupe. Keys with an
+ *    `undefined` value are therefore dropped, exactly as `JSON.stringify` drops
+ *    them. A present `null` is kept, because it survives serialization and is a
+ *    real distinction.
+ *  - **It must not recurse forever.** `data` is typed `unknown` and comes from
+ *    any of the emit sites; an axios error or a parent-linked node is circular.
+ *    `collectDiagnostics` runs inside `buildReport`, which is *outside*
+ *    `writeReport`'s try/catch, so a `RangeError` here escapes the one place
+ *    that guarantees a document is emitted at all.
+ *  - **A repeated reference is not a cycle.** The same child object appearing
+ *    under two keys is legitimate, so the guard tracks the current path rather
+ *    than every object ever seen.
  */
-function canonical(value: unknown): string {
+function canonical(value: unknown, ancestors: Set<object> = new Set()): string {
   if (value === null || typeof value !== 'object') { return JSON.stringify(value) ?? 'null'; }
-  if (Array.isArray(value)) { return `[${value.map(canonical).join(',')}]`; }
-  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
+
+  const object = value as object;
+  if (ancestors.has(object)) { return '"[circular]"'; }
+  const path = new Set(ancestors);
+  path.add(object);
+
+  if (Array.isArray(value)) { return `[${value.map((v) => canonical(v, path)).join(',')}]`; }
+
+  const entries = Object.entries(value as Record<string, unknown>)
+    // Match JSON.stringify: a key whose value is undefined is not serialized,
+    // so it must not affect the dedupe key either.
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v, path)}`).join(',')}}`;
+}
+
+/** error outranks warn: the more severe report wins regardless of order. */
+function moreSevere(a: 'warn' | 'error', b: 'warn' | 'error'): 'warn' | 'error' {
+  return a === 'error' || b === 'error' ? 'error' : 'warn';
 }
 
 /**
@@ -79,6 +113,11 @@ export function collectDiagnostics(events: readonly ServiceEvent[]): Diagnostic[
     const existing = byKey.get(key);
     if (existing !== undefined) {
       existing.count += 1;
+      // Without this, severity was whichever level happened to be emitted
+      // first: the same code+data emitted at 'error' after a 'warn' was
+      // reported as a warning, so how severe a diagnostic looked depended on
+      // iteration order.
+      existing.severity = moreSevere(existing.severity, level);
       continue;
     }
     byKey.set(key, {

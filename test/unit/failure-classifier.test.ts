@@ -32,8 +32,18 @@ describe('classifyFailure', () => {
     expect(classifyFailure(new APIError('timeout of 30000ms exceeded', undefined, { code: 'ECONNABORTED' }, true))).toBe('transient');
   });
 
-  it('maps non-retryable API errors and unknown throws to internal', () => {
-    expect(classifyFailure(new APIError('bad request', 400))).toBe('internal');
+  it('maps a rejected request (400) to usage, not internal', () => {
+    // Changed deliberately. This previously asserted 'internal', which the
+    // code review of Task 6 identified as the defect: a 400 means the request
+    // was rejected as invalid, so retrying it unchanged cannot help and "file a
+    // bug" is the wrong advice. Vocareum answers a nonexistent course_id with
+    // 400 { error: { message: "Invalid course" } }, and that user exited 1.
+    expect(classifyFailure(new APIError('bad request', 400))).toBe('usage');
+    expect(classifyFailure(new APIError('Invalid course', 400))).toBe('usage');
+  });
+
+  it('maps other non-retryable API errors and unknown throws to internal', () => {
+    expect(classifyFailure(new APIError('teapot', 418))).toBe('internal');
     expect(classifyFailure(new Error('plain boom'))).toBe('internal');
     expect(classifyFailure('string throw')).toBe('internal');
   });

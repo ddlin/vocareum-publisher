@@ -122,3 +122,22 @@ describe('reportingFailures', () => {
     expect(doc.error.retryable).toBe(true);
   });
 });
+
+describe('writeReport failure signalling', () => {
+  it('returns true when the report serialized cleanly', () => {
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      expect(writeReport(buildReport({ ...base, result: 'no-op' }))).toBe(true);
+    } finally { spy.mockRestore(); }
+  });
+
+  it('returns false when it fell back, so the caller can fail the command', () => {
+    // Previously this printed "failed" to stdout and the process still exited 0.
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      expect(writeReport(buildReport({ ...base, result: 'applied', payload: cyclic }))).toBe(false);
+    } finally { spy.mockRestore(); }
+  });
+});

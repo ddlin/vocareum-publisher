@@ -44,6 +44,7 @@ import {
   shouldSyncRubrics,
 } from '../../utils/settings-sync';
 import { rubricsEqual, describeRubricChanges, type RubricChangeSummary } from '../../utils/rubrics';
+import { UsageError } from '../../utils/command-failure';
 import { createRubricFetcher, type RubricFetcher } from './rubric-fetcher';
 
 // ── Re-exported helpers (used by pull.ts resolver) ──────────────────────────
@@ -169,7 +170,7 @@ export function validatePullContentFlags(opts: {
   const assignmentSel = opts.assignment ?? [];
   const partSel = opts.part ?? [];
   if (!opts.content && (assignmentSel.length > 0 || partSel.length > 0)) {
-    throw new Error('--assignment/--part only apply with --content. Add --content or remove the selectors.');
+    throw new UsageError('--assignment/--part only apply with --content. Add --content or remove the selectors.');
   }
   if (partSel.length > 0 && assignmentSel.length === 0) {
     throw new Error('--part requires --assignment (part selectors are not unique across a course).');

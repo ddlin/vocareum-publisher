@@ -64,12 +64,25 @@ export function buildReport(args: {
  *
  * A crash midway through a streamed write would leave half a document on
  * stdout, which is worse for a consumer than a clean failure envelope.
+ *
+ * @returns `true` when the report serialized cleanly, `false` when it fell back
+ * to a minimal `report_serialization_failed` envelope.
+ *
+ * **Callers must fail the command when this returns `false`.** It cannot set
+ * the exit code itself: `src/index.ts` is the sole owner of `process.exitCode`
+ * (AGENTS.md #14), and a guard test fails the build on any `process.exit*`
+ * elsewhere. Before this returned anything, a successful command with an
+ * unserializable payload printed `"result":"failed"` to stdout and still exited
+ * 0 — a caller checking only the exit code saw success while the document it
+ * just received said otherwise.
  */
-export function writeReport(report: CommandReport): void {
+export function writeReport(report: CommandReport): boolean {
   let serialized: string;
+  let ok = true;
   try {
     serialized = JSON.stringify(report);
   } catch (error) {
+    ok = false;
     const fallback: CommandReport = {
       schema_version: ENVELOPE_SCHEMA_VERSION,
       command: report.command,
@@ -87,6 +100,7 @@ export function writeReport(report: CommandReport): void {
     serialized = JSON.stringify(fallback);
   }
   process.stdout.write(serialized + '\n');
+  return ok;
 }
 
 /**

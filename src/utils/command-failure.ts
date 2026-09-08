@@ -46,3 +46,20 @@ export class CommandFailureError extends Error {
     return this.category === 'transient';
   }
 }
+
+/**
+ * A caller-input problem raised from somewhere that cannot throw
+ * CommandFailureError itself — a service, or a validator that runs before any
+ * command wrapper is in scope.
+ *
+ * It exists so such a site can be classified as `usage` (exit 2, "fix your
+ * input") instead of collapsing into `internal` (exit 1, "file a bug"). Plain
+ * `Error` throws for bad flag combinations were reaching the classifier
+ * indistinguishable from genuine crashes.
+ */
+export class UsageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UsageError';
+  }
+}

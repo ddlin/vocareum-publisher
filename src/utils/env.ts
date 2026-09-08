@@ -20,6 +20,21 @@ const CI_ENV_VARS = [
  * Detect if running in a CI/CD environment
  * @returns true if any CI environment variable is set to a truthy value
  */
+/**
+ * No API credentials are configured.
+ *
+ * Typed so the classifier can call it `auth` (exit 3, "fix your credentials")
+ * rather than `internal`. A plain Error here made a missing token — the single
+ * most likely first-run problem — report as an internal error asking the user
+ * to file a bug.
+ */
+export class CredentialsMissingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CredentialsMissingError';
+  }
+}
+
 export function isCI(): boolean {
   for (const envVar of CI_ENV_VARS) {
     const value = process.env[envVar];
@@ -99,7 +114,7 @@ export function getApiKeyOrThrow(): string {
       '     - Export in shell: export VOCAREUM_API_KEY=your_token',
       '     - In CI/CD: add VOCAREUM_API_KEY as a repository secret',
     ].join('\n');
-    throw new Error(message);
+    throw new CredentialsMissingError(message);
   }
   return apiKey;
 }
