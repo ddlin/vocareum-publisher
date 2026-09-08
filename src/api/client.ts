@@ -329,6 +329,31 @@ export function sanitizeForLog(value: unknown, seen: WeakSet<object> = new WeakS
  * - Rate limiting and backoff
  * - Request/response logging (with credential redaction)
  */
+/**
+ * Vocareum reports a bad or absent token as HTTP **400** with an in-band
+ * message, not the 401 an HTTP-status-based classifier expects. Recorded from
+ * the live API on 2026-09-08:
+ *
+ *   invalid token      -> 400 { error: { message: "Invalid Token" } }
+ *   missing token      -> 400 { error: { message: "Missing Token" } }
+ *   nonexistent course -> 400 { error: { message: "Invalid course" } }
+ *
+ * That third row is why this matches specific messages instead of treating
+ * every 400 as an auth failure: 400 is overloaded, and misclassifying a bad
+ * course id as "fix your credentials" sends the caller after the wrong problem.
+ * Matching is exact (case-insensitively) rather than /token/i for the same
+ * reason -- an unrelated 400 that happens to mention a token must stay a
+ * generic APIError.
+ *
+ * Without this, `pull` with an invalid token exited 1 (internal error) instead
+ * of 3 (auth), and the user never saw the token hint AuthenticationError adds.
+ */
+const IN_BAND_AUTH_MESSAGES = new Set(['invalid token', 'missing token']);
+
+function isInBandAuthFailure(message: string): boolean {
+  return IN_BAND_AUTH_MESSAGES.has(message.trim().toLowerCase());
+}
+
 export class VocareumClient {
   private axios: AxiosInstance;
   private authProvider: AuthProvider;
@@ -433,7 +458,23 @@ export class VocareumClient {
       const url = error.config?.url ?? '';
       const resourceType = this.detectResourceType(url);
 
+      // Hoisted so the 400 branch below can return exactly what `default`
+      // would, without duplicating the predicate.
+      const retryableTransport =
+        (status !== undefined && status >= 500 && status < 600) ||
+        (error.code !== undefined && RETRYABLE_NETWORK_CODES.has(error.code));
+
       switch (status) {
+        case 400:
+          // See IN_BAND_AUTH_MESSAGES: a bad token arrives here, not at 401.
+          if (isInBandAuthFailure(message)) {
+            return new AuthenticationError(
+              message + '\n\n' + (this.authProvider.unauthorizedHint ??
+                'Your API token may be invalid or expired. ' +
+                'Generate a new token at: Profile > Settings > Personal Access Tokens')
+            );
+          }
+          return new APIError(message, status, data, retryableTransport);
         case 401:
           return new AuthenticationError(
             message + '\n\n' + (this.authProvider.unauthorizedHint ??
@@ -449,9 +490,6 @@ export class VocareumClient {
             retryAfterFromAxiosError(error)
           );
         default:
-          const retryableTransport =
-            (status !== undefined && status >= 500 && status < 600) ||
-            (error.code !== undefined && RETRYABLE_NETWORK_CODES.has(error.code));
           return new APIError(message, status, data, retryableTransport);
       }
     }
