@@ -1040,6 +1040,7 @@ export async function executePush(
             partSettings,
             fullPayload,
             events,
+            partId,
           );
           if (writeResult.outcome === 'none') {
             metadataUpdated = false;
@@ -1069,7 +1070,8 @@ export async function executePush(
         // wasn't lost, but that must not read as success here. A green push that silently
         // migrated no points is exactly the failure this feature exists to prevent.
         const message = `Could not read rubrics for "${partAction.part.name ?? partAction.part.path}": ${partIntent.rubricReadFailed}`;
-        events.emit({ level: 'error', message });
+        events.emit({ level: 'error', code: 'rubric_read_failed',
+          data: { part_id: partId, reason: String(partIntent.rubricReadFailed) }, message });
         result.failed.push({ type: 'part', id: partId, error: message });
         result.success = false;
         rubricChanges.push({
@@ -1093,7 +1095,7 @@ export async function executePush(
         // skip; recording it here would report a failure that never occurred. It passes
         // through silently, exactly as it would have without the 403.
         const message = `Rubrics not pushed for "${partAction.part.name ?? partAction.part.path}": token lacks rubric write permission.`;
-        events.emit({ level: 'warn', message });
+        events.emit({ level: 'warn', code: 'rubric_write_forbidden', data: { part_id: partId }, message });
         result.failed.push({ type: 'part', id: partId, error: message });
         result.success = false;
         rubricChanges.push({
@@ -1110,7 +1112,8 @@ export async function executePush(
         const courseId = workingConfig.vocareum.course_id;
         const assignmentId = action.assignment.assignment_id;
         if (assignmentId === null || assignmentId === '') {
-          events.emit({ level: 'warn', message: `Skipping rubrics for "${partLabel}": assignment has no id yet.` });
+          events.emit({ level: 'warn', code: 'rubric_write_skipped', data: { part_id: partAction.part.part_id ?? null },
+            message: `Skipping rubrics for "${partLabel}": assignment has no id yet.` });
         } else {
           if (rubricPlan.duplicateNames.length > 0) {
             // Name matching is undefined against duplicates; guessing risks updating the
@@ -1418,6 +1421,8 @@ export async function executePush(
     } catch (error) {
       events.emit({
         level: 'warn',
+        code: 'auto_commit_failed',
+        data: { reason: error instanceof Error ? error.message : String(error) },
         message: `Failed to auto-commit config changes: ${error instanceof Error ? error.message : String(error)}`,
       });
     }

@@ -672,6 +672,17 @@ export async function uploadContent(
       // up either as it was or as the new content, never a mix. Leave that
       // unwrapped so today's error surface is unchanged.
       if (chunks.length > 1) {
+        // Emitted here, at the real partial state, and deliberately NOT on the
+        // pre-upload "directory will be incomplete during the sequence"
+        // warning: that one fires before every chunked upload including the
+        // ones that then succeed, so coding it would report data loss on a
+        // healthy push and teach consumers to ignore the code.
+        client.events.emit({
+          level: 'error',
+          code: 'upload_incomplete',
+          data: { part_id: partId, directory, chunk: i, chunks: chunks.length },
+          message: `Upload of ${directory} left the remote directory incomplete at chunk ${i + 1}/${chunks.length}`,
+        });
         throw new PartialUploadError(i, chunks.length, directory, partId, error);
       }
       throw error;

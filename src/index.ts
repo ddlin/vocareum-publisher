@@ -332,6 +332,7 @@ const pushCmd = program
   .option('--on-missing-id <mode>', 'When assignment_id is null: skip or abort', 'skip')
   .option('--abort-on-error', 'Stop immediately on first error')
   .option('--auto-commit', 'Auto-commit vocareum.yaml changes (local use only)')
+  .option('--json', 'Emit a machine-readable report on stdout (implies --non-interactive)')
   .option('--non-interactive', 'Skip confirmation prompts')
   .option('--verbose', 'Show detailed logging')
   .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
@@ -375,7 +376,7 @@ Examples:
   $ vocgit push --non-interactive  # CI/CD mode (no prompts)
 `)
   .action(async (options: PublishCommandOptions) => {
-    await runCommandWithFailureClassification('push', options, () => publishCommand(options), 'Push failed');
+    await runCommandWithFailureClassification('push', options, (collector) => publishCommand({ ...options, eventCollector: collector }), 'Push failed');
   });
 
 program.parseAsync().catch((error) => {

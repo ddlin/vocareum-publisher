@@ -146,14 +146,18 @@ export async function syncDirectory(
             uploadResult.deleted.push(file.path);
             events.emit({ level: 'debug', message: `Deleted: ${file.path}` });
           } catch (error) {
-            events.emit({ level: 'warn', message: `Failed to delete ${file.path}: ${error instanceof Error ? error.message : 'Unknown'}` });
+            events.emit({ level: 'warn', code: 'delete_sync_failed', data: { part_id: partId, path: file.path },
+              message: `Failed to delete ${file.path}: ${error instanceof Error ? error.message : 'Unknown'}` });
           }
         }
 
         events.emit({ level: 'success', message: `Deleted ${uploadResult.deleted.length} files` });
       }
     } catch (error) {
-      events.emit({ level: 'warn', message: `Sync deletions failed: ${error instanceof Error ? error.message : 'Unknown'}` });
+      // No path here: this is the whole-sync failure, not a single file. `data` is
+      // a closed set per code, but an optional field may legitimately be absent.
+      events.emit({ level: 'warn', code: 'delete_sync_failed', data: { part_id: partId },
+        message: `Sync deletions failed: ${error instanceof Error ? error.message : 'Unknown'}` });
     }
   }
 

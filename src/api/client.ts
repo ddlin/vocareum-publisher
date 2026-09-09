@@ -166,7 +166,8 @@ export function assertAllowedBaseUrl(baseUrl: string, events?: EventSink): void 
   const canonical = `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, '')}`;
   if (!ALLOWED_BASE_URLS.has(canonical)) {
     if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
-    sink.emit({ level: 'warn', message: `WARNING: Using non-standard API base URL: ${canonical}. Your credentials will be sent to this host.` });
+    sink.emit({ level: 'warn', code: 'insecure_base_url', data: { base_url: canonical },
+      message: `WARNING: Using non-standard API base URL: ${canonical}. Your credentials will be sent to this host.` });
   }
 }
 
@@ -198,7 +199,8 @@ export function assertBaseUrlForVersion(baseUrl: string, version: 'v2' | 'v3', e
   const canonical = `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, '')}`;
   if (!allowed.has(canonical)) {
     if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
-    sink.emit({ level: 'warn', message: `WARNING: Using non-standard ${version} API base URL: ${canonical}. Your credentials will be sent to this host.` });
+    sink.emit({ level: 'warn', code: 'insecure_base_url', data: { base_url: canonical, version },
+      message: `WARNING: Using non-standard ${version} API base URL: ${canonical}. Your credentials will be sent to this host.` });
   }
 }
 
