@@ -136,7 +136,11 @@ async function runCommandWithFailureClassification<TOptions>(
     // A command that already rendered its own message must not be re-logged.
     if (!(error instanceof CommandFailureError)) { logger.error(failure.message); }
 
-    if ((options as { json?: boolean }).json === true && command !== undefined) {
+    // Skip when the command already emitted its document. A command that
+    // reports findings writes `result: "reported"` and then throws to set exit
+    // 5; writing again here put TWO documents on stdout, the second wrongly
+    // saying `result: "failed"`.
+    if ((options as { json?: boolean }).json === true && command !== undefined && !failure.reportWritten) {
       writeReport(buildReport({
         command,
         result: 'failed',
@@ -221,6 +225,7 @@ const pullCmd = program
   .option('--root <path>', 'Workspace root that assignment paths resolve against (required when --config is not directly inside the current directory)')
   .option('--non-interactive', 'Skip all prompts (no changes made)')
   .option('--batch', 'Apply sensible defaults without prompting (import orphans, pull drift, skip stale)')
+  .option('--json', 'Emit a machine-readable report on stdout (implies --non-interactive)')
   .option('--skip-content', 'Reuse existing local content for orphan imports instead of re-downloading (recovers from failed pulls)')
   .option('--content', 'Detect content drift (downloads remote files to diff them; off by default)')
   .option('--assignment <name|id>', 'Limit --content drift to assignment(s); repeatable', collectFlag, [])

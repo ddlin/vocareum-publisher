@@ -33,12 +33,25 @@ export function exitCodeForCategory(category: FailureCategory): number {
 export class CommandFailureError extends Error {
   readonly category: FailureCategory;
   readonly exitCode: number;
+  /**
+   * True when the command already wrote its --json document before throwing.
+   *
+   * A command that reports findings writes a `result: "reported"` envelope and
+   * then throws so the entrypoint can set exit 5. Without this flag the
+   * entrypoint's catch wrote a SECOND envelope, so stdout carried two
+   * documents -- breaking the one-document contract -- and the second one said
+   * `result: "failed"`, which is wrong: reporting findings is a successful
+   * report, not a failure. A consumer reading the last line got the wrong
+   * answer.
+   */
+  readonly reportWritten: boolean;
 
-  constructor(message: string, category: FailureCategory = 'internal') {
+  constructor(message: string, category: FailureCategory = 'internal', reportWritten = false) {
     super(message);
     this.name = 'CommandFailureError';
     this.category = category;
     this.exitCode = EXIT_CODES[category];
+    this.reportWritten = reportWritten;
   }
 
   /** True for exactly the transient category; mirrored into the JSON envelope. */

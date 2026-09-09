@@ -29,6 +29,7 @@ vi.mock('../../src/utils/logger', () => {
       warn: e,
       error: e,
       debug: vi.fn(),
+      withJsonMode: async (_enabled: boolean, body: () => Promise<unknown>) => body(),
     },
   };
 });

@@ -105,6 +105,7 @@ vi.mock('../../src/utils/logger', () => ({
     debug: vi.fn(),
     plain: vi.fn(),
     newline: vi.fn(),
+    withJsonMode: async (_enabled: boolean, body: () => Promise<unknown>) => body(),
   },
 }));
 
@@ -573,5 +574,79 @@ describe('pullCommand content-drift gating', () => {
       await fs.rm(workspace, { recursive: true, force: true });
       await fs.rm(outside, { recursive: true, force: true });
     }
+  });
+});
+
+describe('pullCommand --json', () => {
+  const emptyConfig: Config = {
+    version: '1.0',
+    vocareum: {
+      org_id: '1',
+      course_id: '201303',
+      api_base_url: 'https://api.vocareum.com',
+      excluded_assignments: [],
+    },
+    assignments: [],
+    publish_options: {
+      on_missing_id: 'skip',
+      auto_commit: false,
+      abort_on_error: false,
+      sync_deletes: false,
+      exclude_patterns: [],
+    },
+    publish_history: [],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VOCAREUM_API_KEY = 'token';
+    isCIMock.mockReturnValue(false);
+    loadConfigMock.mockResolvedValue(emptyConfig);
+    updateConfigMock.mockResolvedValue(undefined);
+    reconcileMock.mockResolvedValue({
+      config: emptyConfig,
+      course: { type: 'skip' },
+      assignments: [],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 0,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 0,
+        estimatedApiCalls: 0,
+      },
+      orphanedInVocareum: [],
+      staleInConfig: [],
+    });
+  });
+
+  it('writes one pull envelope for a no-op pull', async () => {
+    const chunks: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      chunks.push(String(chunk));
+      return true;
+    });
+    try {
+      await pullCommand({ json: true });
+    } finally {
+      stdoutSpy.mockRestore();
+    }
+
+    expect(chunks).toHaveLength(1);
+    const doc = JSON.parse(chunks[0]) as {
+      schema_version: string;
+      command: string;
+      result: string;
+      payload: { payload_schema_version: number; applied: { failures: number } };
+      error: unknown;
+    };
+    expect(doc.schema_version).toBe('1.0');
+    expect(doc.command).toBe('pull');
+    expect(doc.result).toBe('no-op');
+    expect(doc.payload.payload_schema_version).toBe(1);
+    expect(doc.payload.applied.failures).toBe(0);
+    expect(doc.error).toBeNull();
   });
 });

@@ -22,6 +22,7 @@ vi.mock('../../src/utils/logger', () => ({
         debug: vi.fn((...args) => console.log('[DEBUG]', ...args)),
         newline: vi.fn(),
         plain: vi.fn((...args) => console.log('[PLAIN]', ...args)),
+        withJsonMode: async (_enabled: boolean, body: () => Promise<unknown>) => body(),
     },
 }));
 

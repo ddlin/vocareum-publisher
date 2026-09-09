@@ -344,6 +344,12 @@ export interface PullResult {
   reset: number;
   settingsPulled: number;
   contentPulled: number;
+  /**
+   * Error skips. This intentionally overlaps with `skipped`: skipped keeps its
+   * existing meaning of "did not land", while failures adds "because an error
+   * occurred" for JSON outcome mapping.
+   */
+  failures: number;
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
@@ -1094,6 +1100,7 @@ export async function applyPull(
     reset: 0,
     settingsPulled: 0,
     contentPulled: 0,
+    failures: 0,
   };
 
   const newAssignments: Partial<Assignment>[] = [];
@@ -1154,6 +1161,7 @@ export async function applyPull(
         } catch (error) {
           events.emit({ level: 'error', message: `Failed to import: ${error instanceof Error ? error.message : 'Unknown'}` });
           result.skipped++;
+          result.failures++;
         }
       } else if (action === 'exclude') {
         newExclusions.push(orphan.id);

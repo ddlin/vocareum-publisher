@@ -552,6 +552,11 @@ describe('listFiles', () => {
 
     expect(result).toEqual([]);
     expect(requestMock).toHaveBeenCalledTimes(1);
+    expect(mockClient.events.emit).toHaveBeenCalledWith(expect.objectContaining({
+      level: 'warn',
+      code: 'directory_unreachable',
+      data: { part_id: 'p1', api_path: '/voc/startercode', directory: 'startercode' },
+    }));
   });
 
   it('should throw 400 errors that do not reference the requested directory', async () => {
@@ -746,6 +751,11 @@ describe('downloadContent', () => {
 
     const result = await downloadContent(mockClient, 'c1', 'a1', 'p1');
     expect(result).toEqual({});
+    expect(mockClient.events.emit).toHaveBeenCalledWith(expect.objectContaining({
+      level: 'warn',
+      code: 'download_failed',
+      data: { part_id: 'p1', file: 'startercode/file.txt' },
+    }));
   });
 
   it('should return empty when S3 download fails', async () => {

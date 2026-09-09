@@ -17,7 +17,9 @@ import { prompt, promptChoice } from '../utils/prompts';
 import { UnknownFieldReporter } from '../utils/unknown-field-reporter';
 import { withSession } from '../core/session';
 import { LoggerEventSink } from '../utils/logger-event-sink';
-import type { CollectingEventSink } from '../core/services/event-sink';
+import { CollectingEventSink } from '../core/services/event-sink';
+import { TeeEventSink } from '../utils/tee-event-sink';
+import { buildReport, writeReport } from '../core/report';
 import { InteractivePrompter, NonInteractivePrompter } from '../core/services/context';
 import type { PullContext } from '../core/services/context';
 import type { PullRequest } from '../core/services/types';
@@ -28,6 +30,7 @@ import {
   validatePullContentFlags,
 } from '../core/services/pull-service';
 import type {
+  PullResult,
   PullResolver,
   PullIssueOrphan,
   PullIssueStale,
@@ -38,6 +41,7 @@ import type {
   SettingsDriftAction,
   ContentDriftAction,
 } from '../core/services/pull-service';
+import { CommandFailureError, type FailureCategory } from '../utils/command-failure';
 
 // Re-export helpers that tests/other code may import from pull.ts
 export {
@@ -51,11 +55,45 @@ export {
   scopeAssignmentsForContent,
 } from '../core/services/pull-service';
 
+/**
+ * Map a completed pull onto an envelope result and an exit category.
+ *
+ * Findings that were resolved are not findings: a batch pull that applies
+ * settings drift is success, while non-interactive mode reporting the same
+ * drift exits 5 because work remains for the caller.
+ */
+export function pullResultToOutcome(
+  applied: PullResult,
+  state: { hasFindings: boolean; failures: number }
+): { result: 'applied' | 'partial' | 'reported' | 'no-op'; category: FailureCategory | undefined } {
+  const changed =
+    applied.imported + applied.excluded + applied.removed +
+    applied.reset + applied.settingsPulled + applied.contentPulled;
+
+  if (state.failures > 0) { return { result: 'partial', category: 'partial' }; }
+  if (state.hasFindings) { return { result: 'reported', category: 'findings' }; }
+  if (changed > 0) { return { result: 'applied', category: undefined }; }
+  return { result: 'no-op', category: undefined };
+}
+
+const EMPTY_PULL_RESULT: PullResult = {
+  imported: 0,
+  excluded: 0,
+  skipped: 0,
+  removed: 0,
+  reset: 0,
+  settingsPulled: 0,
+  contentPulled: 0,
+  failures: 0,
+};
+
 export interface PullOptions {
   config?: string;
   /** Explicit workspace root (required when --config is not directly inside cwd) */
   root?: string;
   nonInteractive?: boolean;
+  /** Emit a machine-readable report on stdout. Implies nonInteractive. */
+  json?: boolean;
   /** Batch mode: apply sensible defaults without prompting (import orphans, pull drift, skip stale) */
   batch?: boolean;
   verbose?: boolean;
@@ -86,18 +124,25 @@ export interface PullOptions {
  * CONFIG_LOCKED if the lock file already exists).
  */
 export async function pullCommand(options: PullOptions): Promise<void> {
-  const ctx = resolveWorkspaceContext({ config: options.config, root: options.root });
-  await pullCommandLocked(ctx, options);
+  return logger.withJsonMode(options.json === true, async () => {
+    const ctx = resolveWorkspaceContext({ config: options.config, root: options.root });
+    await pullCommandLocked(ctx, options);
+  });
 }
 
 async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): Promise<void> {
   const { configPath, workspaceRoot } = ctx;
   const batch = options.batch ?? false;
-  const nonInteractive = !batch && (options.nonInteractive ?? isCI());
+  // --json never prompts: prompt output would corrupt stdout and a blocked
+  // prompt would hang an automated caller.
+  const nonInteractive = options.json === true || (!batch && (options.nonInteractive ?? isCI()));
   const verbose = options.verbose ?? false;
   // Shared event sink: reporter output joins the same stream as service events,
   // preventing interleaving when Stage 1b processes courses concurrently.
-  const events = new LoggerEventSink();
+  const collector = options.eventCollector ?? new CollectingEventSink();
+  const events = options.json === true
+    ? new TeeEventSink([collector, new LoggerEventSink()])
+    : new LoggerEventSink();
   const reporter = new UnknownFieldReporter(events);
 
   try {
@@ -136,7 +181,7 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
 
     logger.info('Scanning for assignment sync issues...');
 
-    await withSession(configPath, async (session) => {
+    const sessionOutcome = await withSession(configPath, async (session) => {
       const inspection = await inspectPull(pullCtx, req, reporter);
 
       if (!options.content) {
@@ -150,7 +195,7 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
 
       if (!hasOrphans && !hasStale && !hasSettingsDrift && !hasContentDrift) {
         logger.success('No sync issues found.');
-        return;
+        return { inspection, pullResult: EMPTY_PULL_RESULT };
       }
 
       const resolver: PullResolver = {
@@ -249,7 +294,37 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
       logger.plain(`  Removed:         ${pullResult.removed}`);
       logger.plain(`  Reset:           ${pullResult.reset}`);
       logger.plain(`  Skipped:         ${pullResult.skipped}`);
+
+      return { inspection, pullResult };
     });
+
+    if (options.json === true) {
+      const { inspection, pullResult } = sessionOutcome;
+      const outcome = pullResultToOutcome(pullResult, {
+        hasFindings:
+          inspection.orphans.length > 0 ||
+          inspection.settingsDrift.length > 0 ||
+          inspection.contentDrift.length > 0 ||
+          inspection.stale.length > 0,
+        failures: pullResult.failures,
+      });
+      const ok = writeReport(buildReport({
+        command: 'pull',
+        result: outcome.result,
+        payload: { payload_schema_version: 1, inspection, applied: pullResult },
+        events: collector.drain(),
+      }));
+      // reportWritten: true on both throws -- a document is already on stdout
+      // (the fallback envelope in the !ok case), so the entrypoint must not
+      // write a second one.
+      if (!ok) {
+        throw new CommandFailureError('Pull report serialization failed', 'internal', true);
+      }
+      if (outcome.category !== undefined) {
+        throw new CommandFailureError(`Pull finished with ${outcome.result}`, outcome.category, true);
+      }
+      return;
+    }
   } finally {
     reporter.printSummary();
   }

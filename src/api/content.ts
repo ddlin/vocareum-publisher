@@ -807,7 +807,7 @@ async function downloadDirectoryTree(
   // Only the part's own declared directory is worth warning about; deeper
   // levels are paths we discovered, so their absence is not a config problem.
   const entries = await listFilesByApiPath(
-    client, courseId, assignmentId, partId, apiDirPath, relativePath === ''
+    client, courseId, assignmentId, partId, apiDirPath, relativePath === '', directory
   );
 
   for (const entry of entries) {
@@ -827,7 +827,7 @@ async function downloadDirectoryTree(
       if (isEmptyContent(content) && depth < MAX_DOWNLOAD_DEPTH && !isCyclicPath(entryRelPath)) {
         const childApiDirPath = `${baseApiPath}/${entryRelPath}`;
         const childEntries = await listFilesByApiPath(
-          client, courseId, assignmentId, partId, childApiDirPath
+          client, courseId, assignmentId, partId, childApiDirPath, false, directory
         );
         if (childEntries.length > 0) {
           await downloadDirectoryTree(
@@ -867,9 +867,11 @@ async function downloadDirectoryTree(
           // compared the workspace against the Vocareum UI by eye.
           client.events.emit({
             level: 'warn',
+            code: 'download_truncated',
             message:
               `Directory nesting exceeds the ${MAX_DOWNLOAD_DEPTH}-level download limit, ` +
               `skipping ${filemapKey} and anything below it — these files were NOT downloaded`,
+            data: { part_id: partId, path: filemapKey, depth: MAX_DOWNLOAD_DEPTH },
           });
         }
         continue;
@@ -879,7 +881,9 @@ async function downloadDirectoryTree(
       }
       client.events.emit({
         level: 'warn',
+        code: 'download_failed',
         message: `Failed to download ${filemapKey}: ${error instanceof Error ? error.message : 'Unknown'}`,
+        data: { part_id: partId, file: filemapKey },
       });
     }
   }
@@ -986,7 +990,7 @@ export async function listFiles(
   architecture?: 'elite' | 'container'
 ): Promise<FileInfo[]> {
   return listFilesByApiPath(
-    client, courseId, assignmentId, partId, toApiDirPath(directory, architecture), true
+    client, courseId, assignmentId, partId, toApiDirPath(directory, architecture), true, directory
   );
 }
 
@@ -1003,6 +1007,7 @@ async function listFilesByApiPath(
    * expected to miss constantly. Warning on them would bury the real signal.
    */
   warnIfAbsent = false,
+  directory?: DirectoryType,
 ): Promise<FileInfo[]> {
   const url = `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
 
@@ -1031,12 +1036,14 @@ async function listFilesByApiPath(
         // a wrong prefix.
         if (warnIfAbsent) {
           client.events.emit({
-          level: 'warn',
-          message:
-            `Directory "${apiDirPath}" does not exist on part ${partId} — treated as empty. ` +
-            `If you expected content here, the directory may live at a different path for ` +
-            `this lab type (Elite workspaces keep everything under /resource; Container ` +
-            `workspaces keep scripts, startercode, docs, data and private under /voc).`,
+            level: 'warn',
+            code: 'directory_unreachable',
+            message:
+              `Directory "${apiDirPath}" does not exist on part ${partId} — treated as empty. ` +
+              `If you expected content here, the directory may live at a different path for ` +
+              `this lab type (Elite workspaces keep everything under /resource; Container ` +
+              `workspaces keep scripts, startercode, docs, data and private under /voc).`,
+            data: { part_id: partId, api_path: apiDirPath, directory },
           });
         }
         return [];
