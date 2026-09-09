@@ -68,10 +68,10 @@ export function isDiagnosticCode(value: string): value is DiagnosticCode {
 function canonical(value: unknown, ancestors: Set<object> = new Set()): string {
   if (value === null || typeof value !== 'object') { return JSON.stringify(value) ?? 'null'; }
 
-  const object = value as object;
-  if (ancestors.has(object)) { return '"[circular]"'; }
+  // `typeof value !== 'object'` above already narrowed this; no assertion needed.
+  if (ancestors.has(value)) { return '"[circular]"'; }
   const path = new Set(ancestors);
-  path.add(object);
+  path.add(value);
 
   if (Array.isArray(value)) { return `[${value.map((v) => canonical(v, path)).join(',')}]`; }
 

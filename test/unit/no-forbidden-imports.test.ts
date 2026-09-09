@@ -32,6 +32,19 @@ describe('architecture guards', () => {
     // and corrupt the report document.
     expect(source.includes('process.stdout.write')).toBe(false);
   });
+  it('only src/core/report.ts writes to stdout — one document per --json run', () => {
+    // Specified in the plan but never implemented, and its absence is exactly
+    // how stdout came to carry TWO documents: pull wrote its report and the
+    // entrypoint wrote a second. stdout is the machine-readable channel; any
+    // other writer corrupts it. Human output goes through logger, which routes
+    // to stderr under --json.
+    const allowed = new Set(['src/core/report.ts']);
+    const offenders = walk('src').filter(
+      (f) => !allowed.has(f) && /process\.stdout\.write/.test(readFileSync(f, 'utf8'))
+    );
+    expect(offenders).toEqual([]);
+  });
+
   it('every code: literal at an emit site is a registered diagnostic code', () => {
     // Static import at the top of this file:
     //   import { DIAGNOSTIC_CODES } from '../../src/core/diagnostics';

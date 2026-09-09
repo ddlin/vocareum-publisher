@@ -88,10 +88,45 @@ export function serializePublishResult(result: PublishResult): SerializedPublish
  * them. A push the user declined is a `no-op` -- declining is a choice, not a
  * failure. Precedence is partial > findings > applied > no-op.
  */
+/**
+ * Project PushPlan down to what a consumer needs.
+ *
+ * Emitting the plan wholesale put 113 KB on stdout for a 13-assignment course,
+ * 95% of it `plan.execution` -- `workingConfig` (the entire config), the
+ * reconciliation state and the last history entry. That is internal machinery:
+ * no caller needs it, it would grow to roughly a megabyte on a 107-assignment
+ * course, and shipping it pins internal shapes into a public schema. The spec
+ * calls for explicit projections precisely so an internal refactor cannot
+ * silently reshape the contract.
+ */
+export interface SerializedPushPlan {
+  has_changes: boolean;
+  summary: string;
+  semantic_fingerprint: string;
+  intent: unknown;
+  preconditions: unknown;
+}
+
+export function serializePushPlan(plan: {
+  hasChanges: boolean; summary?: string; semanticFingerprint?: string;
+  intent?: unknown; preconditions?: unknown;
+}): SerializedPushPlan {
+  return {
+    has_changes: plan.hasChanges,
+    summary: plan.summary ?? '',
+    semantic_fingerprint: plan.semanticFingerprint ?? '',
+    intent: plan.intent ?? null,
+    preconditions: plan.preconditions ?? null,
+  };
+}
+
 export function pushResultToOutcome(
-  state: { succeeded: number; failed: number; dryRun: boolean; planned: number; cancelled?: boolean }
+  state: {
+    succeeded: number; failed: number; dryRun: boolean; planned: number;
+    cancelled?: boolean; success?: boolean;
+  }
 ): { result: 'applied' | 'partial' | 'reported' | 'no-op'; category: FailureCategory | undefined } {
-  if (state.failed > 0) { return { result: 'partial', category: 'partial' }; }
+  if (state.failed > 0 || state.success === false) { return { result: 'partial', category: 'partial' }; }
   if (state.cancelled === true) { return { result: 'no-op', category: undefined }; }
   if (state.dryRun) {
     return state.planned > 0
@@ -208,7 +243,7 @@ async function publishCommandLocked(
               failed: [],
               contentState: { ...(config.publish_history?.[0]?.content_state) },
               summary: 'Cancelled by user',
-            } as PublishResult,
+            },
           };
         }
       }
@@ -221,6 +256,11 @@ async function publishCommandLocked(
       const outcome = pushResultToOutcome({
         succeeded: result.executed.created.length + result.executed.updated.length,
         failed: result.executed.failed.length,
+        // success is passed as well as the failed count. Every current
+        // `success = false` site also pushes a failed entry, but relying on
+        // that coupling means a future site that forgets would make --json
+        // report a clean success for a failed push.
+        success: result.executed.success,
         dryRun: req.dryRun === true,
         planned: result.plan.hasChanges ? 1 : 0,
         cancelled: result.cancelled,
@@ -230,7 +270,7 @@ async function publishCommandLocked(
         result: outcome.result,
         payload: {
           payload_schema_version: 1,
-          plan: result.plan,
+          plan: serializePushPlan(result.plan),
           applied: serializePublishResult(result.executed),
         },
         events: collector.drain(),

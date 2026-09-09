@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pushResultToOutcome, serializePublishResult } from '../../src/commands/publish';
+import { pushResultToOutcome, serializePublishResult, serializePushPlan } from '../../src/commands/publish';
 import type { PublishResult } from '../../src/types/state';
 
 const emptyResult = (over: Partial<PublishResult> = {}): PublishResult => ({
@@ -73,5 +73,42 @@ describe('serializePublishResult', () => {
       failed: [{ type: 'part', id: 'p1', error: new Error('upload rejected') }] as PublishResult['failed'],
     }));
     expect(JSON.stringify(out)).toContain('upload rejected');
+  });
+});
+
+describe('serializePushPlan', () => {
+  it('drops plan.execution, which is internal machinery', () => {
+    const out = serializePushPlan({
+      hasChanges: true,
+      summary: 's',
+      semanticFingerprint: 'fp',
+      intent: { assignments: [] },
+      preconditions: { ok: true },
+      // @ts-expect-error deliberately passing the internal field to prove it is dropped
+      execution: { workingConfig: { huge: 'x'.repeat(1000) }, reconciliation: {}, lastHistory: {} },
+    });
+    expect(JSON.stringify(out)).not.toContain('workingConfig');
+    expect(JSON.stringify(out)).not.toContain('reconciliation');
+    expect(out.has_changes).toBe(true);
+    expect(out.semantic_fingerprint).toBe('fp');
+  });
+
+  it('never omits a declared field, even when the plan lacks it', () => {
+    const out = serializePushPlan({ hasChanges: false });
+    expect(Object.keys(out).sort()).toEqual(
+      ['has_changes', 'intent', 'preconditions', 'semantic_fingerprint', 'summary']);
+    expect(out.intent).toBeNull();
+  });
+});
+
+describe('outcome does not rely on failed[] tracking success', () => {
+  it('treats success:false as partial even with an empty failed array', () => {
+    expect(pushResultToOutcome({ succeeded: 3, failed: 0, dryRun: false, planned: 3, success: false }))
+      .toEqual({ result: 'partial', category: 'partial' });
+  });
+
+  it('still reports applied when success is true', () => {
+    expect(pushResultToOutcome({ succeeded: 3, failed: 0, dryRun: false, planned: 3, success: true }))
+      .toEqual({ result: 'applied', category: undefined });
   });
 });
