@@ -36,10 +36,8 @@ import { pullCommand, PullOptions } from './commands/pull';
 import { statusCommand, StatusCommandOptions } from './commands/status';
 import { ValidateOptions } from './commands/validate';
 import { FixOptions } from './commands/fix';
-import { buildReport, type CommandName, writeReport } from './core/report';
 import { logger } from './utils/logger';
 import { CommandFailureError } from './utils/command-failure';
-import { commandFailureFromError, reportErrorFromFailure } from './utils/failure-classifier';
 
 // Init command - initialize a new course repository
 program
@@ -112,46 +110,8 @@ Examples:
 
 import { validateCommand } from './commands/validate';
 import { fixCommand } from './commands/fix';
-import { CollectingEventSink } from './core/services/event-sink';
+import { runCommandWithFailureClassification } from './utils/command-runner';
 
-async function runCommandWithFailureClassification<TOptions>(
-  command: CommandName | undefined,
-  options: TOptions,
-  action: (collector: CollectingEventSink) => Promise<void>,
-  failurePrefix: string,
-  payloadSchemaVersion = 1,
-): Promise<void> {
-  const collector = new CollectingEventSink();
-  try {
-    const json = (options as { json?: boolean }).json === true;
-    await logger.withJsonMode(json, () => action(collector));
-  } catch (error) {
-    const failure = error instanceof CommandFailureError
-      ? error
-      : commandFailureFromError(
-          `${failurePrefix}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          error,
-        );
-
-    // A command that already rendered its own message must not be re-logged.
-    if (!(error instanceof CommandFailureError)) { logger.error(failure.message); }
-
-    // Skip when the command already emitted its document. A command that
-    // reports findings writes `result: "reported"` and then throws to set exit
-    // 5; writing again here put TWO documents on stdout, the second wrongly
-    // saying `result: "failed"`.
-    if ((options as { json?: boolean }).json === true && command !== undefined && !failure.reportWritten) {
-      writeReport(buildReport({
-        command,
-        result: 'failed',
-        payload: { payload_schema_version: payloadSchemaVersion },
-        events: collector.drain(),
-        error: reportErrorFromFailure(failure),
-      }));
-    }
-    throw failure;
-  }
-}
 
 // Validate command
 program
