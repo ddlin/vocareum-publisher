@@ -12,6 +12,9 @@ import { CommandFailureError } from '../utils/command-failure';
 import { commandFailureFromError } from '../utils/failure-classifier';
 import { logger } from '../utils/logger';
 import { LoggerEventSink } from '../utils/logger-event-sink';
+import { CollectingEventSink } from '../core/services/event-sink';
+import { TeeEventSink } from '../utils/tee-event-sink';
+import { buildReport, writeReport } from '../core/report';
 import { InteractivePrompter } from '../core/services/context';
 import { inspectStatus, renderStatusHuman } from '../core/services/status-service';
 import type { RuntimeFacts } from '../core/services/context';
@@ -23,12 +26,18 @@ export interface StatusCommandOptions {
   verbose?: boolean;
   /** Emit a machine-readable JSON report on stdout (consumed by the VS Code extension). */
   json?: boolean;
+  /** Internal collector supplied by the CLI wrapper for --json failure envelopes. */
+  eventCollector?: CollectingEventSink;
 }
 
 /**
  * Execute the status command
  */
 export async function statusCommand(options: StatusCommandOptions): Promise<void> {
+  return logger.withJsonMode(options.json === true, () => statusCommandWithMode(options));
+}
+
+async function statusCommandWithMode(options: StatusCommandOptions): Promise<void> {
   const { configPath, workspaceRoot } = resolveWorkspaceContext({
     config: options.config,
     root: options.root,
@@ -54,7 +63,10 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
       credentialsConfigured,
     };
 
-    const events = new LoggerEventSink();
+    const collector = options.eventCollector ?? new CollectingEventSink();
+    const events = options.json === true
+      ? new TeeEventSink([collector, new LoggerEventSink()])
+      : new LoggerEventSink();
     const ctx = {
       persistedConfig: config,
       effectiveConfig: config,
@@ -68,10 +80,9 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
     const report = await inspectStatus(ctx, { scanContent: options.json === true });
 
     if (options.json === true) {
-      // Pure JSON on stdout — consumers parse this; human output goes nowhere else.
-      // Emit exactly the fields that match today's schema (no extra service fields).
-      const jsonDoc = {
-        schema_version: report.schema_version,
+      // stdout carries the envelope alone; anything human goes to stderr.
+      const payload = {
+        payload_schema_version: report.schema_version,
         scope: report.scope,
         generated_at: report.generated_at,
         config_path: report.config_path,
@@ -83,7 +94,15 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
         assignments: report.assignments,
         summary: report.summary,
       };
-      process.stdout.write(JSON.stringify(jsonDoc) + '\n');
+      const ok = writeReport(buildReport({
+        command: 'status',
+        result: 'reported',
+        payload,
+        events: collector.drain(),
+      }));
+      if (!ok) {
+        throw new CommandFailureError('Status report serialization failed');
+      }
       return;
     }
 

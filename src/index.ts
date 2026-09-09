@@ -112,28 +112,36 @@ Examples:
 
 import { validateCommand } from './commands/validate';
 import { fixCommand } from './commands/fix';
+import { CollectingEventSink } from './core/services/event-sink';
 
 async function runCommandWithFailureClassification<TOptions>(
   command: CommandName | undefined,
   options: TOptions,
-  action: () => Promise<void>,
+  action: (collector: CollectingEventSink) => Promise<void>,
   failurePrefix: string,
   payloadSchemaVersion = 1,
 ): Promise<void> {
+  const collector = new CollectingEventSink();
   try {
-    await action();
-  } catch (error) {
-    if (error instanceof CommandFailureError) { throw error; }
-    const message = `${failurePrefix}: ${error instanceof Error ? error.message : 'Unknown error'}`;
-    const failure = commandFailureFromError(message, error);
-    logger.error(message);
     const json = (options as { json?: boolean }).json === true;
-    if (json && command !== undefined) {
+    await logger.withJsonMode(json, () => action(collector));
+  } catch (error) {
+    const failure = error instanceof CommandFailureError
+      ? error
+      : commandFailureFromError(
+          `${failurePrefix}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          error,
+        );
+
+    // A command that already rendered its own message must not be re-logged.
+    if (!(error instanceof CommandFailureError)) { logger.error(failure.message); }
+
+    if ((options as { json?: boolean }).json === true && command !== undefined) {
       writeReport(buildReport({
         command,
         result: 'failed',
         payload: { payload_schema_version: payloadSchemaVersion },
-        events: [],
+        events: collector.drain(),
         error: reportErrorFromFailure(failure),
       }));
     }
@@ -269,7 +277,7 @@ Examples:
   $ vocgit pull --content --assignment lab1 --part <part_id>   # scope to one part
 `)
   .action(async (options: PullOptions) => {
-    await runCommandWithFailureClassification('pull', options, () => pullCommand(options), 'Pull failed');
+    await runCommandWithFailureClassification('pull', options, (collector) => pullCommand({ ...options, eventCollector: collector }), 'Pull failed');
   });
 
 // Status command (default action)
@@ -304,7 +312,7 @@ Examples:
   $ vocgit status --json
 `)
   .action(async (options: StatusCommandOptions) => {
-    await runCommandWithFailureClassification('status', options, () => statusCommand(options), 'Status failed', 2);
+    await runCommandWithFailureClassification('status', options, (collector) => statusCommand({ ...options, eventCollector: collector }), 'Status failed', 2);
   });
 
 // Push command

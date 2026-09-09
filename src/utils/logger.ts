@@ -75,6 +75,24 @@ export class Logger {
   }
 
   /**
+   * Run `body` with JSON mode forced on or off, restoring the previous value
+   * even if it throws.
+   *
+   * setJsonMode alone is sticky: the logger is a module singleton, so a command
+   * that enabled JSON mode and then threw left every later command in the same
+   * process writing its human output to stderr.
+   */
+  async withJsonMode<T>(enabled: boolean, body: () => Promise<T>): Promise<T> {
+    const previous = this.jsonMode;
+    this.jsonMode = enabled;
+    try {
+      return await body();
+    } finally {
+      this.jsonMode = previous;
+    }
+  }
+
+  /**
    * The stream a normally-stdout line should use right now.
    */
   private out(): NodeJS.WriteStream {

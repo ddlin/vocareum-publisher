@@ -3,7 +3,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const out: string[] = []; const err: string[] = [];
 vi.mock('../../src/utils/logger', () => {
   const o = (s = '') => out.push(String(s)); const e = (s = '') => err.push(String(s));
-  return { logger: { info: o, success: o, plain: o, newline: () => out.push(''), warn: e, error: e, debug: e } };
+  return {
+    logger: {
+      info: o,
+      success: o,
+      plain: o,
+      newline: () => out.push(''),
+      warn: e,
+      error: e,
+      debug: e,
+      withJsonMode: async (_enabled: boolean, body: () => Promise<unknown>) => body(),
+    },
+  };
 });
 vi.mock('../../src/utils/env', () => ({ loadDotEnvIfPresent: vi.fn(), isCI: () => false, getAuthModeEnv: () => undefined, getOAuthClientId: () => undefined, getOAuthClientSecret: () => undefined, getCIProvider: () => undefined }));
 vi.mock('../../src/utils/git', () => ({

@@ -279,4 +279,22 @@ describe('logger JSON mode', () => {
     expect(err.join('')).toContain('warned');
     expect(err.join('')).toContain('errored');
   });
+
+  it('restores the previous routing when a scoped JSON-mode body throws', async () => {
+    const { out, err, restore } = capture();
+    try {
+      await expect(
+        logger.withJsonMode(true, async () => {
+          logger.info('inside json mode');
+          throw new Error('boom');
+        }),
+      ).rejects.toThrow('boom');
+      logger.info('after failure');
+    } finally {
+      logger.setJsonMode(false);
+      restore();
+    }
+    expect(err.join('')).toContain('inside json mode');
+    expect(out.join('')).toContain('after failure');
+  });
 });

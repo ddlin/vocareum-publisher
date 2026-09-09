@@ -17,6 +17,7 @@ import { prompt, promptChoice } from '../utils/prompts';
 import { UnknownFieldReporter } from '../utils/unknown-field-reporter';
 import { withSession } from '../core/session';
 import { LoggerEventSink } from '../utils/logger-event-sink';
+import type { CollectingEventSink } from '../core/services/event-sink';
 import { InteractivePrompter, NonInteractivePrompter } from '../core/services/context';
 import type { PullContext } from '../core/services/context';
 import type { PullRequest } from '../core/services/types';
@@ -72,6 +73,8 @@ export interface PullOptions {
   auth?: string;
   clientId?: string;
   clientSecret?: string;
+  /** Internal collector supplied by the CLI wrapper for --json failure envelopes. */
+  eventCollector?: CollectingEventSink;
 }
 
 /**

@@ -26,10 +26,10 @@ export interface InspectStatusOptions {
 }
 
 /**
- * Version of the `status --json` schema. Bump when the shape changes so
- * consumers (VS Code extension) can detect incompatible CLIs.
+ * Version of the status JSON payload. The shared envelope has its own string
+ * schema_version; this numeric version tracks only the status payload shape.
  */
-const STATUS_JSON_SCHEMA_VERSION = 1;
+const STATUS_JSON_SCHEMA_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // StatusReport — mirrors today's JSON document shape exactly
