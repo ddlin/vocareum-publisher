@@ -60,6 +60,27 @@ export function buildReport(args: {
 }
 
 /**
+ * Write one JSON document to stdout.
+ *
+ * The single stdout writer in the codebase, enforced by a guard test. Both
+ * writeReport and `--version --json` go through it rather than calling
+ * process.stdout.write themselves: stdout is the machine-readable channel, and
+ * a second writer is how it came to carry two documents.
+ *
+ * @returns false when the value could not be serialized.
+ */
+export function writeJsonDocument(value: unknown): boolean {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    return false;
+  }
+  process.stdout.write(serialized + '\n');
+  return true;
+}
+
+/**
  * Serialize fully, then write once.
  *
  * A crash midway through a streamed write would leave half a document on

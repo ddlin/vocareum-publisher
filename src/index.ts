@@ -7,7 +7,9 @@
  */
 
 import { Command } from 'commander';
-import { readFileSync } from 'fs';
+import { CAPABILITIES, readBuildInfo } from './core/capabilities';
+import { writeJsonDocument } from './core/report';
+import { readFileSync, realpathSync } from 'fs';
 import { join } from 'path';
 
 // Read version from package.json
@@ -19,6 +21,24 @@ function getVersion(): string {
   } catch {
     return '1.0.0'; // Fallback
   }
+}
+
+// --version --json: intercepted before Commander handles --version itself.
+// Routed through report.ts's writeJsonDocument so stdout keeps exactly one
+// writer (the purity guard allows only that file).
+if (process.argv.includes('--version') && process.argv.includes('--json')) {
+  const info = readBuildInfo();
+  writeJsonDocument({
+    version: getVersion(),
+    ...info,
+    resolved_from: ((): string | null => {
+      // realpath throws if argv[1] is missing or unreadable; the version query
+      // must still answer.
+      try { return realpathSync(process.argv[1] ?? ''); } catch { return null; }
+    })(),
+    capabilities: CAPABILITIES,
+  });
+  process.exit(0);
 }
 
 const program = new Command();
