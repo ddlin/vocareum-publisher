@@ -96,7 +96,8 @@ describe('serializePushPlan', () => {
   it('never omits a declared field, even when the plan lacks it', () => {
     const out = serializePushPlan({ hasChanges: false });
     expect(Object.keys(out).sort()).toEqual(
-      ['has_changes', 'intent', 'preconditions', 'semantic_fingerprint', 'summary']);
+      ['has_changes', 'intent', 'orphaned_in_vocareum', 'preconditions',
+       'semantic_fingerprint', 'stale_in_config', 'summary']);
     expect(out.intent).toBeNull();
   });
 });
@@ -110,5 +111,42 @@ describe('outcome does not rely on failed[] tracking success', () => {
   it('still reports applied when success is true', () => {
     expect(pushResultToOutcome({ succeeded: 3, failed: 0, dryRun: false, planned: 3, success: true }))
       .toEqual({ result: 'applied', category: undefined });
+  });
+});
+
+describe('serializePushPlan keeps what the human path reports', () => {
+  it('lifts orphans and stale entries out of the dropped execution block', () => {
+    // The human path prints "X has no local counterpart and will be left in
+    // place"; a --json caller must not get less than a human sees.
+    const out = serializePushPlan({
+      hasChanges: true,
+      execution: {
+        reconciliation: {
+          orphanedInVocareum: [{ id: '123', name: 'Ghost Lab' }],
+          staleInConfig: [{ id: '456', name: 'Removed Lab' }],
+        },
+      },
+    });
+    expect(out.orphaned_in_vocareum).toEqual([{ id: '123', name: 'Ghost Lab' }]);
+    expect(out.stale_in_config).toEqual([{ id: '456', name: 'Removed Lab' }]);
+  });
+
+  it('still drops the bulky internals around them', () => {
+    const out = serializePushPlan({
+      hasChanges: true,
+      execution: {
+        reconciliation: { orphanedInVocareum: [] },
+        // @ts-expect-error proving workingConfig is not carried through
+        workingConfig: { secretish: 'x'.repeat(500) },
+      },
+    });
+    expect(JSON.stringify(out)).not.toContain('workingConfig');
+    expect(out.orphaned_in_vocareum).toEqual([]);
+  });
+
+  it('emits empty arrays, never undefined, when there is no reconciliation', () => {
+    const out = serializePushPlan({ hasChanges: false });
+    expect(out.orphaned_in_vocareum).toEqual([]);
+    expect(out.stale_in_config).toEqual([]);
   });
 });

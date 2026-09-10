@@ -21,6 +21,9 @@ vi.mock('../../src/utils/logger', () => {
   const e = (s: unknown = '') => err.push(String(s));
   return {
     logger: {
+      // These golden runs are not --json, so the mode is a pass-through. It
+      // must exist though: publishCommand wraps itself in it, like pull/status.
+      withJsonMode: async (_enabled: boolean, body: () => Promise<unknown>) => body(),
       info: o,
       success: o,
       plain: o,

@@ -173,10 +173,10 @@ export function validatePullContentFlags(opts: {
     throw new UsageError('--assignment/--part only apply with --content. Add --content or remove the selectors.');
   }
   if (partSel.length > 0 && assignmentSel.length === 0) {
-    throw new Error('--part requires --assignment (part selectors are not unique across a course).');
+    throw new UsageError('--part requires --assignment (part selectors are not unique across a course).');
   }
   if (partSel.length > 0 && assignmentSel.length > 1) {
-    throw new Error('--part requires exactly one --assignment (part selectors are not unique across assignments).');
+    throw new UsageError('--part requires exactly one --assignment (part selectors are not unique across assignments).');
   }
 }
 
@@ -193,7 +193,7 @@ export function scopeAssignmentsForContent(
     const match = assignments.find((a) => a.name === sel || a.assignment_id === sel);
     if (!match) {
       const valid = assignments.map((a) => `${a.name} (${a.assignment_id ?? 'no id'})`).join(', ');
-      throw new Error(`Unknown --assignment "${sel}". Valid choices: ${valid || '(none)'}.`);
+      throw new UsageError(`Unknown --assignment "${sel}". Valid choices: ${valid || '(none)'}.`);
     }
     if (!selected.includes(match)) { selected.push(match); }
   }
@@ -205,7 +205,7 @@ export function scopeAssignmentsForContent(
   for (const p of partSelectors) {
     if (!validPartIds.has(p)) {
       const valid = [...validPartIds].join(', ');
-      throw new Error(`Unknown --part "${p}" in assignment "${target.name}". Valid parts: ${valid || '(none)'}.`);
+      throw new UsageError(`Unknown --part "${p}" in assignment "${target.name}". Valid parts: ${valid || '(none)'}.`);
     }
   }
   return { assignments: selected, partIds: new Set(partSelectors) };

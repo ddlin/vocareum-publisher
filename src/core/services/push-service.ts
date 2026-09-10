@@ -1181,6 +1181,11 @@ export async function executePush(
                 rubricsAvailable = false;
                 events.emit({
                   level: 'error',
+                  // The part that actually hit the 403. Only the parts skipped
+                  // afterwards carried the code, so a single-part assignment
+                  // never emitted it at all.
+                  code: 'rubric_write_forbidden',
+                  data: { part_id: partId },
                   message:
                     'Rubric writes are not permitted with this API token; rubric sync is ' +
                     'disabled for the rest of this run. Regenerate the token with the rubrics ' +

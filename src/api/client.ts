@@ -160,7 +160,8 @@ export function assertAllowedBaseUrl(baseUrl: string, events?: EventSink): void 
     if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
     // Non-HTTPS is only reachable with the explicit override; skip the path
     // allowlist check since TLS is already absent (dev/test escape hatch).
-    sink.emit({ level: 'warn', message: `WARNING: Using non-HTTPS API URL: ${baseUrl}` });
+    sink.emit({ level: 'warn', code: 'insecure_base_url', data: { base_url: baseUrl, reason: 'non-https' },
+      message: `WARNING: Using non-HTTPS API URL: ${baseUrl}` });
     return;
   }
   const canonical = `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, '')}`;
@@ -193,7 +194,8 @@ export function assertBaseUrlForVersion(baseUrl: string, version: 'v2' | 'v3', e
   try { parsed = new URL(baseUrl); } catch { throw new InsecureBaseUrlError(baseUrl); }
   if (parsed.protocol !== 'https:') {
     if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
-    sink.emit({ level: 'warn', message: `WARNING: Using non-HTTPS API URL: ${baseUrl}` });
+    sink.emit({ level: 'warn', code: 'insecure_base_url', data: { base_url: baseUrl, reason: 'non-https' },
+      message: `WARNING: Using non-HTTPS API URL: ${baseUrl}` });
     return;
   }
   const canonical = `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, '')}`;

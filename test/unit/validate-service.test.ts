@@ -7,6 +7,7 @@ import { describe, it, expect, vi } from 'vitest';
 // Mock logger so LoggerEventSink (used as default in validator.ts) doesn't blow up
 vi.mock('../../src/utils/logger', () => ({
   logger: {
+    withJsonMode: async (_enabled: boolean, body: () => Promise<unknown>) => body(),
     info: vi.fn(),
     success: vi.fn(),
     error: vi.fn(),

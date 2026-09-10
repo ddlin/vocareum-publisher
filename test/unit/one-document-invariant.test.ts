@@ -111,3 +111,16 @@ describe('CommandFailureError.reportWritten', () => {
     }
   });
 });
+
+describe('commands are self-contained under --json', () => {
+  it('every command that accepts --json wraps itself in withJsonMode', async () => {
+    // The CLI wrapper also wraps, but a direct caller (test, embedded use) gets
+    // no wrapper -- and logger.info would then write prose to stdout ahead of
+    // the JSON document, breaking the one-document invariant outside the CLI.
+    const { readFileSync } = await import('fs');
+    for (const file of ['src/commands/pull.ts', 'src/commands/status.ts', 'src/commands/publish.ts']) {
+      expect(readFileSync(file, 'utf8'), `${file} does not wrap withJsonMode`)
+        .toMatch(/withJsonMode\(/);
+    }
+  });
+});

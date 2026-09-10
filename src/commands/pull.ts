@@ -300,12 +300,20 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
 
     if (options.json === true) {
       const { inspection, pullResult } = sessionOutcome;
+      // hasFindings must mean "something is STILL outstanding", not "something
+      // was found". Reading it off the pre-apply inspection made
+      // `pull --batch --json` report result "reported" / exit 5 after
+      // successfully applying every one of those findings -- precisely the case
+      // spec §5.1 exists to rule out ("findings that were resolved are not
+      // findings"), and the reason exit 5 stays meaningful.
+      //
+      // `skipped` is the honest signal: whatever the resolver declined to
+      // apply. Non-interactive skips everything, so findings stand. Batch
+      // applies orphans and drift but skips stale by design, so a run with
+      // stale entries still reports them -- correctly, since a stale entry IS
+      // work left for the operator.
       const outcome = pullResultToOutcome(pullResult, {
-        hasFindings:
-          inspection.orphans.length > 0 ||
-          inspection.settingsDrift.length > 0 ||
-          inspection.contentDrift.length > 0 ||
-          inspection.stale.length > 0,
+        hasFindings: pullResult.skipped > 0,
         failures: pullResult.failures,
       });
       const ok = writeReport(buildReport({

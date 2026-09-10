@@ -25,6 +25,7 @@ vi.mock('../../src/utils/files', () => ({
 // Mock logger to suppress output during tests
 vi.mock('../../src/utils/logger', () => ({
   logger: {
+    withJsonMode: async (_enabled: boolean, body: () => Promise<unknown>) => body(),
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),

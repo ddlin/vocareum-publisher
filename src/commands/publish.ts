@@ -105,18 +105,35 @@ export interface SerializedPushPlan {
   semantic_fingerprint: string;
   intent: unknown;
   preconditions: unknown;
+  /**
+   * Assignments present in Vocareum with no local counterpart, and config
+   * entries whose remote is gone.
+   *
+   * Lifted out of plan.execution.reconciliation, which this projection
+   * otherwise drops. The human path reports orphans ("X has no local
+   * counterpart and will be left in place"), so omitting them here gave a
+   * --json caller strictly less than a human running the same command -- on
+   * exactly the thing AGENTS.md #7 exists to surface, since push never deletes
+   * them and someone has to notice.
+   */
+  orphaned_in_vocareum: unknown[];
+  stale_in_config: unknown[];
 }
 
 export function serializePushPlan(plan: {
   hasChanges: boolean; summary?: string; semanticFingerprint?: string;
   intent?: unknown; preconditions?: unknown;
+  execution?: { reconciliation?: { orphanedInVocareum?: unknown[]; staleInConfig?: unknown[] } };
 }): SerializedPushPlan {
+  const reconciliation = plan.execution?.reconciliation;
   return {
     has_changes: plan.hasChanges,
     summary: plan.summary ?? '',
     semantic_fingerprint: plan.semanticFingerprint ?? '',
     intent: plan.intent ?? null,
     preconditions: plan.preconditions ?? null,
+    orphaned_in_vocareum: reconciliation?.orphanedInVocareum ?? [],
+    stale_in_config: reconciliation?.staleInConfig ?? [],
   };
 }
 
@@ -146,8 +163,14 @@ export function pushResultToOutcome(
  * CONFIG_LOCKED if the lock file already exists).
  */
 export async function publishCommand(options: PublishCommandOptions): Promise<void> {
-  const ctx = resolveWorkspaceContext({ config: options.config, root: options.root });
-  await publishCommandLocked(ctx, options);
+  // Self-contained, like pullCommand and statusCommand: under --json human
+  // output must go to stderr even when this is invoked directly (a test, an
+  // embedded caller) rather than through the CLI wrapper. Without it,
+  // logger.info wrote prose to stdout ahead of the document.
+  return logger.withJsonMode(options.json === true, async () => {
+    const ctx = resolveWorkspaceContext({ config: options.config, root: options.root });
+    await publishCommandLocked(ctx, options);
+  });
 }
 
 async function publishCommandLocked(

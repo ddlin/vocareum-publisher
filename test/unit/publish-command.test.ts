@@ -71,6 +71,7 @@ vi.mock('../../src/utils/env', () => ({
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
+    withJsonMode: async (_enabled: boolean, body: () => Promise<unknown>) => body(),
     error: loggerErrorMock,
     warn: loggerWarnMock,
     info: loggerInfoMock,

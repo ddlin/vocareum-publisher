@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 const calls: Array<[string, unknown, unknown]> = [];
 vi.mock('../../src/utils/logger', () => ({ logger: {
+    withJsonMode: async (_enabled: boolean, body: () => Promise<unknown>) => body(),
   info: (m: string) => calls.push(['info', m, undefined]),
   success: (m: string) => calls.push(['success', m, undefined]),
   warn: (m: string, meta?: unknown) => calls.push(['warn', m, meta]),
