@@ -14,9 +14,15 @@ import { ensureDirectory } from '../utils/files';
 import { logger } from '../utils/logger';
 import { CommandFailureError } from '../utils/command-failure';
 import { commandFailureFromError } from '../utils/failure-classifier';
+import { CollectingEventSink } from '../core/services/event-sink';
+import { buildReport, writeReport } from '../core/report';
 import { promptConfirm } from '../utils/prompts';
 
 export interface FixOptions {
+  /** Emit a machine-readable report on stdout. Implies non-interactive. */
+  json?: boolean;
+  /** Internal collector supplied by the CLI wrapper for --json failure envelopes. */
+  eventCollector?: CollectingEventSink;
   config?: string;
   /** Explicit workspace root (required when --config is not directly inside cwd) */
   root?: string;
@@ -27,6 +33,39 @@ export interface FixOptions {
  * Execute the fix command
  */
 export async function fixCommand(options: FixOptions): Promise<void> {
+  return logger.withJsonMode(options.json === true, () => fixCommandInner(options));
+}
+
+/**
+ * `fixed` / `remaining` are tracked rather than only logged, because the report
+ * has to say what actually changed. The three ways an item can remain are kept
+ * distinct in `reason`, since they mean different things to a caller:
+ * `unfixable` (fix does not handle that error type), `declined` (the operator
+ * said no), and `failed` (creation was attempted and errored).
+ *
+ * Only `failed` makes the run partial. The other two are findings: nothing went
+ * wrong, there is simply work left.
+ */
+async function fixCommandInner(options: FixOptions): Promise<void> {
+  const fixed: string[] = [];
+  const remaining: Array<{ path: string; reason: 'unfixable' | 'declined' | 'failed'; detail?: string }> = [];
+  const collector = options.eventCollector ?? new CollectingEventSink();
+  // --json never prompts; a blocked prompt would hang an automated caller.
+  const nonInteractive = options.json === true || options.nonInteractive === true;
+
+  const emit = (result: 'applied' | 'partial' | 'reported' | 'no-op'): boolean =>
+    writeReport(buildReport({
+      command: 'fix',
+      result,
+      payload: {
+        payload_schema_version: 1,
+        fixed,
+        remaining,
+        counts: { fixed: fixed.length, remaining: remaining.length },
+      },
+      events: collector.drain(),
+    }));
+
   const { configPath, workspaceRoot } = resolveWorkspaceContext({
     config: options.config,
     root: options.root,
@@ -42,6 +81,9 @@ export async function fixCommand(options: FixOptions): Promise<void> {
 
     if (result.valid) {
       logger.success('No issues found to fix.');
+      if (options.json === true && !emit('no-op')) {
+        throw new CommandFailureError('Fix report serialization failed', 'internal', true);
+      }
       return;
     }
 
@@ -49,7 +91,19 @@ export async function fixCommand(options: FixOptions): Promise<void> {
 
     if (missingFolders.length === 0) {
       logger.info('No missing folders to fix.');
-      // Could handle orphans or other types here
+      // Errors fix does not handle are still findings the caller should see --
+      // returning a bare no-op here would hide them from the report.
+      for (const error of result.errors) {
+        remaining.push({ path: error.path ?? '(unknown)', reason: 'unfixable', detail: error.type });
+      }
+      if (options.json === true) {
+        if (!emit(remaining.length > 0 ? 'reported' : 'no-op')) {
+          throw new CommandFailureError('Fix report serialization failed', 'internal', true);
+        }
+        if (remaining.length > 0) {
+          throw new CommandFailureError('Issues remain that fix cannot repair', 'findings', true);
+        }
+      }
       return;
     }
 
@@ -71,19 +125,49 @@ export async function fixCommand(options: FixOptions): Promise<void> {
       await assertConfinedToWorkspace(workspaceRoot, folderPath);
       const folderAbs = path.resolve(workspaceRoot, folderPath);
 
-      if (options.nonInteractive === true) {
-        logger.info(`Creating ${folderPath}...`);
-        await ensureDirectory(folderAbs);
-      } else {
-        const create = await promptConfirm(`Create missing folder "${folderPath}"?`);
-        if (create) {
+      try {
+        if (nonInteractive) {
+          logger.info(`Creating ${folderPath}...`);
           await ensureDirectory(folderAbs);
-          logger.success(`Created ${folderPath}`);
+          fixed.push(folderPath);
+        } else {
+          const create = await promptConfirm(`Create missing folder "${folderPath}"?`);
+          if (create) {
+            await ensureDirectory(folderAbs);
+            logger.success(`Created ${folderPath}`);
+            fixed.push(folderPath);
+          } else {
+            remaining.push({ path: folderPath, reason: 'declined' });
+          }
         }
+      } catch (creationError) {
+        // One unwritable folder must not abandon the rest.
+        const detail = creationError instanceof Error ? creationError.message : 'Unknown error';
+        logger.error(`Could not create ${folderPath}: ${detail}`);
+        remaining.push({ path: folderPath, reason: 'failed', detail });
       }
     }
 
     logger.success('Fix operations completed.');
+
+    if (options.json === true) {
+      const anyFailed = remaining.some((r) => r.reason === 'failed');
+      const result_ =
+        anyFailed ? 'partial'
+        : remaining.length > 0 ? 'reported'
+        : fixed.length > 0 ? 'applied'
+        : 'no-op';
+      if (!emit(result_)) {
+        throw new CommandFailureError('Fix report serialization failed', 'internal', true);
+      }
+      if (anyFailed) {
+        throw new CommandFailureError('Some fixes could not be applied', 'partial', true);
+      }
+      if (remaining.length > 0) {
+        throw new CommandFailureError('Issues remain after fixing', 'findings', true);
+      }
+      return;
+    }
 
   } catch (error) {
     if (error instanceof CommandFailureError) { throw error; }

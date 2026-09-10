@@ -117,6 +117,7 @@ import { runCommandWithFailureClassification } from './utils/command-runner';
 program
   .command('validate')
   .description('Validate vocareum.yaml configuration and local folder structure')
+  .option('--json', 'Emit a machine-readable report on stdout')
   .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
   .option('--root <path>', 'Workspace root that assignment paths resolve against (required when --config is not directly inside the current directory)')
   .option('--strict', 'Treat warnings as errors (exit code 1)')
@@ -143,13 +144,14 @@ Examples:
   $ vocgit validate --vocareum  # Include API validation
 `)
   .action(async (options: ValidateOptions) => {
-    await runCommandWithFailureClassification('validate', options, () => validateCommand(options), 'Validation failed');
+    await runCommandWithFailureClassification('validate', options, (collector) => validateCommand({ ...options, eventCollector: collector }), 'Validation failed');
   });
 
 // Fix command
 program
   .command('fix')
   .description('Interactively detect and fix configuration or structure issues')
+  .option('--json', 'Emit a machine-readable report on stdout')
   .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
   .option('--root <path>', 'Workspace root that assignment paths resolve against (required when --config is not directly inside the current directory)')
   .option('--non-interactive', 'Skip all prompts (report issues only)')
@@ -172,7 +174,7 @@ Examples:
   $ vocgit fix --non-interactive  # Report only, no changes
 `)
   .action(async (options: FixOptions) => {
-    await runCommandWithFailureClassification('fix', options, () => fixCommand(options), 'Fix failed');
+    await runCommandWithFailureClassification('fix', options, (collector) => fixCommand({ ...options, eventCollector: collector }), 'Fix failed');
   });
 
 const collectFlag = (value: string, acc: string[]): string[] => { acc.push(value); return acc; };
