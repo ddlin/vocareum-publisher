@@ -5,6 +5,54 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`--json` on `pull`, `push`, `status`, `validate` and `fix`.** stdout carries
+  exactly one versioned envelope; human output moves to stderr. `--json` implies
+  `--non-interactive`.
+- **A retryability-oriented exit-code taxonomy.** `0` success · `1` internal ·
+  `2` usage/config · `3` auth · `4` transient (retry) · `5` findings outstanding ·
+  `6` partial. The split that matters to an automated caller is retryable versus
+  terminal, which a single `1` could not express.
+- **Coded diagnostics.** A closed registry of stable codes (`directory_unreachable`,
+  `upload_incomplete`, `delete_sync_failed`, `part_settings_fallback`, the rubric
+  codes, and others) with structured data, deduplicated with a `count`. Branch on
+  `code`, never on message text.
+- **`vocgit --version --json`** reporting the version, the resolved binary path,
+  git provenance from a build stamp, and a capability list.
+
+### Changed
+- **Exit codes are now categorized.** Every failure previously exited `1`.
+  Callers testing `!= 0` are unaffected; a caller matching `== 1` exactly will
+  now see 2, 3, 4, 5 or 6.
+- **`status --json` emits the shared envelope.** Its former numeric top-level
+  `schema_version: 1` is now `payload.payload_schema_version: 2`, under an
+  envelope whose `schema_version` is the string `"1.0"`.
+- **A part-settings update the API rejects at every fallback level is now a
+  failure.** It was recorded as "skipped", so a push that applied none of the
+  requested settings still reported success and exited 0. Such a push now exits
+  6 (partial) and names the part. If you have a chronically rejected settings
+  payload, runs that used to look green will now report the failure they always
+  were.
+- **A rejected file deletion no longer counts as deleted.** `--sync-deletes`
+  recorded every attempt and reported "Deleted N files" even when the API refused
+  them; it now reports what actually happened and keeps the directory eligible
+  for retry, which means such a push reports partial rather than success.
+
+### Fixed
+- **`push` no longer reports failures twice.** It logged the error and threw a
+  plain `Error`, which the entrypoint logged again as `Unhandled error: …` —
+  contrary to AGENTS.md constraint 14.
+- **A bad or missing API token now exits 3 (auth) rather than 1.** Vocareum
+  answers an invalid token with HTTP 400 and an in-band `"Invalid Token"` body
+  rather than a 401, so it was classified as an internal error and the
+  "generate a new token" hint never reached the user.
+- **A nonexistent course id, an unresolvable workspace root, and invalid
+  `--assignment`/`--part` selectors now exit 2** instead of 1.
+- **`push` no longer claims updates it did not make.** An assignment whose only
+  planned change failed still appeared in `updated` with an empty `parts` list.
+
 ## [1.4.0] — 2026-09-04
 
 ### Fixed

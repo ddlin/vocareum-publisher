@@ -689,6 +689,82 @@ vocgit pull
 vocgit push
 ```
 
+## Machine-readable output
+
+Every agent-facing command accepts `--json`. stdout carries exactly **one** JSON
+document; all human output moves to stderr, so `2>/dev/null` is safe.
+
+```bash
+vocgit pull --batch --json 2>/dev/null | jq .result
+vocgit --version --json | jq .resolved_from     # which binary am I running?
+```
+
+`--json` implies `--non-interactive`: it never prompts.
+
+### Envelope
+
+| field | notes |
+|---|---|
+| `schema_version` | **string**, versions the envelope (`"1.0"`) |
+| `command` | `pull` · `push` · `status` · `validate` · `fix` |
+| `result` | `applied` · `partial` · `reported` · `no-op` · `failed` |
+| `retryable` | true only for transient API failures |
+| `payload` | per-command; carries its own **numeric** `payload_schema_version` |
+| `diagnostics` | coded warnings, deduplicated with a `count` |
+| `error` | populated when `result` is `failed` or `partial` |
+
+The two version fields are independent, and their types tell them apart: a
+string `schema_version` at the top level is the envelope, a number inside
+`payload` is that command's own shape.
+
+### Exit codes
+
+| code | meaning | what to do |
+|---|---|---|
+| 0 | success, nothing outstanding | continue |
+| 1 | internal error | file a bug |
+| 2 | usage or config error | fix the input; do not retry |
+| 3 | auth failure | fix credentials |
+| 4 | transient API failure | **retry with backoff** |
+| 5 | findings outstanding | act on `diagnostics` / the payload |
+| 6 | partial success | inspect the per-item failures |
+
+**Findings that were applied are not findings.** `pull --batch` that applies
+drift exits 0; `pull --non-interactive` that reports the same drift exits 5. The
+code answers "is anything left for you to do?", which is what keeps it worth
+branching on.
+
+A failure still prints an envelope. A non-zero exit with empty stdout would tell
+a caller nothing, so `result: "failed"` plus a structured `error` is written even
+when the run dies early.
+
+### Diagnostics
+
+`diagnostics[]` entries carry a stable `code` — branch on that, never on
+`message`, which is free to be reworded. Identical `(code, data)` pairs collapse
+into one entry with a `count`.
+
+Codes are additive within a major `schema_version`; **removing one, or changing
+its severity, is a major bump**. Treat an unknown `code`, `result` or `command`
+as "not success" rather than crashing.
+
+Severity never sets the exit code. A `warn` diagnostic is visible without being
+fatal — Elite courses legitimately declare a `docs` directory that cannot exist
+there, so `directory_unreachable` fires on nearly every Elite pull and must not
+fail it.
+
+### Which build am I running?
+
+```bash
+vocgit --version --json
+```
+
+Reports the version, the **resolved binary path** (a global npm install and a
+local `dist/` build are otherwise indistinguishable), git provenance, and a
+capability list you can assert against instead of parsing a version number.
+Provenance degrades to `"unavailable"` rather than failing when the build stamp
+is absent.
+
 #### CI / GitHub Actions example
 
 Store credentials as repository secrets (`VOCAREUM_OAUTH_CLIENT_ID`, `VOCAREUM_OAUTH_CLIENT_SECRET`) and pass them as environment variables in your workflow step:
