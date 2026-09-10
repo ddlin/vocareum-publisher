@@ -33,6 +33,7 @@ import { getPart, updatePart } from '../../api/parts';
 import { createRubrics, updateRubrics } from '../../api/rubrics';
 import { projectedPoints } from '../../utils/rubrics';
 import { ForbiddenError } from '../../api/client';
+import { UsageError } from '../../utils/command-failure';
 import { mapParts } from '../mapper';
 import { readDirectory as readLocalDirectory, syncDirectory } from '../uploader';
 import { listFiles } from '../../api/content';
@@ -231,7 +232,7 @@ export async function planPush(
   // unrelated assignments. pull enforces the identical rule for the same
   // reason (pull-service.ts) — mirror it here so both commands read consistently.
   if (partFilters.length > 0 && assignmentFilters.length !== 1) {
-    throw new Error(
+    throw new UsageError(
       '--part requires exactly one --assignment (part selectors are not unique across assignments).'
     );
   }
@@ -327,7 +328,8 @@ export async function planPush(
     const yamlText = await readTextFile(configPath);
     configDigest = createHash('sha256').update(yamlText).digest('hex');
   } catch (err) {
-    throw new Error(
+    // A config the tool cannot read is the caller's to fix, not a bug to file.
+    throw new UsageError(
       `Cannot compute push preconditions: failed to read config file "${configPath}": ${err instanceof Error ? err.message : String(err)}`
     );
   }
@@ -703,6 +705,13 @@ export async function executePush(
     if (shouldAbort) { break assignmentLoop; }
 
     let currentUpdateEntry: { type: 'assignment'; id: string; parts: string[] } | null = null;
+    /**
+     * Did anything at ASSIGNMENT level actually land (metadata write, id
+     * discovery)? An `updated` entry with no parts is legitimate when only
+     * assignment metadata changed, so the phantom entry can only be pruned when
+     * nothing landed at either level.
+     */
+    let assignmentLevelApplied = false;
 
     if (action.type === 'error') {
       result.failed.push({
@@ -813,9 +822,11 @@ export async function executePush(
       }
 
       currentUpdateEntry = { type: 'assignment', id: updateId, parts: [] };
+      assignmentLevelApplied = false;
       result.updated.push(currentUpdateEntry);
 
       if (action.idDiscoveredByName === true || action.partIdsDiscovered === true) {
+        assignmentLevelApplied = true;
         configUpdates.push(action.assignment);
         configChanged = true;
       }
@@ -910,6 +921,7 @@ export async function executePush(
               knownAssignmentPayload,
             );
           }
+          assignmentLevelApplied = true;
           events.emit({ level: 'success', message: `Updated assignment metadata: ${action.assignment.name}` });
         } catch (error) {
           events.emit({ level: 'error', message: `Failed to update assignment metadata for ${action.assignment.name}`, data: { error } });
@@ -1384,6 +1396,22 @@ export async function executePush(
       if (partWasUpdated && currentUpdateEntry && !currentUpdateEntry.parts.includes(partId)) {
         currentUpdateEntry.parts.push(partId);
       }
+    }
+
+    // The entry is pushed when the assignment starts processing, before anything
+    // is attempted. If nothing landed at either level -- no parts updated, no
+    // metadata write, no id discovery -- it is a claim that a write happened
+    // when none did: `push --json` reported counts.updated: 1 with parts: []
+    // for a run whose only planned change was a settings update the API
+    // rejected at every level.
+    if (
+      currentUpdateEntry !== null &&
+      currentUpdateEntry.parts.length === 0 &&
+      !assignmentLevelApplied
+    ) {
+      const phantomIndex = result.updated.indexOf(currentUpdateEntry);
+      if (phantomIndex !== -1) { result.updated.splice(phantomIndex, 1); }
+      currentUpdateEntry = null;
     }
   }
 

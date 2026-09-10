@@ -149,10 +149,25 @@ export async function syncDirectory(
               uploadResult.deleted.push(file.path);
               events.emit({ level: 'debug', message: `Deleted: ${file.path}` });
             } else {
-              // deleteFile already emitted delete_sync_failed with the reason;
-              // the point here is to keep it OUT of `deleted`, so neither the
-              // "Deleted N files" line nor the JSON payload claims it happened.
+              // deleteFile already emitted delete_sync_failed with the reason.
+              // Keeping it out of `deleted` stops the false report -- but that
+              // alone was not enough: push advances content_state only when
+              // `failed` is empty, so a failed delete still let the directory
+              // hash advance. The next push then saw local == stored, did not
+              // re-plan the directory, and the file that was never removed
+              // became permanently invisible. Recording it here is what keeps
+              // the directory in scope for a retry.
+              //
+              // Tension with AGENTS.md #6 (deletion is experimental, handle it
+              // gracefully): the run still does not crash, and every other
+              // part continues. It reports partial rather than success, which
+              // is the honest answer when --sync-deletes -- an opt-in request
+              // for exact mirroring -- did not mirror.
               failedDeletions += 1;
+              uploadResult.failed.push({
+                path: file.path,
+                error: `Deletion rejected by the API; ${file.path} is still present remotely`,
+              });
             }
           } catch (error) {
             events.emit({ level: 'warn', code: 'delete_sync_failed', data: { part_id: partId, path: file.path },

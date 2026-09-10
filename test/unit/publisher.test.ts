@@ -659,6 +659,14 @@ describe('publish', () => {
     expect(result.failed).toHaveLength(1);
     expect(result.failed[0].id).toBe('part-1');
     expect(result.success).toBe(false);
+
+    // And it must not claim a write it did not make. The `updated` entry is
+    // pushed when the assignment starts processing, before anything is
+    // attempted; nothing removed it when every rung was rejected, so
+    // `push --json` reported counts.updated: 1 with parts: [] for a run that
+    // applied nothing at all. Asserting only `failed`/`success` above proved
+    // the old green result wrong without proving this stopped.
+    expect(result.updated).toHaveLength(0);
   });
 
   it('should persist detailed settings and file size deltas in publish history', async () => {
