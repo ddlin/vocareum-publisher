@@ -1043,12 +1043,34 @@ export async function executePush(
             partId,
           );
           if (writeResult.outcome === 'none') {
+            // `none` is the ladder's fall-through: every rung, down to
+            // name-only, was attempted and rejected. Nothing was written.
+            //
+            // This was filed as `skipped`, which reads as "nothing to do" --
+            // so a push that dropped the user's settings entirely still
+            // reported success (exit 0 under --json, "Push completed
+            // successfully!" without it). A green push that silently applied
+            // none of the requested settings is the failure this whole area
+            // exists to prevent; the adjacent catch block already treats a
+            // throw this way, and this is the same outcome by a quieter route.
             metadataUpdated = false;
-            result.skipped.push({
-              type: 'part',
-              id: partId,
-              reason: 'Settings update rejected by Vocareum API (400)',
+            const message =
+              `Part settings for ${partName} were rejected by Vocareum at every ` +
+              `fallback level; nothing was applied`;
+            events.emit({
+              level: 'error',
+              code: 'part_settings_fallback',
+              data: {
+                part_id: partId,
+                part_name: partName,
+                phase: 'exhausted',
+                dropped_fields: writeResult.dropped,
+              },
+              message,
             });
+            result.failed.push({ type: 'part', id: partId, error: message });
+            result.success = false;
+            if (abortOnError) { shouldAbort = true; break assignmentLoop; }
           }
           if (metadataUpdated) {
             events.emit({ level: 'success', message: `Updated part ${partName}` });

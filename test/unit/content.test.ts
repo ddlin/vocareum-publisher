@@ -601,8 +601,9 @@ describe('deleteFile', () => {
     const error = new VocareumError('Not found', 'NOT_FOUND', 404);
     requestMock.mockRejectedValueOnce(error);
 
-    // Should not throw
-    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'docs', 'missing.txt')).resolves.toBeUndefined();
+    // 404 == already absent, which is the end state a delete wants, so this
+    // reports true. It previously returned void and the caller could not tell.
+    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'docs', 'missing.txt')).resolves.toBe(true);
   });
 
   it('should handle 405 gracefully (method not allowed)', async () => {
@@ -610,7 +611,7 @@ describe('deleteFile', () => {
     requestMock.mockRejectedValueOnce(error);
 
     // Should not throw
-    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'scripts', 'file.sh')).resolves.toBeUndefined();
+    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'scripts', 'file.sh')).resolves.toBe(false);
   });
 
   it('should handle non-404/405 VocareumErrors gracefully', async () => {
@@ -618,14 +619,14 @@ describe('deleteFile', () => {
     requestMock.mockRejectedValueOnce(error);
 
     // Should not throw - just logs and continues
-    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'data', 'file.csv')).resolves.toBeUndefined();
+    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'data', 'file.csv')).resolves.toBe(false);
   });
 
   it('should handle non-VocareumError errors gracefully', async () => {
     requestMock.mockRejectedValueOnce(new Error('Connection failed'));
 
     // Should not throw - just logs and continues
-    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'startercode', 'file.py')).resolves.toBeUndefined();
+    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'startercode', 'file.py')).resolves.toBe(false);
   });
 });
 

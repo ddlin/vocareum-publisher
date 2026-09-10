@@ -586,7 +586,7 @@ describe('publish', () => {
     expect(updatePartMock).toHaveBeenCalledTimes(2);
   });
 
-  it('should skip metadata failure when all payload retries return 400', async () => {
+  it('reports a failure when every payload retry returns 400 — nothing was applied', async () => {
     const assignment = {
       ...config.assignments[0],
       assignment_id: 'asn-1',
@@ -648,8 +648,17 @@ describe('publish', () => {
 
     expect(updatePartMock).toHaveBeenCalledTimes(3);
     expect(updatePartMock.mock.calls[2][4]).toEqual({ name: 'Part 1' });
-    expect(result.failed).toHaveLength(0);
-    expect(result.success).toBe(true);
+
+    // CHANGED DELIBERATELY. This asserted failed=[] and success=true, i.e. it
+    // encoded the defect as the contract: every rung of the ladder was rejected,
+    // nothing was written, and push still reported success (exit 0 under --json).
+    // The ladder ending at `none` means the user's settings were not applied at
+    // all, which is a failure by any reading -- and the neighbouring code path,
+    // where the same write throws instead of 400-ing, has always recorded it as
+    // one.
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0].id).toBe('part-1');
+    expect(result.success).toBe(false);
   });
 
   it('should persist detailed settings and file size deltas in publish history', async () => {

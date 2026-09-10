@@ -102,7 +102,10 @@ export async function writePartSettingsWithFallback(
         events.emit({
           level: 'warn',
           code: 'part_settings_fallback',
-          data: { part_id: partId ?? null, part_name: partName, outcome, dropped_fields: dropped },
+          // Every part_settings_fallback emit carries the same keys: the
+          // registry declares dropped_fields, and a consumer branching on the
+          // code must not have to discover which variant it received.
+          data: { part_id: partId ?? null, part_name: partName, phase: 'degraded', outcome, dropped_fields: dropped },
           message:
             `Part ${partName} was updated WITHOUT these settings, which the API rejected: ` +
             `${dropped.join(', ')}. They remain as Vocareum has them.`,
@@ -124,8 +127,9 @@ export async function writePartSettingsWithFallback(
         level: 'warn',
         code: 'part_settings_fallback',
         data: {
-          part_id: partId ?? null, part_name: partName,
+          part_id: partId ?? null, part_name: partName, phase: 'rejected',
           rejected_outcome: outcome, next_outcome: next?.outcome ?? null,
+          dropped_fields: describeDroppedPartSettings(fullPayload, payload),
         },
         message:
           `Part settings update rejected (400) for ${partName} ` +

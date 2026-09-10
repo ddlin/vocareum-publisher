@@ -1093,7 +1093,7 @@ export async function deleteFile(
   directory: DirectoryType,
   filePath: string,
   architecture?: 'elite' | 'container'
-): Promise<void> {
+): Promise<boolean> {
   const apiDirPath = toApiDirPath(directory, architecture);
   try {
     await client.request({
@@ -1104,15 +1104,40 @@ export async function deleteFile(
         filename: filePath,
       },
     });
+    return true;
   } catch (error: unknown) {
-    // Handle errors gracefully - deletion may not be supported
+    // Deletion stays non-fatal (AGENTS.md #6: the API may not support it, and a
+    // push must not fail over that). What changed is that it no longer claims
+    // success: this returned void, so the caller recorded every attempt in
+    // `deleted` and reported "Deleted N files" even when the API had refused
+    // every one of them.
     if (error instanceof VocareumError) {
-      if (error.statusCode === 400 || error.statusCode === 404 || error.statusCode === 405) {
-        client.events.emit({ level: 'debug', message: `File deletion not supported or file not found: ${filePath}` });
-        return;
+      // 404 is the desired end state reached by another route -- the file is
+      // already absent -- so it counts as deleted. 400/405 mean the API refused
+      // and the file is STILL THERE, which is the case that was being reported
+      // as a successful deletion.
+      if (error.statusCode === 404) {
+        client.events.emit({ level: 'debug', message: `File already absent: ${filePath}` });
+        return true;
+      }
+      if (error.statusCode === 400 || error.statusCode === 405) {
+        client.events.emit({
+          level: 'warn',
+          code: 'delete_sync_failed',
+          data: { part_id: partId, path: filePath, status_code: error.statusCode },
+          message:
+            `Could not delete ${filePath}: the API rejected it (HTTP ${error.statusCode}). ` +
+            `The file is still present remotely.`,
+        });
+        return false;
       }
     }
-    // For other errors, just log and continue (don't fail the operation)
-    client.events.emit({ level: 'warn', message: `Failed to delete ${filePath}: ${error instanceof Error ? error.message : 'Unknown'}` });
+    client.events.emit({
+      level: 'warn',
+      code: 'delete_sync_failed',
+      data: { part_id: partId, path: filePath },
+      message: `Failed to delete ${filePath}: ${error instanceof Error ? error.message : 'Unknown'}`,
+    });
+    return false;
   }
 }

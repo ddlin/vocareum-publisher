@@ -12,7 +12,9 @@ import { VocareumClient } from '../../src/api/client';
 // Mock the content API module
 vi.mock('../../src/api/content', () => ({
   uploadContent: vi.fn(),
-  deleteFile: vi.fn(),
+  // deleteFile now returns whether the file is actually gone; a double that
+  // returns undefined reads as 'not deleted' and nothing lands in deleted[].
+  deleteFile: vi.fn().mockResolvedValue(true),
   listFiles: vi.fn(),
 }));
 
@@ -212,7 +214,7 @@ describe('syncDirectory', () => {
       { path: 'stale.py', size: 10 },
     ]);
 
-    mockDeleteFile.mockResolvedValueOnce(undefined);
+    mockDeleteFile.mockResolvedValueOnce(true);
 
     const result = await syncDirectory(
       mockClient,
@@ -235,7 +237,7 @@ describe('syncDirectory', () => {
       failed: [],
       directoryHash: '',
     });
-    mockDeleteFile.mockResolvedValue(undefined);
+    mockDeleteFile.mockResolvedValue(true);
 
     const result = await syncDirectory(
       mockClient,
@@ -296,7 +298,7 @@ describe('syncDirectory', () => {
 
     // First delete succeeds, second fails
     mockDeleteFile
-      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(true)
       .mockRejectedValueOnce(new Error('Delete failed'));
 
     const result = await syncDirectory(

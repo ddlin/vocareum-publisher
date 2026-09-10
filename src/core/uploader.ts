@@ -139,19 +139,37 @@ export async function syncDirectory(
         events.emit({ level: 'info', message: `Deleting ${filesToDelete.length} files...` });
 
         uploadResult.deleted = [];
+        let failedDeletions = 0;
 
         for (const file of filesToDelete) {
           try {
-            await deleteFile(client, courseId, assignmentId, partId, directoryType, file.path, options.architecture);
-            uploadResult.deleted.push(file.path);
-            events.emit({ level: 'debug', message: `Deleted: ${file.path}` });
+            const removed = await deleteFile(
+              client, courseId, assignmentId, partId, directoryType, file.path, options.architecture);
+            if (removed) {
+              uploadResult.deleted.push(file.path);
+              events.emit({ level: 'debug', message: `Deleted: ${file.path}` });
+            } else {
+              // deleteFile already emitted delete_sync_failed with the reason;
+              // the point here is to keep it OUT of `deleted`, so neither the
+              // "Deleted N files" line nor the JSON payload claims it happened.
+              failedDeletions += 1;
+            }
           } catch (error) {
             events.emit({ level: 'warn', code: 'delete_sync_failed', data: { part_id: partId, path: file.path },
               message: `Failed to delete ${file.path}: ${error instanceof Error ? error.message : 'Unknown'}` });
           }
         }
 
-        events.emit({ level: 'success', message: `Deleted ${uploadResult.deleted.length} files` });
+        if (failedDeletions > 0) {
+          events.emit({
+            level: 'warn',
+            message:
+              `Deleted ${uploadResult.deleted.length} of ${filesToDelete.length} files; ` +
+              `${failedDeletions} could not be removed and are still present remotely`,
+          });
+        } else {
+          events.emit({ level: 'success', message: `Deleted ${uploadResult.deleted.length} files` });
+        }
       }
     } catch (error) {
       // No path here: this is the whole-sync failure, not a single file. `data` is
