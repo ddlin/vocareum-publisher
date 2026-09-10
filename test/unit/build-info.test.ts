@@ -58,6 +58,8 @@ describe('capability list is honest in both directions', () => {
     'diagnostics.v1': 'test/unit/diagnostics.test.ts',
     'pull.rubrics': 'test/unit/rubrics.test.ts',
     'pull.elite-resource-paths': 'test/unit/elite-api-paths.test.ts',
+    'push.rubrics': 'test/unit/push-rubrics.test.ts',
+    'upload.chunked': 'test/unit/upload-chunking.test.ts',
   };
 
   it('has no duplicates', () => {

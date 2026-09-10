@@ -707,6 +707,7 @@ vocgit --version --json | jq .resolved_from     # which binary am I running?
 |---|---|
 | `schema_version` | **string**, versions the envelope (`"1.0"`) |
 | `command` | `pull` · `push` · `status` · `validate` · `fix` |
+| `generated_at` | ISO-8601 timestamp, always present |
 | `result` | `applied` · `partial` · `reported` · `no-op` · `failed` |
 | `retryable` | true only for transient API failures |
 | `payload` | per-command; carries its own **numeric** `payload_schema_version` |

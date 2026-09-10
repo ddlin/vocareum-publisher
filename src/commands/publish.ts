@@ -297,6 +297,15 @@ async function publishCommandLocked(
           applied: serializePublishResult(result.executed),
         },
         events: collector.drain(),
+        error: outcome.result === 'partial'
+          ? {
+              code: 'partial_failure',
+              message:
+                `${result.executed.failed.length} item(s) failed; ` +
+                `${result.executed.created.length + result.executed.updated.length} applied`,
+              retryable: false,
+            }
+          : null,
       }));
       // reportWritten: true -- a document is already on stdout, so the
       // entrypoint must not add a second one.

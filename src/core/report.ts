@@ -46,7 +46,22 @@ export function buildReport(args: {
   events: readonly ServiceEvent[];
   error?: ReportError | null;
 }): CommandReport {
-  const error = args.error ?? null;
+  // `partial` and `failed` must always carry an error: the README promises it,
+  // and a partial with error:null is indistinguishable from clean success to
+  // anyone reading the envelope rather than the exit code. Commands pass a
+  // specific summary; this is the safety net so a path that forgets cannot
+  // silently break the invariant.
+  const error = args.error ?? (
+    (args.result === 'partial' || args.result === 'failed')
+      ? {
+          code: args.result === 'partial' ? 'partial_failure' : 'command_failed',
+          message: args.result === 'partial'
+            ? 'Some items were applied and some failed; see payload for details'
+            : 'The command failed; see payload for details',
+          retryable: false,
+        }
+      : null
+  );
   return {
     schema_version: ENVELOPE_SCHEMA_VERSION,
     command: args.command,
@@ -98,30 +113,28 @@ export function writeJsonDocument(value: unknown): boolean {
  * just received said otherwise.
  */
 export function writeReport(report: CommandReport): boolean {
-  let serialized: string;
-  let ok = true;
-  try {
-    serialized = JSON.stringify(report);
-  } catch (error) {
-    ok = false;
-    const fallback: CommandReport = {
-      schema_version: ENVELOPE_SCHEMA_VERSION,
-      command: report.command,
-      result: 'failed',
-      generated_at: new Date().toISOString(),
+  if (writeJsonDocument(report)) { return true; }
+
+  // The report itself could not be serialized (an unserializable payload).
+  // Emit a minimal envelope so the caller still receives a document, and report
+  // false so it fails the command -- printing "failed" while exiting 0 would be
+  // worse than either alone.
+  const fallback: CommandReport = {
+    schema_version: ENVELOPE_SCHEMA_VERSION,
+    command: report.command,
+    result: 'failed',
+    generated_at: new Date().toISOString(),
+    retryable: false,
+    payload: {},
+    diagnostics: [],
+    error: {
+      code: 'report_serialization_failed',
+      message: 'The report payload could not be serialized to JSON',
       retryable: false,
-      payload: {},
-      diagnostics: [],
-      error: {
-        code: 'report_serialization_failed',
-        message: error instanceof Error ? error.message : 'Unknown serialization error',
-        retryable: false,
-      },
-    };
-    serialized = JSON.stringify(fallback);
-  }
-  process.stdout.write(serialized + '\n');
-  return ok;
+    },
+  };
+  writeJsonDocument(fallback);
+  return false;
 }
 
 /**

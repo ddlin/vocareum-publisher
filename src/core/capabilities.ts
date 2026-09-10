@@ -18,6 +18,12 @@ export const CAPABILITIES = [
   'diagnostics.v1',
   'pull.rubrics',
   'pull.elite-resource-paths',
+  // Shipped in 1.4.0 and user-visible (both are documented in the README), but
+  // absent from the first draft of this list -- which is the failure mode the
+  // list is supposed to prevent. An agent asking "can this build push rubrics?"
+  // got no answer.
+  'push.rubrics',
+  'upload.chunked',
 ] as const;
 
 export type Capability = typeof CAPABILITIES[number];
@@ -53,11 +59,20 @@ export function readBuildInfo(
     if (!existsSync(stampPath)) { return UNAVAILABLE; }
     const parsed = JSON.parse(readFileSync(stampPath, 'utf8')) as Partial<BuildInfo> | null;
     if (parsed === null || typeof parsed !== 'object') { return UNAVAILABLE; }
-    if (parsed.git_sha !== null && typeof parsed.git_sha !== 'string') { return UNAVAILABLE; }
+    // All three fields are checked, not just git_sha. A stamp with
+    // dirty: "not-bool" and built_at: 42 previously came back as
+    // provenance: "stamped" with those fields silently nulled -- claiming
+    // verified provenance for a stamp we could not actually read.
+    const sha = parsed.git_sha;
+    const dirty = parsed.dirty;
+    const builtAt = parsed.built_at;
+    if (sha !== null && sha !== undefined && typeof sha !== 'string') { return UNAVAILABLE; }
+    if (dirty !== null && dirty !== undefined && typeof dirty !== 'boolean') { return UNAVAILABLE; }
+    if (builtAt !== null && builtAt !== undefined && typeof builtAt !== 'string') { return UNAVAILABLE; }
     return {
-      git_sha: parsed.git_sha ?? null,
-      dirty: typeof parsed.dirty === 'boolean' ? parsed.dirty : null,
-      built_at: typeof parsed.built_at === 'string' ? parsed.built_at : null,
+      git_sha: sha ?? null,
+      dirty: dirty ?? null,
+      built_at: builtAt ?? null,
       provenance: 'stamped',
     };
   } catch {

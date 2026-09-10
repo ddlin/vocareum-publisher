@@ -8,7 +8,7 @@ import { loadConfig } from '../core/config';
 import { resolveWorkspaceContext } from '../core/workspace';
 import { validateWorkspace } from '../core/services/validate-service';
 import { LoggerEventSink } from '../utils/logger-event-sink';
-import { InteractivePrompter } from '../core/services/context';
+import { InteractivePrompter, NonInteractivePrompter } from '../core/services/context';
 import { CommandFailureError } from '../utils/command-failure';
 import { commandFailureFromError } from '../utils/failure-classifier';
 import { CollectingEventSink } from '../core/services/event-sink';
@@ -59,7 +59,13 @@ async function validateCommandInner(options: ValidateOptions): Promise<void> {
       configPath,
       workspaceRoot,
       events,
-      prompter: new InteractivePrompter(),
+      // A NonInteractivePrompter under --json makes the documented promise
+      // ("--json never prompts") structural rather than incidental. Neither
+      // service prompts today, so this changes no behavior -- but if one ever
+      // gains a prompt, an automated caller would hang forever waiting on
+      // stdin. It now fails fast with UnresolvedDecisionError, which the
+      // classifier turns into a reported failure instead of a hang.
+      prompter: options.json === true ? new NonInteractivePrompter() : new InteractivePrompter(),
     };
 
     const report = await validateWorkspace(ctx);

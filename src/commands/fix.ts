@@ -80,9 +80,28 @@ async function fixCommandInner(options: FixOptions): Promise<void> {
     const result = await validateStructure(config, workspaceRoot);
 
     if (result.valid) {
-      logger.success('No issues found to fix.');
-      if (options.json === true && !emit('no-op')) {
-        throw new CommandFailureError('Fix report serialization failed', 'internal', true);
+      // `valid: true` still permits warnings -- an orphaned folder is one, and
+      // the command's own --help lists orphans under what it inspects. Returning
+      // a bare no-op here hid them from the report entirely.
+      for (const warning of result.warnings ?? []) {
+        remaining.push({
+          path: warning.path ?? '(unknown)',
+          reason: 'unfixable',
+          detail: warning.type,
+        });
+      }
+      if (remaining.length === 0) {
+        logger.success('No issues found to fix.');
+      } else {
+        logger.warn(`No fixable issues, but ${remaining.length} warning(s) remain.`);
+      }
+      if (options.json === true) {
+        if (!emit(remaining.length > 0 ? 'reported' : 'no-op')) {
+          throw new CommandFailureError('Fix report serialization failed', 'internal', true);
+        }
+        if (remaining.length > 0) {
+          throw new CommandFailureError('Warnings remain that fix cannot repair', 'findings', true);
+        }
       }
       return;
     }

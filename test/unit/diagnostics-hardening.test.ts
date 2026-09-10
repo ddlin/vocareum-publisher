@@ -46,19 +46,29 @@ describe('circular data cannot take down the report', () => {
   });
 });
 
-describe('severity does not depend on emission order', () => {
-  it('escalates to error when the same code+data is emitted at both levels', () => {
+describe('severity comes from the registry, not the emit site', () => {
+  it('reports the declared severity whatever level was emitted', () => {
+    // Supersedes an earlier rule that escalated warn->error within a run. That
+    // fixed emission-order dependence but still let a code's PUBLIC severity
+    // vary between runs, which the README promises it does not.
     const warnFirst = collectDiagnostics([
       { level: 'warn', code: 'download_failed', message: 'm', data: { f: 1 } },
       { level: 'error', code: 'download_failed', message: 'm', data: { f: 1 } },
     ]);
-    expect(warnFirst[0].severity).toBe('error');
+    expect(warnFirst[0].severity).toBe('warn');      // declared for download_failed
+    expect(warnFirst[0].count).toBe(2);
 
     const errorFirst = collectDiagnostics([
       { level: 'error', code: 'download_failed', message: 'm', data: { f: 1 } },
       { level: 'warn', code: 'download_failed', message: 'm', data: { f: 1 } },
     ]);
-    expect(errorFirst[0].severity).toBe('error');
-    expect(errorFirst[0].count).toBe(2);
+    expect(errorFirst[0].severity).toBe('warn');
+  });
+
+  it('a code declared error reports error even when emitted as warn', () => {
+    const out = collectDiagnostics([
+      { level: 'warn', code: 'rubric_read_failed', message: 'm', data: { p: 1 } },
+    ]);
+    expect(out[0].severity).toBe('error');
   });
 });

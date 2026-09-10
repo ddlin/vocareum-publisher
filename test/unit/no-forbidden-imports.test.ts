@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
-import { DIAGNOSTIC_CODES } from '../../src/core/diagnostics';
+import { DIAGNOSTIC_CODES, DIAGNOSTIC_SEVERITY } from '../../src/core/diagnostics';
 const walk = (d: string): string[] => readdirSync(d).flatMap((e) => {
   const p = join(d, e); return statSync(p).isDirectory() ? walk(p) : p.endsWith('.ts') ? [p] : [];
 });
@@ -45,6 +45,28 @@ describe('architecture guards', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('every registered code declares a severity', () => {
+    // The promise is that changing a severity is a major bump; that is only
+    // meaningful if the severity lives in the registry rather than in whichever
+    // level an emit site chose.
+    // Static import at the top of this file; require() does not work here.
+    expect(Object.keys(DIAGNOSTIC_SEVERITY).sort()).toEqual([...DIAGNOSTIC_CODES].sort());
+  });
+
+  it('report.ts writes stdout in exactly ONE place', () => {
+    // The file-level guard above allows report.ts to write stdout, but says
+    // nothing about how many times. writeReport shipped with its own write for
+    // a full commit while the commit message claimed it shared
+    // writeJsonDocument -- true at file granularity, false at the level the
+    // message asserted.
+    const source = readFileSync('src/core/report.ts', 'utf8');
+    const writes = source
+      .split('\n')
+      .filter((line) => line.includes('process.stdout.write'))
+      .filter((line) => !line.trimStart().startsWith('*') && !line.trimStart().startsWith('//'));
+    expect(writes).toHaveLength(1);
+  });
+
   it('every code: literal at an emit site is a registered diagnostic code', () => {
     // Static import at the top of this file:
     //   import { DIAGNOSTIC_CODES } from '../../src/core/diagnostics';
@@ -54,7 +76,14 @@ describe('architecture guards', () => {
     // codes on a ServiceEvent, and error codes on a ReportError. Only the first
     // is the registry's business, so the second is listed here explicitly
     // rather than silently skipped -- an unlisted code is still a build failure.
-    const NON_DIAGNOSTIC_CODES = new Set(['report_serialization_failed']);
+    // `code:` names two vocabularies: diagnostic codes on a ServiceEvent, and
+    // error codes on a ReportError. The latter are the FailureCategory values
+    // plus the report's own internal codes. Listing them explicitly keeps an
+    // unlisted diagnostic code a build failure.
+    const NON_DIAGNOSTIC_CODES = new Set([
+      'report_serialization_failed', 'partial_failure', 'command_failed',
+      'internal', 'usage', 'auth', 'transient', 'findings', 'partial',
+    ]);
     const offenders: string[] = [];
     for (const file of walk('src')) {
       if (file === 'src/core/diagnostics.ts') { continue; }

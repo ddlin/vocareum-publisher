@@ -15,7 +15,7 @@ import { LoggerEventSink } from '../utils/logger-event-sink';
 import { CollectingEventSink } from '../core/services/event-sink';
 import { TeeEventSink } from '../utils/tee-event-sink';
 import { buildReport, writeReport } from '../core/report';
-import { InteractivePrompter } from '../core/services/context';
+import { InteractivePrompter, NonInteractivePrompter } from '../core/services/context';
 import { inspectStatus, renderStatusHuman } from '../core/services/status-service';
 import type { RuntimeFacts } from '../core/services/context';
 
@@ -73,7 +73,13 @@ async function statusCommandWithMode(options: StatusCommandOptions): Promise<voi
       configPath,
       workspaceRoot,
       events,
-      prompter: new InteractivePrompter(),
+      // A NonInteractivePrompter under --json makes the documented promise
+      // ("--json never prompts") structural rather than incidental. Neither
+      // service prompts today, so this changes no behavior -- but if one ever
+      // gains a prompt, an automated caller would hang forever waiting on
+      // stdin. It now fails fast with UnresolvedDecisionError, which the
+      // classifier turns into a reported failure instead of a hang.
+      prompter: options.json === true ? new NonInteractivePrompter() : new InteractivePrompter(),
       runtime,
     };
 

@@ -43,3 +43,20 @@ describe('insecure_base_url', () => {
     expect(serialized).not.toContain('super-secret-token');
   });
 });
+
+describe('unknown_settings', () => {
+  it('is emitted as a registered diagnostic when Vocareum returns an unmodeled field', async () => {
+    // Registered from the start but with no emit path for four commits: the
+    // human output showed the warning while --json consumers saw nothing.
+    const { UnknownFieldReporter } = await import('../../src/utils/unknown-field-reporter');
+    const collector = new CollectingEventSink();
+    const reporter = new UnknownFieldReporter(collector);
+    reporter.record('part', 'cleanup_time', '0', 'part-1');
+
+    const found = collectDiagnostics(collector.drain()).find((d) => d.code === 'unknown_settings');
+    expect(found, 'no unknown_settings diagnostic was emitted').toBeDefined();
+    expect(found?.severity).toBe('warn');
+    expect(found?.data?.scope).toBe('part');
+    expect(found?.data?.field).toBe('cleanup_time');
+  });
+});

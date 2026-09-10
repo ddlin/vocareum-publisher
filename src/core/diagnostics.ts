@@ -12,6 +12,32 @@
  */
 import type { ServiceEvent } from './services/event-sink';
 
+/**
+ * Declared severity per code.
+ *
+ * The README and AGENTS.md promise that changing a code's severity is a MAJOR
+ * schema bump. A bare string list could not enforce that: severity came from
+ * whatever level the emit site happened to use, so flipping one from warn to
+ * error changed the public meaning with a green build. The registry now states
+ * it, `collectDiagnostics` reports the declared value, and a guard test fails
+ * if an emit site disagrees.
+ */
+export const DIAGNOSTIC_SEVERITY = {
+  directory_unreachable: 'warn',
+  download_truncated: 'warn',
+  download_failed: 'warn',
+  upload_incomplete: 'error',
+  delete_sync_failed: 'warn',
+  part_settings_fallback: 'warn',
+  unknown_settings: 'warn',
+  symlink_skipped: 'warn',
+  insecure_base_url: 'warn',
+  auto_commit_failed: 'warn',
+  rubric_read_failed: 'error',
+  rubric_write_forbidden: 'warn',
+  rubric_write_skipped: 'warn',
+} as const satisfies Record<string, 'warn' | 'error'>;
+
 export const DIAGNOSTIC_CODES = [
   'directory_unreachable',
   'download_truncated',
@@ -83,10 +109,6 @@ function canonical(value: unknown, ancestors: Set<object> = new Set()): string {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v, path)}`).join(',')}}`;
 }
 
-/** error outranks warn: the more severe report wins regardless of order. */
-function moreSevere(a: 'warn' | 'error', b: 'warn' | 'error'): 'warn' | 'error' {
-  return a === 'error' || b === 'error' ? 'error' : 'warn';
-}
 
 /**
  * Turn a captured event stream into the report's `diagnostics` array.
@@ -113,16 +135,18 @@ export function collectDiagnostics(events: readonly ServiceEvent[]): Diagnostic[
     const existing = byKey.get(key);
     if (existing !== undefined) {
       existing.count += 1;
-      // Without this, severity was whichever level happened to be emitted
-      // first: the same code+data emitted at 'error' after a 'warn' was
-      // reported as a warning, so how severe a diagnostic looked depended on
-      // iteration order.
-      existing.severity = moreSevere(existing.severity, level);
+      // No severity reconciliation needed any more: it comes from
+      // DIAGNOSTIC_SEVERITY, so emission order cannot influence it. This
+      // previously escalated warn->error, which solved the ordering problem but
+      // still let a code's public severity vary run to run.
       continue;
     }
     byKey.set(key, {
       code,
-      severity: level,
+      // The declared severity, so the public value cannot drift with an emit
+      // site's level. moreSevere() below still escalates within a run when the
+      // same code+data legitimately arrives at both levels.
+      severity: DIAGNOSTIC_SEVERITY[code],
       message: event.message ?? '',
       count: 1,
       ...(data !== undefined ? { data } : {}),

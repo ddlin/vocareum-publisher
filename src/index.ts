@@ -6,7 +6,7 @@
  * from GitHub repositories to Vocareum.
  */
 
-import { Command } from 'commander';
+import { Command, CommanderError } from 'commander';
 import { CAPABILITIES, readBuildInfo } from './core/capabilities';
 import { writeJsonDocument } from './core/report';
 import { readFileSync, realpathSync } from 'fs';
@@ -42,6 +42,12 @@ if (process.argv.includes('--version') && process.argv.includes('--json')) {
 }
 
 const program = new Command();
+
+// Without this, Commander prints its own error and calls process.exit() before
+// any of our handling runs: an unknown flag exited 1 with empty stdout, so
+// `--json` callers got nothing and the documented usage code (2) was
+// unreachable for the most common malformed invocation there is.
+program.exitOverride();
 
 program
   .name('vocgit')
@@ -140,7 +146,7 @@ program
   .option('--json', 'Emit a machine-readable report on stdout')
   .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
   .option('--root <path>', 'Workspace root that assignment paths resolve against (required when --config is not directly inside the current directory)')
-  .option('--strict', 'Treat warnings as errors (exit code 1)')
+  .option('--strict', 'Treat warnings as errors (exit code 5: findings outstanding)')
   .option('--vocareum', 'Also validate against Vocareum API (checks IDs exist)')
   .addHelpText('after', `
 Description:
@@ -361,11 +367,42 @@ Examples:
     await runCommandWithFailureClassification('push', options, (collector) => publishCommand({ ...options, eventCollector: collector }), 'Push failed');
   });
 
+/** The five commands that emit an envelope; used to label a pre-dispatch usage error. */
+const JSON_COMMANDS = new Set(['pull', 'push', 'status', 'validate', 'fix']);
+
 program.parseAsync().catch((error) => {
   if (error instanceof CommandFailureError) {
     process.exitCode = error.exitCode;   // command already rendered its error
-  } else {
-    logger.error(error instanceof Error ? error.message : 'Unknown error');
-    process.exitCode = 1;
+    return;
   }
+
+  // Commander throws for --help and --version too; those are successful exits
+  // and must not be dressed up as failures.
+  if (error instanceof CommanderError) {
+    if (error.exitCode === 0) { process.exitCode = 0; return; }
+
+    // A malformed invocation is a usage error (exit 2), not an internal one.
+    // Emit an envelope when --json was asked for AND the intended command is
+    // identifiable from argv -- the envelope's `command` field is a closed set,
+    // so an invocation with no recognisable command gets the exit code without
+    // a document rather than a document with an invented command.
+    const requested = process.argv.slice(2).find((a) => JSON_COMMANDS.has(a));
+    if (process.argv.includes('--json') && requested !== undefined) {
+      writeJsonDocument({
+        schema_version: '1.0',
+        command: requested,
+        result: 'failed',
+        generated_at: new Date().toISOString(),
+        retryable: false,
+        payload: { payload_schema_version: 1 },
+        diagnostics: [],
+        error: { code: 'usage', message: error.message, retryable: false },
+      });
+    }
+    process.exitCode = 2;
+    return;
+  }
+
+  logger.error(error instanceof Error ? error.message : 'Unknown error');
+  process.exitCode = 1;
 });
