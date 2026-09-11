@@ -49,6 +49,42 @@ const program = new Command();
 // unreachable for the most common malformed invocation there is.
 program.exitOverride();
 
+// `status` is registered { isDefault: true }, so Commander routes an
+// unrecognised first argument INTO status as a positional rather than
+// rejecting it. `vocgit bogus` therefore printed a status page and exited 0 --
+// and `vocgit pus --json` (a typo for push) made automation report success
+// while pushing nothing. Silent success on a typo is the exact failure this
+// whole feature exists to eliminate.
+//
+// Checked here rather than by dropping isDefault, so bare `vocgit` still shows
+// status. Only a non-flag first argument that is not a known command is
+// rejected.
+const KNOWN_COMMANDS = new Set(['init', 'new', 'validate', 'fix', 'pull', 'status', 'push']);
+const firstArg = process.argv[2];
+if (firstArg !== undefined && !firstArg.startsWith('-') && !KNOWN_COMMANDS.has(firstArg)) {
+  const message = `unknown command '${firstArg}'`;
+  if (process.argv.includes('--json')) {
+    writeJsonDocument({
+      schema_version: '1.0',
+      command: 'status',
+      result: 'failed',
+      generated_at: new Date().toISOString(),
+      retryable: false,
+      payload: { payload_schema_version: 1 },
+      diagnostics: [],
+      error: { code: 'usage', message, retryable: false },
+    });
+  } else {
+    // process.stderr directly, not logger: this guard runs at module top level,
+    // before the logger import below has initialized, and using it here crashed
+    // the CLI with "Cannot access 'logger_1' before initialization" for every
+    // unknown argument. stderr is not the guarded channel -- only stdout is --
+    // so writing to it here is legitimate as well as safe.
+    process.stderr.write(`error: ${message}\n`);
+  }
+  process.exit(2);
+}
+
 program
   .name('vocgit')
   .description('Sync assignment content between GitHub and Vocareum')
@@ -180,7 +216,7 @@ program
   .option('--json', 'Emit a machine-readable report on stdout')
   .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
   .option('--root <path>', 'Workspace root that assignment paths resolve against (required when --config is not directly inside the current directory)')
-  .option('--non-interactive', 'Skip all prompts (report issues only)')
+  .option('--non-interactive', 'Apply every fix without prompting (this WRITES)')
   .addHelpText('after', `
 Description:
   Detects validation issues and offers interactive fixes for each one.
@@ -193,11 +229,12 @@ Description:
     - Missing directories: Required directories (startercode, scripts, etc.) not found
       → Create directory
 
-  Use --non-interactive to see issues without being prompted for fixes.
+  Use --non-interactive to apply every fix without being prompted. It writes;
+  there is no dry-run mode.
 
 Examples:
   $ vocgit fix                  # Interactive mode
-  $ vocgit fix --non-interactive  # Report only, no changes
+  $ vocgit fix --non-interactive  # Apply all fixes without prompting
 `)
   .action(async (options: FixOptions) => {
     await runCommandWithFailureClassification('fix', options, (collector) => fixCommand({ ...options, eventCollector: collector }), 'Fix failed');

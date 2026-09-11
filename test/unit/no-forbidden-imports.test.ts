@@ -45,6 +45,33 @@ describe('architecture guards', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('every emit site uses the severity its code declares', () => {
+    // The declared value is what consumers see, so an emit site disagreeing
+    // with it silently changes the public severity. Two codes shipped declared
+    // 'warn' while their emit sites used 'error' -- caught by reading the sites
+    // by hand, which is not a method that scales.
+    const mismatches: string[] = [];
+    for (const file of walk('src')) {
+      if (file === 'src/core/diagnostics.ts') { continue; }
+      const source = readFileSync(file, 'utf8');
+      const patterns = [
+        /level:\s*'(warn|error)'[\s\S]{0,400}?code:\s*'([a-z_]+)'/g,
+        /code:\s*'([a-z_]+)'[\s\S]{0,300}?level:\s*'(warn|error)'/g,
+      ];
+      patterns.forEach((re, idx) => {
+        for (const m of source.matchAll(re)) {
+          const level = idx === 0 ? m[1] : m[2];
+          const code = idx === 0 ? m[2] : m[1];
+          const declared = (DIAGNOSTIC_SEVERITY as Record<string, string>)[code];
+          if (declared !== undefined && declared !== level) {
+            mismatches.push(`${file}: ${code} declared=${declared} emitted=${level}`);
+          }
+        }
+      });
+    }
+    expect([...new Set(mismatches)]).toEqual([]);
+  });
+
   it('every registered code declares a severity', () => {
     // The promise is that changing a severity is a major bump; that is only
     // meaningful if the severity lives in the registry rather than in whichever

@@ -124,3 +124,25 @@ describe('commands are self-contained under --json', () => {
     }
   });
 });
+
+describe('an unknown command is rejected, not silently run as status', () => {
+  it('the guard list matches the registered commands', async () => {
+    // `status` is registered { isDefault: true }, so Commander routes an
+    // unrecognised first argument INTO status: `vocgit pus --json` (a typo for
+    // push) exited 0 with a successful status envelope, telling automation the
+    // push succeeded when nothing was pushed.
+    const { readFileSync } = await import('fs');
+    const source = readFileSync('src/index.ts', 'utf8');
+    const guard = source.match(/KNOWN_COMMANDS = new Set\(\[([^\]]*)\]\)/);
+    expect(guard, 'KNOWN_COMMANDS guard is missing').not.toBeNull();
+    const guarded = [...(guard?.[1] ?? '').matchAll(/'([a-z]+)'/g)].map((m) => m[1]).sort();
+    // `.command('new [path]')` carries an argument spec, so the name must be
+    // matched up to a space or the closing quote -- a stricter pattern silently
+    // omits it and makes this test fail for the wrong reason.
+    const registered = [...source.matchAll(/\.command\('([a-z]+)(?:\s[^']*)?'/g)]
+      .map((m) => m[1]).sort();
+    // A command registered but missing from the guard would be rejected as
+    // unknown; one in the guard but unregistered would be silently accepted.
+    expect(guarded).toEqual(registered);
+  });
+});

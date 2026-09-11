@@ -1071,7 +1071,7 @@ export async function executePush(
               `fallback level; nothing was applied`;
             events.emit({
               level: 'error',
-              code: 'part_settings_fallback',
+              code: 'part_settings_rejected',
               data: {
                 part_id: partId,
                 part_name: partName,
@@ -1129,7 +1129,7 @@ export async function executePush(
         // skip; recording it here would report a failure that never occurred. It passes
         // through silently, exactly as it would have without the 403.
         const message = `Rubrics not pushed for "${partAction.part.name ?? partAction.part.path}": token lacks rubric write permission.`;
-        events.emit({ level: 'warn', code: 'rubric_write_forbidden', data: { part_id: partId }, message });
+        events.emit({ level: 'error', code: 'rubric_write_forbidden', data: { part_id: partId }, message });
         result.failed.push({ type: 'part', id: partId, error: message });
         result.success = false;
         rubricChanges.push({

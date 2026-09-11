@@ -28,13 +28,20 @@ export const DIAGNOSTIC_SEVERITY = {
   download_failed: 'warn',
   upload_incomplete: 'error',
   delete_sync_failed: 'warn',
+  // Degrading to a safer payload: something WAS written, minus some fields.
   part_settings_fallback: 'warn',
+  // The ladder exhausted: NOTHING was written. A different event deserving a
+  // different code -- one code cannot carry two severities, which is the whole
+  // point of declaring them.
+  part_settings_rejected: 'error',
   unknown_settings: 'warn',
   symlink_skipped: 'warn',
   insecure_base_url: 'warn',
   auto_commit_failed: 'warn',
   rubric_read_failed: 'error',
-  rubric_write_forbidden: 'warn',
+  // A permission failure that blocks rubric sync for the run; both emit sites
+  // are terminal for rubrics, so both are error.
+  rubric_write_forbidden: 'error',
   rubric_write_skipped: 'warn',
 } as const satisfies Record<string, 'warn' | 'error'>;
 
@@ -45,6 +52,7 @@ export const DIAGNOSTIC_CODES = [
   'upload_incomplete',
   'delete_sync_failed',
   'part_settings_fallback',
+  'part_settings_rejected',
   'unknown_settings',
   'symlink_skipped',
   'insecure_base_url',
