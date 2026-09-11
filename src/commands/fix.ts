@@ -7,10 +7,10 @@
 
 import * as path from 'path';
 import { loadConfig } from '../core/config';
-import { assertConfinedToWorkspace } from '../core/local-scan';
+import { assertConfinedToWorkspace, isConfinedToWorkspace } from '../core/local-scan';
 import { validateStructure } from '../core/validator';
 import { resolveWorkspaceContext } from '../core/workspace';
-import { ensureDirectory } from '../utils/files';
+import { ensureDirectory, pathExists } from '../utils/files';
 import { logger } from '../utils/logger';
 import { CommandFailureError } from '../utils/command-failure';
 import { commandFailureFromError } from '../utils/failure-classifier';
@@ -106,15 +106,48 @@ async function fixCommandInner(options: FixOptions): Promise<void> {
       return;
     }
 
-    const missingFolders = result.errors.filter(e => e.type === 'missing_folder');
+    // `fix --help` promises to create required directories that are missing, but
+    // this only ever acted on `missing_folder`. A part that declares
+    // `directories: [startercode]` with the directory absent produces
+    // `invalid_structure`, so the command reported it unfixable and left the
+    // directory missing -- the help promised something the command did not do.
+    //
+    // `invalid_structure` is raised in FOUR places and three of them are
+    // path-ESCAPE violations (an assignment, part, or directory path that
+    // leaves the workspace). Creating a directory for those would be actively
+    // harmful: the validator flags them precisely because they point outside
+    // the tree. They cannot be told apart by `type` or `path`, only by prose.
+    //
+    // So the discriminator is structural rather than a message match: the
+    // escape cases are emitted exactly when confinement FAILS, so re-checking
+    // confinement separates them. A confined `invalid_structure` whose path
+    // does not exist is the missing-directory case and nothing else. Anything
+    // unconfined stays unfixable and is never touched.
+    const repairable: typeof result.errors = [];
+    for (const error of result.errors) {
+      if (error.type === 'missing_folder') {
+        repairable.push(error);
+        continue;
+      }
+      if (error.type === 'invalid_structure' && error.path !== undefined) {
+        const confined = await isConfinedToWorkspace(workspaceRoot, error.path);
+        if (confined && !await pathExists(path.resolve(workspaceRoot, error.path))) {
+          repairable.push(error);
+          continue;
+        }
+      }
+      remaining.push({
+        path: error.path ?? '(unknown)',
+        reason: 'unfixable',
+        detail: error.type,
+      });
+    }
+    const missingFolders = repairable;
 
     if (missingFolders.length === 0) {
       logger.info('No missing folders to fix.');
-      // Errors fix does not handle are still findings the caller should see --
-      // returning a bare no-op here would hide them from the report.
-      for (const error of result.errors) {
-        remaining.push({ path: error.path ?? '(unknown)', reason: 'unfixable', detail: error.type });
-      }
+      // `remaining` was already populated by the classification loop above;
+      // re-adding result.errors here would list every unfixable error twice.
       if (options.json === true) {
         if (!emit(remaining.length > 0 ? 'reported' : 'no-op')) {
           throw new CommandFailureError('Fix report serialization failed', 'internal', true);

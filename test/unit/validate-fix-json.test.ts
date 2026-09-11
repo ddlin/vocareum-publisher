@@ -137,3 +137,57 @@ describe('fix --json', () => {
     expect(existsSync(join(dir, 'lab2'))).toBe(true);
   });
 });
+
+describe('fix repairs a missing declared directory', () => {
+  const partConfig = [
+    'assignments:',
+    '  - path: lab1',
+    '    name: Lab 1',
+    "    assignment_id: '111'",
+    '    parts:',
+    '      - path: part1',
+    "        part_id: '222'",
+    '        name: Part 1',
+    '        directories:',
+    '          - startercode',
+  ].join('\n');
+
+  it('creates a declared directory the validator reports as invalid_structure', async () => {
+    // `fix --help` promises this; the command only ever handled `missing_folder`,
+    // so a missing declared directory was reported unfixable and left absent.
+    const dir = workspace(partConfig);
+    mkdirSync(join(dir, 'lab1', 'part1'), { recursive: true });
+
+    const { docs, thrown } = await run(() =>
+      fixCommand({ config: join(dir, 'vocareum.yaml'), root: dir, json: true }));
+
+    expect(existsSync(join(dir, 'lab1', 'part1', 'startercode'))).toBe(true);
+    const payload = docs[0].payload as { fixed: string[]; remaining: unknown[] };
+    expect(payload.fixed.some((f) => f.includes('startercode'))).toBe(true);
+    expect(docs[0].result).toBe('applied');
+    expect(thrown).toBeUndefined();
+  });
+
+  it('REFUSES to create a path that escapes the workspace', async () => {
+    // invalid_structure is also raised for paths that leave the tree. Those must
+    // stay unfixable: the validator flags them precisely because acting on them
+    // would write outside the workspace.
+    const dir = workspace([
+      'assignments:',
+      '  - path: ../escaped',
+      '    name: Escapee',
+      "    assignment_id: '333'",
+      '    parts: []',
+    ].join('\n'));
+
+    const { docs } = await run(() =>
+      fixCommand({ config: join(dir, 'vocareum.yaml'), root: dir, json: true }));
+
+    expect(existsSync(join(dir, '..', 'escaped'))).toBe(false);
+    const payload = docs[0].payload as {
+      fixed: string[]; remaining: Array<{ reason: string }>;
+    };
+    expect(payload.fixed).toEqual([]);
+    expect(payload.remaining.every((r) => r.reason === 'unfixable')).toBe(true);
+  });
+});
