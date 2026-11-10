@@ -45,11 +45,14 @@ import type { EventSink } from './services/event-sink';
  *   false: the API rejects them as true in that payload and resets them to
  *   false whenever the toggle is turned off. Sending what the server would
  *   store keeps an off-toggle config pushable and drift-free.
- * - A dependent option without the toggle in the payload is accepted while the
- *   stored toggle is already on, so absence of the toggle is not treated as off.
+ * - A dependent option without the toggle in the payload is checked against
+ *   the STORED toggle: accepted while it is on, rejected while it is off. So
+ *   the effective toggle is the config's when set, else `remoteToggle` (what
+ *   the reconciler read from Vocareum).
  */
 export function peerReviewPayload(
-  settings: { [K in (typeof PEER_REVIEW_SETTING_KEYS)[number]]?: unknown } | null | undefined
+  settings: { [K in (typeof PEER_REVIEW_SETTING_KEYS)[number]]?: unknown } | null | undefined,
+  options: { remoteToggle?: boolean } = {}
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const dates: ReadonlySet<string> = new Set(PEER_REVIEW_DATE_KEYS);
@@ -62,12 +65,22 @@ export function peerReviewPayload(
     }
     out[key] = v;
   }
-  if (out.peer_review_toggle === false) {
+  const effectiveToggle = typeof out.peer_review_toggle === 'boolean' ? out.peer_review_toggle : options.remoteToggle;
+  if (effectiveToggle === false) {
     for (const key of PEER_REVIEW_DEPENDENT_KEYS) {
       if (out[key] === true) { out[key] = false; }
     }
   }
   return out;
+}
+
+/** Dependent options the config sets true that peerReviewPayload sends as false. */
+export function coercedPeerDependents(
+  settings: { [K in (typeof PEER_REVIEW_SETTING_KEYS)[number]]?: unknown } | null | undefined,
+  options: { remoteToggle?: boolean } = {}
+): string[] {
+  const sent = peerReviewPayload(settings, options);
+  return PEER_REVIEW_DEPENDENT_KEYS.filter(k => settings?.[k] === true && sent[k] === false);
 }
 
 /** All keys that must not be overridden by _unknown_settings for assignment payloads. */

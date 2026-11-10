@@ -15,16 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `reviewcalc`) are now typed settings. Before, they were passed through untyped in
   `_unknown_settings`. Each was checked against the live API before being promoted: all
   twelve are stored. The config is checked against the API's own limits when it loads:
-  - dates must be real `YYYY-MM-DD` dates (an unquoted YAML date works too), and `null`
-    clears a date on push;
+  - dates must be real `YYYY-MM-DD` dates, and `null` clears a date on push. YAML dates
+    are no longer parsed as timestamps, so an unquoted `2026-02-30` is an error instead of
+    silently becoming 2 March;
   - `reviews_number` is a whole number 1–10 and `reviewpenalty` a whole number 0–100;
   - the three enums accept only the values the API lists, in any case.
-  With `peer_review_toggle: false`, push sends the three peer options as `false`, which is
-  what Vocareum stores anyway; it rejects them as `true` in that request. Changes to these
-  fields are detected by both pull and push. (Field report #5.)
+  While peer review is off (in the config, or in Vocareum when the config does not set the
+  toggle), push sends the three peer options as `false` and warns: Vocareum rejects them as
+  `true` then. Changes to these fields are detected by both pull and push. (Field report #5.)
 - **Part `cleanup_time`** is a known setting: a whole number, 0 or more. Vocareum stores it
-  on container labs and ignores it on Vocareum Standard. When a push has already sent a
-  value that Vocareum did not store, later pushes warn instead of sending it again.
+  on container labs only; on a Vocareum Standard (Elite) part, which reads it back as 0, push
+  warns and does not send it.
 
 ### Fixed
 - **A pulled container image ID is no longer pushed back.** `container_image_id` and
@@ -41,9 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   normalized first. A leftover value that is still invalid stays where it is, so it cannot
   stop the config from loading. It is not pushed, and vocgit warns about it. The file is
   written in the new layout the next time any command saves `vocareum.yaml`.
-- **A peer-review value that vocgit does not recognize is kept.** If Vocareum returns an
-  enum value or date format newer than this release, pull now keeps it in
-  `_unknown_settings` and reports it, instead of dropping it.
+- **A peer-review value that vocgit does not recognize is kept.** If Vocareum returns a
+  value this release cannot read (a newer enum value, an out-of-range number, a date in
+  another format), pull keeps it in `_unknown_settings` in place of the local typed value,
+  and reports it. It is not pushed.
 
 ## [1.5.0] — 2026-11-09
 

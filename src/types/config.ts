@@ -241,7 +241,7 @@ const PeerScheduleModeSchema = upperEnum(['SCHEDULED', 'MANUAL', 'AUTO'] as cons
 const ReviewCalcSchema = upperEnum(['AVERAGE', 'MEDIAN', 'MAXIMUM'] as const);
 const ReviewPenaltyRuleSchema = upperEnum(['STUDENT_SCORE', 'MAX_SCORE'] as const);
 /** True for a real calendar date written as YYYY-MM-DD (rejects 2026-13-40). */
-function isCalendarDate(v: string): boolean {
+export function isCalendarDate(v: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { return false; }
   const d = new Date(`${v}T00:00:00Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
@@ -249,13 +249,10 @@ function isCalendarDate(v: string): boolean {
 
 /**
  * The API accepts only a real bare date here (an ISO datetime and 2026-13-40
- * are both rejected). An unquoted `2026-12-01` in YAML is loaded as a Date
- * object, so that is accepted too and written back as the string.
+ * are both rejected). loadConfig parses YAML without implicit timestamps, so an
+ * unquoted `2026-12-01` arrives as the string it reads as.
  */
-const PeerReviewDateSchema = z.preprocess(
-  (v) => (v instanceof Date && !Number.isNaN(v.getTime()) ? v.toISOString().slice(0, 10) : v),
-  z.string().refine(isCalendarDate, 'must be a real date in YYYY-MM-DD format')
-);
+const PeerReviewDateSchema = z.string().refine(isCalendarDate, 'must be a real date in YYYY-MM-DD format');
 
 /**
  * A whole number in [min, max], given as a number or a numeric string. Unlike

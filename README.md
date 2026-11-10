@@ -221,13 +221,17 @@ Because Vocareum's API treats fields inconsistently — some are writable, some 
 | `reviewpenalty_percentrule` | `STUDENT_SCORE`, `MAX_SCORE` |
 | `reviewcalc` | `AVERAGE`, `MEDIAN`, `MAXIMUM` |
 
-\* These take effect only while peer review is on. With `peer_review_toggle: false`, push
-sends them as `false`: Vocareum rejects `true` there, and resets them to `false` when
-peer review is turned off.
+\* These take effect only while peer review is on. While it is off (set to `false` in the
+config, or off in Vocareum when the config does not set it), push sends them as `false` and
+warns: Vocareum rejects `true` then, and resets them to `false` when peer review is turned
+off.
+
+Dates are checked as written, so an unquoted `2026-12-01` works and `2026-02-30` is an
+error rather than a different date.
 
 Part `cleanup_time` is a known setting too: a whole number, 0 or more. Vocareum stores it
-on container labs and ignores it on Vocareum Standard parts. If a push has already sent a
-value that Vocareum did not store, later pushes warn instead of sending it again.
+on container labs only. On a Vocareum Standard (Elite) part it reads back 0, so push warns
+and does not send it there.
 
 Configs pulled by an older vocgit keep these fields under `_unknown_settings`. vocgit moves
 each one to its proper place when it loads the config, so they push as normal settings. A

@@ -381,6 +381,25 @@ function clearObservedTopLevelSettings(
   }
 }
 
+/**
+ * Pull just mapped a remote value it cannot read for a KNOWN setting into
+ * `_unknown_settings` (e.g. a newer reviewcalc enum). The remote value
+ * supersedes the local typed copy, so drop that copy from the merge. Left in,
+ * the next load's top-level-wins migration would delete the remote value and
+ * keep the stale local one, and every pull would report the same drift again.
+ *
+ * @internal Exported for testing
+ */
+export function dropTypedCopiesOfUnreadableRemote(
+  merged: Record<string, unknown>,
+  remoteUnknown: Record<string, unknown> | undefined
+): void {
+  if (!remoteUnknown) { return; }
+  for (const key of Object.keys(remoteUnknown)) {
+    if (!key.startsWith('_')) { delete merged[key]; }
+  }
+}
+
 /** @internal Exported for testing */
 export function compareAssignmentSettings(
   localSettings: NonNullable<AssignmentSettings> | undefined,
@@ -1477,6 +1496,7 @@ export async function applyPull(
           ...updates.assignmentSettings,
         };
         clearObservedTopLevelSettings(mergedSettings, OBSERVED_ASSIGNMENT_SETTING_KEYS);
+        dropTypedCopiesOfUnreadableRemote(mergedSettings, updates.assignmentSettings._unknown_settings);
         if (updates.assignmentSettings._unknown_settings === undefined) {
           delete mergedSettings._unknown_settings;
         }
@@ -1500,6 +1520,7 @@ export async function applyPull(
               ...newPartSettings,
             };
             clearObservedTopLevelSettings(mergedPartSettings, OBSERVED_PART_SETTING_KEYS);
+            dropTypedCopiesOfUnreadableRemote(mergedPartSettings, newPartSettings._unknown_settings);
             if (newPartSettings._unknown_settings === undefined) {
               delete mergedPartSettings._unknown_settings;
             }

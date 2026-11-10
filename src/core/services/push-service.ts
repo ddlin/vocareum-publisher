@@ -31,6 +31,7 @@ import { updateCourse } from '../../api/courses';
 import { getPart, updatePart } from '../../api/parts';
 import { createRubrics, updateRubrics } from '../../api/rubrics';
 import { projectedPoints } from '../../utils/rubrics';
+import { PEER_REVIEW_DATE_KEYS } from '../../utils/known-settings';
 import { ForbiddenError } from '../../api/client';
 import { mapParts } from '../mapper';
 import { readDirectory as readLocalDirectory, syncDirectory } from '../uploader';
@@ -196,6 +197,7 @@ import {
   pushSettingChange,
   buildPartSettingsPayload,
   omitPlatformKeysForUpdate,
+  coercedPeerDependents,
   peerReviewPayload,
   findPlatformFieldDrift,
   collectSettingsState,
@@ -368,7 +370,15 @@ export async function planPush(
           if (v !== undefined && v !== null) { knownPayload[key] = v; }
         }
         // Same builder as executePush, so the fingerprint covers exactly what is sent.
-        Object.assign(knownPayload, peerReviewPayload(asnSettings));
+        const peerOptions = { remoteToggle: action.remotePeerReviewToggle };
+        Object.assign(knownPayload, peerReviewPayload(asnSettings, peerOptions));
+        const coerced = coercedPeerDependents(asnSettings, peerOptions);
+        if (coerced.length > 0) {
+          ctx.events.emit({
+            level: 'warn',
+            message: `"${action.assignment.name}": ${coerced.join(', ')} ${coerced.length === 1 ? 'is' : 'are'} true in vocareum.yaml but sent as false, because peer review is off (Vocareum rejects them otherwise). Set peer_review_toggle: true to enable them, or set them to false.`,
+          });
+        }
         const filteredUnknowns = filterUnknownSettingsForPayload(
           asnSettings._unknown_settings,
           RESERVED_ASSIGNMENT_KEYS,
@@ -839,7 +849,7 @@ export async function executePush(
             'lti_on', 'anonymous_grading', 'grading_visibility', 'live_code_comments',
           ];
           // History records the peer-review values as sent (see peerReviewPayload).
-          const peerPayload = peerReviewPayload(asnSettings);
+          const peerPayload = peerReviewPayload(asnSettings, { remoteToggle: action.remotePeerReviewToggle });
 
           pushSettingChange(settingChanges, {
             scope: 'assignment',
@@ -854,7 +864,9 @@ export async function executePush(
             ...Object.entries(peerPayload),
           ];
           for (const [key, toValue] of historyEntries) {
-            if (!hasSettingValue(toValue)) { continue; }
+            // A null peer-review date is a real write (it clears the date).
+            const isDateClear = toValue === null && (PEER_REVIEW_DATE_KEYS as readonly string[]).includes(key);
+            if (!hasSettingValue(toValue) && !isDateClear) { continue; }
             const fromValue = (remoteAssignment as unknown as Record<string, unknown>)[key];
             pushSettingChange(settingChanges, {
               scope: 'assignment',

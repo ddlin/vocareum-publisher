@@ -109,6 +109,12 @@ export interface AssignmentAction {
   partIdsDiscovered?: boolean;
   /** True when assignment metadata differs from remote and needs updating */
   assignmentMetadataChanged?: boolean;
+  /**
+   * Vocareum's stored peer_review_toggle, when the reconciler read it. A config
+   * that sets peer options without the toggle is checked against this: the
+   * API rejects a true option while the stored toggle is off.
+   */
+  remotePeerReviewToggle?: boolean;
 }
 
 /**

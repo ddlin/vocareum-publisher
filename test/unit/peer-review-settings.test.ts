@@ -16,9 +16,9 @@ import * as path from 'path';
 import { mapAssignmentSettings, mapPartSettings } from '../../src/utils/settings';
 import { AssignmentSettingsSchema, PartSettingsSchema } from '../../src/types/config';
 import type { Assignment, Part } from '../../src/types/config';
-import { buildPartSettingsPayload, peerReviewPayload, RESERVED_PART_KEYS } from '../../src/core/payload-helpers';
+import { buildPartSettingsPayload, coercedPeerDependents, peerReviewPayload, RESERVED_PART_KEYS } from '../../src/core/payload-helpers';
 import { cleanupTimeIgnoredByServer, detectAssignmentSettingsChanged, detectPartSettingsChanged } from '../../src/core/reconciler';
-import { compareAssignmentSettings, comparePartSettings } from '../../src/core/services/pull-service';
+import { compareAssignmentSettings, comparePartSettings, dropTypedCopiesOfUnreadableRemote } from '../../src/core/services/pull-service';
 import { loadConfig } from '../../src/core/config';
 import type { VocareumAssignmentResponse, VocareumPartResponse } from '../../src/types/api';
 
@@ -92,6 +92,25 @@ describe('pull: peer-review fields arrive as typed, known settings', () => {
     expect(diffs.map(d => d.key)).toContain('reviewguide');
   });
 
+  it('a remote value outside the API ranges is preserved in _unknown_settings, never written typed (round 2)', () => {
+    const s = mapAssignmentSettings(apiAssignment({ reviews_number: 0, reviewpenalty: 1.5, peer_review_start_date: '2026-02-30', reviewcalc: ' median ' }));
+    expect(s._unknown_settings).toEqual({ reviews_number: 0, reviewpenalty: 1.5, peer_review_start_date: '2026-02-30' });
+    expect(s.reviewcalc).toBe('MEDIAN');
+    expect(AssignmentSettingsSchema.safeParse(s).success).toBe(true);
+    const p = mapPartSettings(apiContainerPart({ cleanup_time: '1.5' }));
+    expect(p).not.toHaveProperty('cleanup_time');
+    expect(p._unknown_settings).toEqual({ cleanup_time: '1.5' });
+    expect(PartSettingsSchema.safeParse(p).success).toBe(true);
+  });
+
+  it('pull merge: an unreadable remote value replaces the stale typed copy, so the next load keeps it (round 2)', () => {
+    const remote = mapAssignmentSettings(apiAssignment({ reviewcalc: 'GEOMETRIC_MEAN' }));
+    const merged: Record<string, unknown> = { ...{ reviewcalc: 'MEDIAN' }, ...remote };
+    dropTypedCopiesOfUnreadableRemote(merged, remote._unknown_settings);
+    expect(merged).not.toHaveProperty('reviewcalc');
+    expect(merged._unknown_settings).toEqual({ reviewcalc: 'GEOMETRIC_MEAN' });
+  });
+
   it('the mapped settings always pass the schema (pull never writes an unloadable config)', () => {
     expect(AssignmentSettingsSchema.safeParse(mapAssignmentSettings(apiAssignment())).success).toBe(true);
     expect(AssignmentSettingsSchema.safeParse(mapAssignmentSettings(apiAssignment({
@@ -130,8 +149,17 @@ describe('push: what reaches the PUT', () => {
       .toEqual({ peer_review_toggle: false, peer_gallery: false, peer_hide_code: false, peer_grading_toggle: false });
   });
 
-  it('a dependent option without the toggle in the config is sent as is (accepted while peer review is already on)', () => {
+  it('a dependent option without the toggle in the config follows the stored toggle (probe Q1 / Q10)', () => {
+    expect(peerReviewPayload({ peer_gallery: true }, { remoteToggle: true })).toEqual({ peer_gallery: true });
+    expect(peerReviewPayload({ peer_gallery: true }, { remoteToggle: false })).toEqual({ peer_gallery: false });
+    // Unknown stored state (create): sent as written.
     expect(peerReviewPayload({ peer_gallery: true })).toEqual({ peer_gallery: true });
+  });
+
+  it('the options sent as false are reported, so push can warn instead of silently editing intent', () => {
+    expect(coercedPeerDependents({ peer_review_toggle: false, peer_gallery: true, peer_hide_code: false })).toEqual(['peer_gallery']);
+    expect(coercedPeerDependents({ peer_gallery: true }, { remoteToggle: false })).toEqual(['peer_gallery']);
+    expect(coercedPeerDependents({ peer_gallery: true }, { remoteToggle: true })).toEqual([]);
   });
 
   it('cleanup_time is part of the full part payload', () => {
@@ -192,22 +220,23 @@ describe('drift: push side (reconciler) and pull side (settings diff)', () => {
     expect(comparePartSettings({ cleanup_time: 30 } as never, mapPartSettings(apiContainerPart({ cleanup_time: '0' }))).map(d => d.key)).toContain('cleanup_time');
   });
 
-  it('cleanup_time that Vocareum did not store (Standard lab reads back 0) is not re-sent after one push', () => {
+  it('cleanup_time on a Standard (Elite) part that reads back 0 is not drift; on a container lab it always is', () => {
     const part = { part_id: '6036046', path: 'p1', name: 'Part 1', settings: { cleanup_time: 30 } } as unknown as Part;
-    const asn = assignment({});
-    const stateKey = 'assignments/cd/parts/p1/settings/cleanup_time';
-    const history = (value: unknown, status = 'success') =>
-      ({ status, settings_state: { [stateKey]: value } }) as never;
-    const remote = apiContainerPart({ labtype: 'Vocareum Standard', cleanup_time: '0' });
-    // Never pushed yet: it is real drift.
-    expect(cleanupTimeIgnoredByServer(asn, part, remote, undefined)).toBe(false);
-    // Pushed 30 last time, server still says 0: stop re-sending.
-    expect(cleanupTimeIgnoredByServer(asn, part, remote, history(30))).toBe(true);
-    expect(detectPartSettingsChanged(part, remote, { ignoreCleanupTime: true })).toBe(false);
-    // The user changed it since: drift again.
-    expect(cleanupTimeIgnoredByServer(asn, part, remote, history(20))).toBe(false);
-    // A failed last push proves nothing.
-    expect(cleanupTimeIgnoredByServer(asn, part, remote, history(30, 'failed'))).toBe(false);
+    const standard = apiContainerPart({ labtype: 'Vocareum Standard', cleanup_time: '0' });
+    expect(cleanupTimeIgnoredByServer(part, standard)).toBe(true);
+    expect(detectPartSettingsChanged(part, standard, { ignoreCleanupTime: true })).toBe(false);
+    // Round-2 review: a container lab changed in the UI (or never sent) must still be corrected.
+    expect(cleanupTimeIgnoredByServer(part, apiContainerPart({ labtype: 'Vocareum Notebook', cleanup_time: '120' }))).toBe(false);
+    expect(cleanupTimeIgnoredByServer(part, apiContainerPart({ labtype: 'Visual Studio Code', cleanup_time: '0' }))).toBe(false);
+    // A Standard part reading back a non-zero value is real drift.
+    expect(cleanupTimeIgnoredByServer(part, apiContainerPart({ labtype: 'Vocareum Standard', cleanup_time: '10' }))).toBe(false);
+  });
+
+  it('a dependent option with no toggle in the config is drift-checked against the STORED toggle', () => {
+    // Stored off: Vocareum rejects true (probe Q10), so push sends false; server already false = no drift.
+    expect(detectAssignmentSettingsChanged(assignment({ peer_gallery: true }), apiAssignment())).toBe(false);
+    // Stored on: true is sent and accepted (probe Q1), so false on the server is drift.
+    expect(detectAssignmentSettingsChanged(assignment({ peer_gallery: true }), apiAssignment({ peer_review_toggle: true }))).toBe(true);
   });
 
   it('container image identity is never drift (observed only)', () => {
@@ -230,9 +259,6 @@ describe('schema: the server rules, enforced at config load (adversarial input)'
     }
   });
 
-  it('an unquoted YAML date (loaded as a Date object) is accepted as YYYY-MM-DD', () => {
-    expect(AssignmentSettingsSchema.parse({ peer_review_start_date: new Date('2026-12-01T00:00:00Z') })?.peer_review_start_date).toBe('2026-12-01');
-  });
 
   it('an impossible calendar date is rejected (the API rejects it too)', () => {
     expect(AssignmentSettingsSchema.safeParse({ peer_review_start_date: '2026-13-40' }).success).toBe(false);
@@ -390,6 +416,46 @@ ${partSettings.split('\n').map(line => `  ${line}`).join('\n')}
     );
     expect(asn).toMatchObject({ peer_review_toggle: true, reviewcalc: 'MEDIAN', reviews_number: 3 });
     expect(asn._unknown_settings).toBeUndefined();
+  });
+
+  it('unquoted YAML dates load as written: a real date passes, an impossible one or a datetime is rejected (not shifted)', async () => {
+    const { asn } = await load(`      peer_review_start_date: 2026-12-01`, `        {}`);
+    expect(asn.peer_review_start_date).toBe('2026-12-01');
+    for (const v of ['2026-02-30', '2026-13-40', '2026-12-01T23:30:00-08:00', '2026-12-01T10:00:00Z']) {
+      await expect(load(`      peer_review_start_date: ${v}`, `        {}`)).rejects.toThrow(/peer_review_start_date/);
+    }
+  });
+
+  it('YAML merge keys still work with timestamps off', async () => {
+    const yaml = `version: "1.0"
+defaults: &d
+  nosubmit: true
+vocareum:
+  org_id: "292"
+  course_id: "215500"
+assignments:
+  - assignment_id: "1"
+    name: a
+    path: a
+    settings:
+      <<: *d
+    parts: []
+`;
+    const file = path.join(dir, 'vocareum.yaml');
+    await fs.writeFile(file, yaml, 'utf8');
+    expect((await loadConfig(file)).assignments[0].settings?.nosubmit).toBe(true);
+  });
+
+  it('a legacy exponent or hex number string is not promoted (same rule as a top-level value)', async () => {
+    const { asn } = await load(
+      `      _unknown_settings:
+        reviews_number: "1e1"
+        reviewpenalty: "0x10"`,
+      `        {}`,
+    );
+    expect(asn).not.toHaveProperty('reviews_number');
+    expect(asn).not.toHaveProperty('reviewpenalty');
+    expect(asn._unknown_settings).toEqual({ reviews_number: '1e1', reviewpenalty: '0x10' });
   });
 
   it('a legacy empty string is not promoted into a real 0', async () => {

@@ -5,7 +5,7 @@
  */
 
 import type { Config, PublishHistory, Part, Assignment } from '../types/config';
-import { normalizeSubmissionFilters } from '../types/config';
+import { detectArchitecture, normalizeSubmissionFilters } from '../types/config';
 import { detectChangedDirectories, directoriesForPart, publishExcludePatterns } from './local-scan';
 import type { VocareumAssignmentResponse, VocareumPartResponse, RubricSyncPlan, RemoteRubric } from '../types/api';
 import type {
@@ -105,22 +105,19 @@ function cleanupTimeDiffers(configPart: Part, remotePart: VocareumPartResponse |
 }
 
 /**
- * cleanup_time differs from Vocareum's, but the last successful push already
- * sent this exact value: the server did not store it (Standard labs read back
- * 0), so sending it again cannot help.
+ * Vocareum stores cleanup_time only on container labs. On an Elite-architecture
+ * part (Vocareum Standard and friends) a PUT is accepted and the field reads
+ * back 0, so a non-zero local value would be re-sent on every push. Probed
+ * 2026-11-10 (Standard part 5441304: sent 30, read 0).
+ *
+ * Decided from the part's own labtype and the readback, never from history: a
+ * container lab whose value was changed in the UI must still be corrected.
  *
  * @internal Exported for testing
  */
-export function cleanupTimeIgnoredByServer(
-  assignment: Assignment,
-  part: Part,
-  remotePart: VocareumPartResponse | undefined,
-  lastPublishHistory?: PublishHistory
-): boolean {
+export function cleanupTimeIgnoredByServer(part: Part, remotePart: VocareumPartResponse | undefined): boolean {
   if (!cleanupTimeDiffers(part, remotePart)) { return false; }
-  const state = lastPublishHistory?.status === 'failed' ? undefined : lastPublishHistory?.settings_state;
-  if (!state) { return false; }
-  return deepEqual(part.settings?.cleanup_time, state[partSettingStateKey(assignment, part, 'cleanup_time')]);
+  return detectArchitecture(remotePart?.labtype) === 'elite' && Number(remotePart?.cleanup_time) === 0;
 }
 
 /**
@@ -193,6 +190,7 @@ export async function reconcile(
     let remoteAssignment: VocareumAssignmentResponse | null = null;
     let idDiscoveredByName = false;
     let assignmentMetadataChanged = false;
+    let remotePeerReviewToggle: boolean | undefined;
     let assignmentReason: string | undefined;
 
     if (configAssignment.assignment_id !== undefined && configAssignment.assignment_id !== null) {
@@ -250,6 +248,11 @@ export async function reconcile(
     if (assignmentActionType === 'update' && remoteAssignment) {
       // Fetch full assignment details for accurate settings comparison
       const fullAssignment = await getAssignment(client, config.vocareum.course_id, remoteAssignment.id);
+      const remotePeerForToggle: Record<string, unknown> = {};
+      mapPeerReviewSettings(fullAssignment, remotePeerForToggle);
+      if (typeof remotePeerForToggle.peer_review_toggle === 'boolean') {
+        remotePeerReviewToggle = remotePeerForToggle.peer_review_toggle;
+      }
 
       // Check for changes in fields that can be updated via API
       // Working fields: name, description, nosubmit, auto_submit, grading_on_submit, publish, etc.
@@ -278,16 +281,11 @@ export async function reconcile(
           let metadataChanged = false;
           if (shouldSyncPartSettings(config, configAssignment, configPart)) {
             const fullPart = await getPart(client, config.vocareum.course_id, remoteAssignment.id, mapping.apiPartId);
-            // Vocareum stores cleanup_time only on container labs; a Standard
-            // lab accepts the PUT and reads back 0. Once the last successful
-            // push already sent this exact value, re-sending it cannot change
-            // anything, so it stops counting as drift (otherwise every push
-            // would update the part again, forever).
-            const cleanupIgnored = cleanupTimeIgnoredByServer(configAssignment, configPart, fullPart, lastPublishHistory);
+            const cleanupIgnored = cleanupTimeIgnoredByServer(configPart, fullPart);
             if (cleanupIgnored) {
               events.emit({
                 level: 'warn',
-                message: `Part "${configPart.name ?? configPart.path}" of "${configAssignment.name}": Vocareum did not store cleanup_time ${String(configPart.settings?.cleanup_time)} (it reads back ${String(fullPart.cleanup_time)}). It applies to container labs only, so it is not re-sent.`,
+                message: `Part "${configPart.name ?? configPart.path}" of "${configAssignment.name}": cleanup_time ${String(configPart.settings?.cleanup_time)} is not sent. Vocareum stores it only on container labs, and this part is ${String(fullPart.labtype)}.`,
               });
             }
             metadataChanged =
@@ -449,6 +447,7 @@ export async function reconcile(
       idDiscoveredByName,
       partIdsDiscovered,
       assignmentMetadataChanged,
+      remotePeerReviewToggle,
       reason: assignmentReason,
     });
   }
@@ -611,7 +610,8 @@ export function detectAssignmentSettingsChanged(
   // tenants or plans may not expose peer review at all.
   const remotePeer: Record<string, unknown> = {};
   mapPeerReviewSettings(remoteAssignment, remotePeer);
-  for (const [key, local] of Object.entries(peerReviewPayload(s))) {
+  const remoteToggle = typeof remotePeer.peer_review_toggle === 'boolean' ? remotePeer.peer_review_toggle : undefined;
+  for (const [key, local] of Object.entries(peerReviewPayload(s, { remoteToggle }))) {
     if (remotePeer[key] !== undefined && !deepEqual(local, remotePeer[key])) { return true; }
   }
 

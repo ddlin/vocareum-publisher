@@ -6,6 +6,7 @@
  */
 
 import type { AssignmentSettings, PartSettings, SubmissionFilters } from '../types/config';
+import { isCalendarDate } from '../types/config';
 import type { VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
 import {
   KNOWN_ASSIGNMENT_SETTING_KEYS,
@@ -41,18 +42,22 @@ function normalizeUpperEnum<T extends string>(
   allowed: readonly T[]
 ): T | undefined {
   if (typeof value !== 'string') { return undefined; }
-  const normalized = value.toUpperCase() as T;
+  const normalized = value.trim().toUpperCase() as T;
   return allowed.includes(normalized) ? normalized : undefined;
 }
 
-/** A number from the API's number-or-numeric-string fields, else undefined. */
-function toFiniteNumber(value: unknown): number | undefined {
-  if (typeof value === 'number') { return Number.isFinite(value) ? value : undefined; }
-  if (typeof value === 'string' && value.trim() !== '') {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : undefined;
-  }
-  return undefined;
+/**
+ * A whole number in [min, max] from a number-or-numeric-string API field, else
+ * undefined. The same rule as the config schema (wholeNumber), so a mapped
+ * value always loads; anything else ("1e1", "0x10", 1.5, out of range) is left
+ * for the caller to preserve in _unknown_settings rather than written typed.
+ */
+function toWholeNumber(value: unknown, min: number, max?: number): number | undefined {
+  let n: number | undefined;
+  if (typeof value === 'number') { n = value; }
+  else if (typeof value === 'string' && /^\s*-?\d+\s*$/.test(value)) { n = Number(value); }
+  if (n === undefined || !Number.isInteger(n) || n < min || (max !== undefined && n > max)) { return undefined; }
+  return n;
 }
 
 /**
@@ -84,11 +89,11 @@ export function mapPeerReviewSettings(
   for (const key of ['peer_review_start_date', 'peer_review_end_date'] as const) {
     const v = api[key];
     if (v === null) { settings[key] = null; }
-    else if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) { settings[key] = v; }
+    else if (typeof v === 'string' && isCalendarDate(v)) { settings[key] = v; }
   }
-  const reviews = toFiniteNumber(api.reviews_number);
+  const reviews = toWholeNumber(api.reviews_number, 1, 10);
   if (reviews !== undefined) { settings.reviews_number = reviews; }
-  const penalty = toFiniteNumber(api.reviewpenalty);
+  const penalty = toWholeNumber(api.reviewpenalty, 0, 100);
   if (penalty !== undefined) { settings.reviewpenalty = penalty; }
   if (typeof api.reviewguide === 'string' || api.reviewguide === null) { settings.reviewguide = api.reviewguide; }
 }
@@ -293,7 +298,7 @@ export function mapPartSettings(
     if (!isNaN(parsed)) { settings.databricks_maxusers = parsed; }
   }
   if (apiResponse.tags !== undefined) { settings.tags = apiResponse.tags; }
-  const cleanupTime = toFiniteNumber(apiResponse.cleanup_time);
+  const cleanupTime = toWholeNumber(apiResponse.cleanup_time, 0);
   if (cleanupTime !== undefined) { settings.cleanup_time = cleanupTime; }
   if (Object.keys(observedSettings).length > 0) {
     settings._observed_settings = observedSettings;
@@ -308,6 +313,11 @@ export function mapPartSettings(
     unionKeys(KNOWN_PART_SETTING_KEYS, OBSERVED_PART_SETTING_KEYS),
     NON_SETTING_FIELDS_PART
   );
+  // An unreadable cleanup_time is kept and reported, like an unreadable
+  // peer-review value (see mapAssignmentSettings); it is never pushed.
+  if (apiResponse.cleanup_time !== undefined && settings.cleanup_time === undefined) {
+    unknownFields.cleanup_time = apiResponse.cleanup_time;
+  }
   if (Object.keys(unknownFields).length > 0) {
     settings._unknown_settings = unknownFields;
     if (reporter && resourceId !== undefined) {
