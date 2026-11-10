@@ -14,12 +14,29 @@ import { prompt, promptConfirm, promptChoice } from '../../utils/prompts';
 // RuntimeFacts — auth mode, CI detection, credential readiness
 // ---------------------------------------------------------------------------
 
+/** The API host a run would target, as resolved by the command layer. */
+export interface ApiTargetFacts {
+  /** Normalized base URL including the /api/vN path. */
+  base_url: string;
+  /** Hostname only — safe to display/log. */
+  host: string;
+  /** 'na' | 'eu' for a known Vocareum tenant; null for a custom host. */
+  region: 'na' | 'eu' | null;
+  /** Where the value came from (flag is never seen by status). */
+  source: 'flag' | 'env' | 'config' | 'default';
+  /** Exact allowlist match for the auth mode's API version. When false, the
+   *  run is refused unless VOCAREUM_ALLOW_CUSTOM_BASE_URL=1. */
+  allowlisted: boolean;
+}
+
 export interface RuntimeFacts {
   ci: boolean;
   ciProvider?: string;
   authMode: 'token' | 'oauth';
   credentialLabel: string;
   credentialsConfigured: boolean;
+  /** Resolved API host. Populated by `status`; other commands may omit it. */
+  api?: ApiTargetFacts;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 import type { AuthProvider } from './auth-provider';
-import { normalizeApiBaseUrl, assertBaseUrlForVersion } from '../client';
+import { assertBaseUrlForVersion } from '../client';
+import { DEFAULT_API_BASE_URL, normalizeApiBaseUrl } from '../regions';
 import type { EventSink } from '../../core/services/event-sink';
 
 export class TokenAuthProvider implements AuthProvider {
@@ -9,7 +10,7 @@ export class TokenAuthProvider implements AuthProvider {
     'Generate a new token at: Profile > Settings > Personal Access Tokens';
   constructor(
     private readonly token: string,
-    baseUrl = 'https://api.vocareum.com',
+    baseUrl = DEFAULT_API_BASE_URL,
     events?: EventSink,
   ) {
     this.apiBaseUrl = normalizeApiBaseUrl(baseUrl);

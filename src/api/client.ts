@@ -12,6 +12,7 @@ import { LoggerEventSink } from '../utils/logger-event-sink';
 import type { AuthProvider } from './auth/auth-provider';
 import { RequestScheduler } from './scheduler';
 import { DEFAULT_THROTTLE, type ResolvedThrottle } from './throttle';
+import { REGION_HOSTS, VOCAREUM_REGIONS, canonicalBaseUrl, normalizeApiBaseUrl } from './regions';
 
 /**
  * Base error class for Vocareum API errors
@@ -99,7 +100,9 @@ export class InsecureBaseUrlError extends VocareumError {
   constructor(url: string) {
     super(
       `Insecure API base URL: "${url}". ` +
-      `Only https://api.vocareum.com and https://labs.vocareum.com are allowed by default. ` +
+      `Only the Vocareum API hosts are allowed by default: ` +
+      `https://api.vocareum.com and https://labs.vocareum.com (NA), ` +
+      `https://api.eu.vocareum.com (EU). ` +
       `Set VOCAREUM_ALLOW_CUSTOM_BASE_URL=1 to override (use with caution).`,
       'INSECURE_BASE_URL'
     );
@@ -116,25 +119,33 @@ function isRawApiResponse401(error: unknown): boolean {
 type ApiUnauthorizedFlag = { isApiResponseUnauthorized?: boolean };
 
 /** Canonical, allowed (host, version-path) base URLs, split by API version so
- *  an auth mode can be bound to its host (token→v2, oauth→v3). */
-const ALLOWED_V2_BASE_URLS: ReadonlySet<string> = new Set([
-  'https://api.vocareum.com/api/v2',
-]);
-const ALLOWED_V3_BASE_URLS: ReadonlySet<string> = new Set([
-  'https://labs.vocareum.com/api/v3',
-]);
+ *  an auth mode can be bound to its host (token→v2, oauth→v3). Derived from the
+ *  region table so a tenant's hosts are declared in exactly one place. */
+const ALLOWED_V2_BASE_URLS: ReadonlySet<string> = new Set(
+  VOCAREUM_REGIONS.map(r => REGION_HOSTS[r].v2BaseUrl),
+);
+const ALLOWED_V3_BASE_URLS: ReadonlySet<string> = new Set(
+  VOCAREUM_REGIONS.flatMap(r => {
+    const v3 = REGION_HOSTS[r].v3BaseUrl;
+    return v3 === undefined ? [] : [v3];
+  }),
+);
 const ALLOWED_BASE_URLS: ReadonlySet<string> = new Set([
   ...ALLOWED_V2_BASE_URLS,
   ...ALLOWED_V3_BASE_URLS,
 ]);
 
-/** Append /api/v2 when the base URL carries no /api/vN version path.
- *  Note: a bare host always normalizes to /api/v2 (the default). The v3 host
- *  (labs.vocareum.com) must be passed with its full /api/v3 path; a bare labs
- *  host would normalize to /api/v2 and then fail assertAllowedBaseUrl. */
-export function normalizeApiBaseUrl(baseUrl: string): string {
-  const trimmed = baseUrl.replace(/\/+$/, '');
-  return /\/api\/v\d+$/.test(trimmed) ? trimmed : `${trimmed}/api/v2`;
+export { normalizeApiBaseUrl };
+
+/** True when `baseUrl` (already normalized) is an exact allowlist entry for
+ *  `version`. Pure: ignores VOCAREUM_ALLOW_CUSTOM_BASE_URL and emits nothing —
+ *  for display (status), not for gating a request. */
+export function isAllowlistedBaseUrl(baseUrl: string, version: 'v2' | 'v3'): boolean {
+  const canonical = canonicalBaseUrl(baseUrl);
+  if (canonical?.startsWith('https://') !== true) {
+    return false;
+  }
+  return (version === 'v2' ? ALLOWED_V2_BASE_URLS : ALLOWED_V3_BASE_URLS).has(canonical);
 }
 
 /**

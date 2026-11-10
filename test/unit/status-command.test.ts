@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Config } from '../../src/types/config';
 import { statusCommand } from '../../src/commands/status';
+import { getApiBaseUrlEnv, getAuthModeEnv } from '../../src/utils/env';
 
 const { loadConfigMock } = vi.hoisted(() => ({
   loadConfigMock: vi.fn(),
@@ -15,6 +16,8 @@ vi.mock('../../src/utils/env', () => ({
   isCI: vi.fn().mockReturnValue(false),
   getCIProvider: vi.fn().mockReturnValue(undefined),
   getAuthModeEnv: vi.fn().mockReturnValue(undefined),
+  getApiBaseUrlEnv: vi.fn().mockReturnValue(undefined),
+  getV3ApiBaseUrl: vi.fn().mockReturnValue('https://labs.vocareum.com/api/v3'),
   getOAuthClientId: vi.fn().mockReturnValue(undefined),
   getOAuthClientSecret: vi.fn().mockReturnValue(undefined),
 }));
@@ -151,5 +154,90 @@ describe('statusCommand --json', () => {
 
     const combined = stdoutWrites.join('');
     expect(combined).toContain('Current Vocareum Publisher status');
+  });
+});
+
+describe('statusCommand — API host / region', () => {
+  let stdoutWrites: string[];
+  let stdoutSpy: ReturnType<typeof vi.spyOn>;
+
+  type ApiField = { base_url: string; host: string; region: string | null; source: string; allowlisted: boolean };
+
+  function configWithHost(apiBaseUrl: string): Config {
+    const config = makeConfig();
+    config.vocareum.api_base_url = apiBaseUrl;
+    return config;
+  }
+
+  beforeEach(() => {
+    loadConfigMock.mockReset();
+    vi.mocked(getApiBaseUrlEnv).mockReturnValue(undefined);
+    vi.mocked(getAuthModeEnv).mockReturnValue(undefined);
+    stdoutWrites = [];
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      stdoutWrites.push(String(chunk));
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    vi.mocked(getApiBaseUrlEnv).mockReturnValue(undefined);
+    vi.mocked(getAuthModeEnv).mockReturnValue(undefined);
+  });
+
+  it('--json reports the NA host from vocareum.yaml', async () => {
+    loadConfigMock.mockResolvedValue(makeConfig());
+    await statusCommand({ json: true });
+    const doc = JSON.parse(stdoutWrites[0]) as { api: ApiField };
+    expect(doc.api).toEqual({
+      base_url: 'https://api.vocareum.com/api/v2',
+      host: 'api.vocareum.com',
+      region: 'na',
+      source: 'config',
+      allowlisted: true,
+    });
+  });
+
+  it('--json reports the EU host from vocareum.yaml', async () => {
+    loadConfigMock.mockResolvedValue(configWithHost('https://api.eu.vocareum.com'));
+    await statusCommand({ json: true });
+    const doc = JSON.parse(stdoutWrites[0]) as { api: ApiField };
+    expect(doc.api).toMatchObject({ host: 'api.eu.vocareum.com', region: 'eu', source: 'config', allowlisted: true });
+  });
+
+  it('--json shows VOCAREUM_API_BASE_URL winning over vocareum.yaml', async () => {
+    loadConfigMock.mockResolvedValue(makeConfig()); // NA in yaml
+    vi.mocked(getApiBaseUrlEnv).mockReturnValue('https://api.eu.vocareum.com');
+    await statusCommand({ json: true });
+    const doc = JSON.parse(stdoutWrites[0]) as { api: ApiField };
+    expect(doc.api).toMatchObject({ region: 'eu', source: 'env' });
+  });
+
+  it('--json flags an unallowlisted host instead of throwing', async () => {
+    loadConfigMock.mockResolvedValue(configWithHost('https://staging.example.com'));
+    await statusCommand({ json: true });
+    const doc = JSON.parse(stdoutWrites[0]) as { api: ApiField };
+    expect(doc.api).toMatchObject({ host: 'staging.example.com', region: null, allowlisted: false });
+  });
+
+  it('human output names the EU host, region, and source', async () => {
+    loadConfigMock.mockResolvedValue(configWithHost('https://api.eu.vocareum.com'));
+    await statusCommand({});
+    expect(stdoutWrites.join('')).toContain('- API host: api.eu.vocareum.com (EU, from vocareum.yaml)');
+  });
+
+  it('human output warns when the host is not allowlisted', async () => {
+    loadConfigMock.mockResolvedValue(configWithHost('https://staging.example.com'));
+    await statusCommand({});
+    expect(stdoutWrites.join('')).toMatch(/API host: staging\.example\.com \(custom host, from vocareum\.yaml\) — NOT allowlisted/);
+  });
+
+  it('--json in OAuth mode reports the v3 host', async () => {
+    loadConfigMock.mockResolvedValue(configWithHost('https://api.eu.vocareum.com'));
+    vi.mocked(getAuthModeEnv).mockReturnValue('oauth');
+    await statusCommand({ json: true });
+    const doc = JSON.parse(stdoutWrites[0]) as { api: ApiField };
+    expect(doc.api).toMatchObject({ host: 'labs.vocareum.com', region: 'na', allowlisted: true });
   });
 });

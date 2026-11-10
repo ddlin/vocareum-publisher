@@ -11,7 +11,7 @@
 import { getCurrentBranch, getCommitSha, hasUncommittedChanges, isGitRepo } from '../../utils/git';
 import { scanLocalContent, latestHistoryEntry } from '../local-scan';
 import type { AssignmentScan, LocalScanResult } from '../local-scan';
-import type { StatusContext } from './context';
+import type { ApiTargetFacts, StatusContext } from './context';
 import type { EventSink } from './event-sink';
 
 export interface InspectStatusOptions {
@@ -49,6 +49,8 @@ export interface StatusReport {
     mode: 'token' | 'oauth';
     configured: boolean;
   };
+  /** API host pull/push would target (additive field; null if not resolved). */
+  api: ApiTargetFacts | null;
   runtime: string;
   git: { repo: true; branch: string; commit: string; dirty: boolean } | { repo: false };
   last_push: {
@@ -124,6 +126,7 @@ export async function inspectStatus(ctx: StatusContext, opts: InspectStatusOptio
       course_id: config.vocareum.course_id,
     },
     auth: { mode: authMode, configured: credentialsConfigured },
+    api: ctx.runtime.api ?? null,
     runtime: runtimeLabel,
     git: insideRepo ? { repo: true, branch, commit, dirty } : { repo: false },
     last_push: lastPush === undefined ? null : {
@@ -202,6 +205,16 @@ export function renderStatusHuman(
   events.emit({ level: 'newline' });
   events.emit({ level: 'plain', message: 'Readiness' });
   events.emit({ level: 'plain', message: `- Auth (${authMode}): ${credentialLabel} ${report.auth.configured ? 'configured' : 'missing'}` });
+  if (report.api !== null) {
+    const api = report.api;
+    const region = api.region === null ? 'custom host' : api.region.toUpperCase();
+    const from = api.source === 'env' ? 'VOCAREUM_API_BASE_URL'
+      : api.source === 'config' ? 'vocareum.yaml'
+      : api.source === 'flag' ? '--api-base-url'
+      : 'default';
+    const gate = api.allowlisted ? '' : ' — NOT allowlisted; requests will be refused unless VOCAREUM_ALLOW_CUSTOM_BASE_URL=1';
+    events.emit({ level: 'plain', message: `- API host: ${api.host} (${region}, from ${from})${gate}` });
+  }
   events.emit({ level: 'plain', message: `- Runtime: ${report.runtime}` });
 
   events.emit({ level: 'newline' });
