@@ -152,11 +152,14 @@ function zodErrorsToValidationErrors(error: z.ZodError): ValidationError[] {
     // Add helpful hints for common errors
     if (path.includes('tags') && text.includes('expected')) {
       message += '\n  Hint: tags should be an object like { key: "value" } or an empty array []';
-    } else if ((path.includes('_id') || path.includes('Id')) && text.includes('expected string')) {
+    } else if ((path.includes('_id') || path.includes('Id')) && text.includes('expected string') && !text.includes('received undefined')) {
+      // zod 4 reports a missing field as "expected string, received undefined"
+      // (zod 3 said "Required"); quoting is not the fix for an absent ID.
       message += '\n  Hint: All IDs must be quoted strings (e.g., "12345" not 12345)';
     } else if (text.includes('expected array, received object')) {
       message += '\n  Hint: This field expects an array [...] but got an object {...}';
-    } else if (text.includes('expected object, received array')) {
+    } else if (text.includes('expected object, received array') || text.includes('expected record, received array')) {
+      // zod 4 names z.record fields "record" where zod 3 said "object".
       message += '\n  Hint: This field expects an object {...} but got an array [...]';
     }
 

@@ -35,8 +35,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   advisory GHSA-mrhx-c7xc-m3w5), `simple-git` 3 → 4 (critical advisory
   GHSA-v5rq-49vh-5v5c), and `follow-redirects` (via axios) to 1.16.3. Config
   validation errors now use zod 4's wording, e.g. `Invalid input: expected string,
-  received number` rather than `Expected string, received number`. The hints
-  vocgit adds to those errors are unchanged.
+  received number` rather than `Expected string, received number`, and a missing
+  field reads `expected string, received undefined` rather than `Required`.
+  vocgit's hints follow the new wording: the object-vs-array hint now also
+  covers record fields such as `content_state` and `_unknown_settings`, and the
+  "quote your IDs" hint no longer appears for an ID that is missing.
+  zod 4 also rejects two values zod 3 accepted, so a config holding either now
+  fails to load: a non-finite number (YAML `.inf` in `exam_duration`), and a
+  whole-number setting above 2^53 - 1 (`cleanup_time`).
+  simple-git 4 strips inherited `GIT_*` variables from the git commands it
+  runs. vocgit keeps passing through the identity (`GIT_AUTHOR_*`,
+  `GIT_COMMITTER_*`) and repository/index location (`GIT_DIR`, `GIT_WORK_TREE`,
+  `GIT_INDEX_FILE`, ...) variables, so auto-commit behaves as before. Variables
+  that run a program (`GIT_SSH_COMMAND`, `GIT_ASKPASS`, `GIT_CONFIG_*`, ...)
+  stay blocked. The lockfile also picked up dev-only tooling updates.
 - **Download safety limits keep what arrived.** When a pull hits the file-count
   or total-size cap, the download now stops and keeps the files already
   fetched. The import is saved, marked `INCOMPLETE` and exits 1, with the

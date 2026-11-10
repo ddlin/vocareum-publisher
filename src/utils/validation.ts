@@ -49,14 +49,17 @@ function getErrorHint(path: string, rawMessage: string): string | null {
     return 'Hint: tags should be an object like { key: "value" } or an empty array []';
   }
   // ID type mismatch
-  if ((path.includes('_id') || path.includes('Id')) && message.includes('expected string')) {
+  // zod 4 reports a missing field as "expected string, received undefined"
+  // (zod 3 said "Required"); quoting is not the fix for an absent ID.
+  if ((path.includes('_id') || path.includes('Id')) && message.includes('expected string') && !message.includes('received undefined')) {
     return 'Hint: All IDs must be strings (e.g., "12345" not 12345)';
   }
   // Array vs object mismatch
   if (message.includes('expected array, received object')) {
     return 'Hint: This field expects an array [...] but got an object {...}';
   }
-  if (message.includes('expected object, received array')) {
+  // zod 4 names z.record fields "record" where zod 3 said "object".
+  if (message.includes('expected object, received array') || message.includes('expected record, received array')) {
     return 'Hint: This field expects an object {...} but got an array [...]';
   }
   return null;
