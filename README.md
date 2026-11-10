@@ -595,7 +595,7 @@ The `auto_commit` option should only be used locally. In CI/CD it is force-disab
 ### API Contract Notes
 
 - Authentication header: `Authorization: Token <token>`
-- Base API path: `https://api.vocareum.com/api/v2/`
+- Base API path: `/api/v2/` on the configured host, NA `https://api.vocareum.com` or EU `https://api.eu.vocareum.com` (see [Regions](#regions-na--eu))
 - Assignment copy: `POST /api/v2/courses/{courseId}/assignments` with body:
   - `{ "method": "copy", "source": "<templateAssignmentId>", "name": "<newName>" }`
   - Polls transaction endpoint for up to 60 seconds until complete
