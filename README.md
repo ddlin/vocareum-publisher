@@ -33,8 +33,14 @@ npm install -g vocareum-publisher
 ```bash
 mkdir my-course && cd my-course
 git init
-vocgit init
+vocgit init              # prompts for region (NA default), org, course, templates
+vocgit init --region eu  # EU tenant: writes api_base_url: https://api.eu.vocareum.com
 ```
+
+`vocgit init` asks which Vocareum tenant the course lives on and records its API
+host in `vocareum.yaml`. NA and EU are separate tenants with separate API keys,
+and course IDs from one mean nothing on the other. See
+[Regions (NA / EU)](#regions-na--eu).
 
 ### 2. Create an Assignment
 
@@ -86,6 +92,7 @@ version: "1.0"
 vocareum:
   org_id: "12345"
   course_id: "67890"
+  api_base_url: "https://api.vocareum.com"   # NA (default); EU: https://api.eu.vocareum.com
   templates:                        # Named templates for creating new assignments
     - id: "99999"
       name: "Standard Lab"
@@ -247,7 +254,7 @@ The rubrics **write** token permissions (POST, PUT — see [Generating a Token](
 
 | Command | Description |
 |---------|-------------|
-| `vocgit init` | Initialize a new course repository |
+| `vocgit init` | Initialize a new course repository (`--region na\|eu`, `--api-base-url <url>`) |
 | `vocgit new <path>` | Create new assignment structure |
 | `vocgit validate` | Validate configuration and structure |
 | `vocgit fix` | Interactively fix validation issues |
@@ -260,6 +267,12 @@ vocgit                  # Same as: vocgit status
 vocgit status --verbose # Include per-assignment details
 vocgit status --json    # Machine-readable content sync status (for tooling)
 ```
+
+`vocgit status` shows the API host and region (NA/EU) that `pull` and `push`
+will target, and where the host came from (`vocareum.yaml` or
+`VOCAREUM_API_BASE_URL`). Check it before pushing if you work with repos on
+both tenants. `status --json` reports this in an `api` object:
+`{ base_url, host, region, source, allowlisted }`.
 
 ### Workspace Root (`--root`)
 
@@ -582,7 +595,7 @@ The `auto_commit` option should only be used locally. In CI/CD it is force-disab
 ### API Contract Notes
 
 - Authentication header: `Authorization: Token <token>`
-- Base API path: `https://api.vocareum.com/api/v2/`
+- Base API path: `/api/v2/` on the configured host, NA `https://api.vocareum.com` or EU `https://api.eu.vocareum.com` (see [Regions](#regions-na--eu))
 - Assignment copy: `POST /api/v2/courses/{courseId}/assignments` with body:
   - `{ "method": "copy", "source": "<templateAssignmentId>", "name": "<newName>" }`
   - Polls transaction endpoint for up to 60 seconds until complete
@@ -656,12 +669,46 @@ vocgit supports two authentication modes:
 
 | Mode | Flag / Env | Credential env vars | API base |
 |------|-----------|---------------------|----------|
-| `token` (default) | `--auth token` / `VOCAREUM_AUTH_MODE=token` | `VOCAREUM_API_KEY` or `VOCAREUM_API_TOKEN` | `https://api.vocareum.com/api/v2` |
+| `token` (default) | `--auth token` / `VOCAREUM_AUTH_MODE=token` | `VOCAREUM_API_KEY` or `VOCAREUM_API_TOKEN` | NA `https://api.vocareum.com/api/v2` or EU `https://api.eu.vocareum.com/api/v2` (see [Regions](#regions-na--eu)) |
 | `oauth` (opt-in) | `--auth oauth` / `VOCAREUM_AUTH_MODE=oauth` | `VOCAREUM_OAUTH_CLIENT_ID` + `VOCAREUM_OAUTH_CLIENT_SECRET` | `https://labs.vocareum.com/api/v3` |
 
-**v2 token (default)** — Set `VOCAREUM_API_KEY` (or the alias `VOCAREUM_API_TOKEN`) to your Personal Access Token. Requests carry `Authorization: Token <token>` against `https://api.vocareum.com/api/v2`. No additional configuration needed.
+**v2 token (default)** — Set `VOCAREUM_API_KEY` (or the alias `VOCAREUM_API_TOKEN`) to your Personal Access Token. Requests carry `Authorization: Token <token>` against the v2 host in `vocareum.api_base_url` (NA `https://api.vocareum.com` by default). No additional configuration is needed for NA; EU courses set the EU host with `vocgit init --region eu`.
 
 **v3 OAuth (opt-in)** — Set `VOCAREUM_OAUTH_CLIENT_ID` and `VOCAREUM_OAUTH_CLIENT_SECRET` and select the mode via `--auth oauth` or `VOCAREUM_AUTH_MODE=oauth`. vocgit performs an OAuth client-credentials exchange at `https://labs.vocareum.com/api/v3/oauth/token`, caches the resulting access token for the lifetime of the process, and retries automatically on a single 401 response. Requests carry `Authorization: Bearer <access_token>` against `https://labs.vocareum.com/api/v3`.
+
+#### Regions (NA / EU)
+
+Vocareum runs two tenants. Each has its own v2 API host and its own API keys:
+
+| Region | `api_base_url` | v2 API |
+|--------|----------------|--------|
+| `na` (default) | `https://api.vocareum.com` | `https://api.vocareum.com/api/v2` |
+| `eu` | `https://api.eu.vocareum.com` | `https://api.eu.vocareum.com/api/v2` |
+
+Both hosts are on vocgit's built-in allowlist, so EU needs no
+`VOCAREUM_ALLOW_CUSTOM_BASE_URL` override. Pick the region when you run
+`vocgit init` (`--region eu`, `--api-base-url https://api.eu.vocareum.com`, or
+the interactive prompt). The host is saved to `vocareum.yaml`, so later
+`pull`/`push` runs, including CI, use it automatically.
+
+To point a single run at another host, use `--api-base-url` on `pull`/`push`,
+or set `VOCAREUM_API_BASE_URL`. Precedence:
+**`--api-base-url` > `VOCAREUM_API_BASE_URL` > `vocareum.yaml` > NA default.**
+Overrides must still be HTTPS and allowlisted. If an override differs from the
+host in `vocareum.yaml`, vocgit prints a warning naming both hosts.
+
+Wherever it comes from, the base URL must be a plain `https://host[/api/v2]`.
+vocgit refuses a URL containing a query (`?`), fragment (`#`), credentials
+(`user@`), a backslash or whitespace, even with
+`VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`. Error messages show the URL with any such
+credentials removed.
+
+The region applies to v2 token auth only. v3 OAuth always targets the NA
+`labs.vocareum.com` host; no EU v3 host is supported yet.
+
+`VOCAREUM_ALLOW_CUSTOM_BASE_URL=1` remains an escape hatch for non-Vocareum
+hosts (e.g. local testing). It disables the allowlist and sends credentials
+to whatever host is configured, so do not use it for EU.
 
 Optional URL overrides for v3 OAuth:
 
@@ -709,6 +756,7 @@ Store credentials as repository secrets (`VOCAREUM_OAUTH_CLIENT_ID`, `VOCAREUM_O
 | `VOCAREUM_API_KEY` | v2 Personal Access Token (default auth mode) |
 | `VOCAREUM_API_TOKEN` | Alias for `VOCAREUM_API_KEY` |
 | `VOCAREUM_AUTH_MODE` | Auth mode: `token` (default) or `oauth` |
+| `VOCAREUM_API_BASE_URL` | v2 API host for token auth, e.g. `https://api.eu.vocareum.com`. Overrides `vocareum.yaml` `api_base_url`; `--api-base-url` overrides it. Must be allowlisted |
 | `VOCAREUM_OAUTH_CLIENT_ID` | v3 OAuth client ID (required when `VOCAREUM_AUTH_MODE=oauth`) |
 | `VOCAREUM_OAUTH_CLIENT_SECRET` | v3 OAuth client secret (required when `VOCAREUM_AUTH_MODE=oauth`) |
 | `VOCAREUM_API_V3_BASE_URL` | Override the v3 API base URL (default: `https://labs.vocareum.com/api/v3`) |

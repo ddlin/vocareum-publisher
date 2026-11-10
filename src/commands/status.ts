@@ -7,12 +7,14 @@
 import * as path from 'path';
 import { loadConfig } from '../core/config';
 import { resolveWorkspaceContext } from '../core/workspace';
-import { loadDotEnvIfPresent, isCI, getCIProvider, getAuthModeEnv, getOAuthClientId, getOAuthClientSecret } from '../utils/env';
+import { loadDotEnvIfPresent, isCI, getCIProvider, getAuthModeEnv, getOAuthClientId, getOAuthClientSecret, getV3ApiBaseUrl } from '../utils/env';
+import { isAllowlistedBaseUrl } from '../api/client';
+import { INVALID_URL_LABEL, canonicalBaseUrl, displayHost, hasUnsafeBaseUrlChars, normalizeApiBaseUrl, regionForBaseUrl, resolveV2ApiBaseUrl } from '../api/regions';
 import { CommandFailureError } from '../utils/command-failure';
 import { LoggerEventSink } from '../utils/logger-event-sink';
 import { InteractivePrompter } from '../core/services/context';
 import { inspectStatus, renderStatusHuman } from '../core/services/status-service';
-import type { RuntimeFacts } from '../core/services/context';
+import type { ApiTargetFacts, RuntimeFacts } from '../core/services/context';
 
 export interface StatusCommandOptions {
   config?: string;
@@ -21,6 +23,38 @@ export interface StatusCommandOptions {
   verbose?: boolean;
   /** Emit a machine-readable JSON report on stdout (consumed by the VS Code extension). */
   json?: boolean;
+}
+
+/**
+ * The host pull/push would send credentials to, resolved with the same
+ * precedence they use (minus the per-run --api-base-url flag). Never throws:
+ * an unallowlisted host is reported, not rejected — status is diagnostic.
+ *
+ * `base_url` is the canonical scheme://host/path: userinfo, query and fragment
+ * are dropped so a credential pasted into the URL never reaches stdout.
+ */
+function resolveApiTarget(authMode: 'token' | 'oauth', configBaseUrl: string | undefined): ApiTargetFacts {
+  if (authMode === 'oauth') {
+    const baseUrl = getV3ApiBaseUrl();
+    return {
+      base_url: canonicalBaseUrl(baseUrl) ?? INVALID_URL_LABEL,
+      host: displayHost(baseUrl),
+      region: regionForBaseUrl(baseUrl) ?? null,
+      source: process.env.VOCAREUM_API_V3_BASE_URL !== undefined ? 'env' : 'default',
+      allowlisted: isAllowlistedBaseUrl(baseUrl, 'v3'),
+      malformed: hasUnsafeBaseUrlChars(baseUrl),
+    };
+  }
+  const resolved = resolveV2ApiBaseUrl({ config: configBaseUrl });
+  const baseUrl = normalizeApiBaseUrl(resolved.baseUrl);
+  return {
+    base_url: canonicalBaseUrl(baseUrl) ?? INVALID_URL_LABEL,
+    host: displayHost(baseUrl),
+    region: regionForBaseUrl(baseUrl) ?? null,
+    source: resolved.source,
+    allowlisted: isAllowlistedBaseUrl(baseUrl, 'v2'),
+    malformed: hasUnsafeBaseUrlChars(baseUrl),
+  };
 }
 
 /**
@@ -50,6 +84,7 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
       authMode,
       credentialLabel,
       credentialsConfigured,
+      api: resolveApiTarget(authMode, config.vocareum.api_base_url),
     };
 
     const events = new LoggerEventSink();
@@ -75,6 +110,7 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
         config_path: report.config_path,
         course: report.course,
         auth: report.auth,
+        api: report.api,
         runtime: report.runtime,
         git: report.git,
         last_push: report.last_push,

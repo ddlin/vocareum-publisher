@@ -5,6 +5,57 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] — 2026-11-09
+
+### Added
+- **The Vocareum EU tenant is supported out of the box.**
+  `https://api.eu.vocareum.com/api/v2` is now on the v2 allowlist next to the
+  NA host. Previously an EU course needed `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`,
+  which switched the credential-safety allowlist off entirely and printed a
+  "credentials will be sent to this host" warning on every call. It also needed
+  a hand edit of `api_base_url` after `vocgit init`. A user who forgot that edit
+  sent their EU API key to the NA host.
+  The allowlist is now built from a region table (`src/api/regions.ts`), and
+  the token→v2 / OAuth→v3 host binding is unchanged. No EU v3/OAuth host is
+  allowlisted: none is confirmed, so it is a marked TODO in the table, not an
+  entry.
+- **`vocgit init --region <na|eu>` and `--api-base-url <url>`.** `init` writes the
+  chosen tenant's host to `vocareum.api_base_url`. When neither flag is given,
+  `init` prompts for the region before the org ID, with NA as the default.
+  `VOCAREUM_API_BASE_URL` also skips the prompt, whether it comes from the
+  shell or from `.env` (which `init` now loads, as pull and push already do).
+  `--api-base-url` goes through the same HTTPS + allowlist check that pull and
+  push apply, so `init` never writes a host they would refuse.
+- **`VOCAREUM_API_BASE_URL` and `--api-base-url` on `pull`/`push`.** These
+  override the v2 host for one run. Precedence: flag > env > `vocareum.yaml` >
+  NA default. Both still have to pass the allowlist. If an override points
+  somewhere other than the host in `vocareum.yaml`, vocgit warns and names both
+  hosts, so a stray shell export cannot quietly redirect a push to the other
+  tenant. `--api-base-url` with `--auth oauth` is an error, not silently ignored.
+- **`vocgit status` shows the API host, region, and source** (`vocareum.yaml`
+  or `VOCAREUM_API_BASE_URL`). It also flags a host that is not allowlisted.
+  `status --json` gains an additive `api` object
+  (`base_url`, `host`, `region`, `source`, `allowlisted`); `schema_version`
+  stays `1`.
+
+### Changed
+- **API base URLs must be a plain `https://host[/api/vN]`.** vocgit now refuses
+  a base URL or OAuth token URL that contains a query (`?`), fragment (`#`),
+  credentials (`user@`), a backslash, whitespace or a control character, even
+  with `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`. Before, the URL parser stripped these
+  and the check passed on the clean host, but axios sent the raw string. So
+  `…/api/v2?x=` turned every request path into query data, `#` moved it into a
+  fragment that was never sent, and `user@` carried a credential. This applies
+  to NA configs too; a config without these characters is unaffected.
+- **`InsecureBaseUrlError` no longer echoes the raw URL.** It shows
+  `scheme://host/path` only, so a token pasted into the URL cannot reach the
+  terminal or CI logs.
+
+### Unchanged
+- Existing configs, including ones with no `api_base_url`, still resolve to
+  `https://api.vocareum.com`. Non-HTTPS URLs and unknown or look-alike hosts are
+  still refused unless `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`.
+
 ## [1.4.0] — 2026-09-04
 
 ### Fixed

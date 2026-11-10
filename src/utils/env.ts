@@ -118,6 +118,12 @@ export function getAuthModeEnv(): string | undefined {
   const v = process.env.VOCAREUM_AUTH_MODE?.trim().toLowerCase();
   return v && v.length > 0 ? v : undefined;
 }
+/** Raw VOCAREUM_API_BASE_URL (v2 token-auth host override), or undefined if
+ *  unset/empty. Validated against the v2 allowlist by TokenAuthProvider. */
+export function getApiBaseUrlEnv(): string | undefined {
+  const v = process.env.VOCAREUM_API_BASE_URL?.trim();
+  return v !== undefined && v.length > 0 ? v : undefined;
+}
 export function getV3ApiBaseUrl(): string {
   return process.env.VOCAREUM_API_V3_BASE_URL ?? 'https://labs.vocareum.com/api/v3';
 }

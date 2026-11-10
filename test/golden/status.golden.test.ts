@@ -5,7 +5,7 @@ vi.mock('../../src/utils/logger', () => {
   const o = (s = '') => out.push(String(s)); const e = (s = '') => err.push(String(s));
   return { logger: { info: o, success: o, plain: o, newline: () => out.push(''), warn: e, error: e, debug: e } };
 });
-vi.mock('../../src/utils/env', () => ({ loadDotEnvIfPresent: vi.fn(), isCI: () => false, getAuthModeEnv: () => undefined, getOAuthClientId: () => undefined, getOAuthClientSecret: () => undefined, getCIProvider: () => undefined }));
+vi.mock('../../src/utils/env', () => ({ loadDotEnvIfPresent: vi.fn(), isCI: () => false, getAuthModeEnv: () => undefined, getOAuthClientId: () => undefined, getOAuthClientSecret: () => undefined, getCIProvider: () => undefined, getApiBaseUrlEnv: () => undefined, getV3ApiBaseUrl: () => 'https://labs.vocareum.com/api/v3' }));
 vi.mock('../../src/utils/git', () => ({
   isGitRepo: vi.fn().mockResolvedValue(true),
   getCurrentBranch: vi.fn().mockResolvedValue('main'),
