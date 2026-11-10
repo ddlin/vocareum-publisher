@@ -5,6 +5,37 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Peer review settings are supported.** The twelve peer-review assignment fields
+  (`peer_review_toggle`, `peer_schedule_mode`, `peer_review_start_date`,
+  `peer_review_end_date`, `peer_hide_code`, `peer_gallery`, `peer_grading_toggle`,
+  `reviews_number`, `reviewguide`, `reviewpenalty`, `reviewpenalty_percentrule`,
+  `reviewcalc`) are now typed settings. Before, they were passed through untyped in
+  `_unknown_settings`. Each was checked against the live API before being promoted: all
+  twelve are stored. Vocareum's own rules are enforced when the config loads:
+  - the three peer options can be `true` only while `peer_review_toggle` is `true`;
+  - the dates must be `YYYY-MM-DD`;
+  - the three enums accept only the values the API lists.
+  Drift on these fields is detected by both pull and push. (Field report #5.)
+- **Part `cleanup_time`** is a known setting. Vocareum stores it on container labs and
+  ignores it on Vocareum Standard.
+
+### Fixed
+- **A pulled container image ID is no longer pushed back.** `container_image_id` and
+  `container_image_label` used to ride in `_unknown_settings` and were sent on every part
+  update. That included a push to a different tenant, where an NA image ID means nothing.
+  They are now observed only: kept for reference and never sent. Probing showed the
+  part-update API ignores both fields anyway, and that image IDs are tenant-scoped. No push
+  actually changed an image this way. (Field report #3.)
+- **Fields an older pull left in `_unknown_settings` keep working.** When a newer vocgit
+  recognizes such a field, loading the config moves it where it now belongs. Known fields
+  become top-level settings, observed fields move to `_observed_settings`, and server-only
+  fields are dropped. This replaces a warning-and-drop on every push. A top-level value
+  always wins over a leftover copy. A leftover value that fails its schema stays where it
+  is, so it cannot stop the config from loading.
+
 ## [1.5.0] — 2026-11-09
 
 ### Added

@@ -17,6 +17,34 @@ export const NON_SETTING_FIELDS_COURSE: ReadonlySet<string> = new Set([
   'org_id',
 ]);
 
+/**
+ * Peer-review assignment settings. Probed writable on 2026-11-10 (test course
+ * 215500; see the settings probe findings): every key round-trips through an
+ * assignment PUT, with these server rules —
+ * - peer_hide_code / peer_gallery / peer_grading_toggle may be true only when
+ *   peer_review_toggle is true (in the same payload is enough); turning the
+ *   toggle off resets them to false server-side.
+ * - peer_review_start_date / peer_review_end_date: `YYYY-MM-DD` or null.
+ * - enums: see the AssignmentSettingsSchema.
+ * Before this they rode through `_unknown_settings` untyped (field report #5).
+ */
+export const PEER_REVIEW_SETTING_KEYS = [
+  'peer_review_toggle',
+  'peer_schedule_mode',
+  'peer_review_start_date',
+  'peer_review_end_date',
+  'peer_hide_code',
+  'peer_gallery',
+  'peer_grading_toggle',
+  'reviews_number',
+  'reviewguide',
+  'reviewpenalty',
+  'reviewpenalty_percentrule',
+  'reviewcalc',
+] as const;
+
+export type PeerReviewSettingKey = (typeof PEER_REVIEW_SETTING_KEYS)[number];
+
 export const KNOWN_ASSIGNMENT_SETTING_KEYS: ReadonlySet<string> = new Set([
   'nosubmit',
   'publish',
@@ -32,6 +60,7 @@ export const KNOWN_ASSIGNMENT_SETTING_KEYS: ReadonlySet<string> = new Set([
   'anonymous_grading',
   'grading_visibility',
   'live_code_comments',
+  ...PEER_REVIEW_SETTING_KEYS,
 ]);
 
 export const OBSERVED_ASSIGNMENT_SETTING_KEYS: ReadonlySet<string> = new Set([
@@ -85,6 +114,9 @@ export const KNOWN_PART_SETTING_KEYS: ReadonlySet<string> = new Set([
   'lab_interface',
   'databricks_maxusers',
   'tags',
+  // Probed 2026-11-10: stored on container labs (string or number in, string
+  // out); silently ignored on a Vocareum Standard part.
+  'cleanup_time',
 ]);
 
 export const OBSERVED_PART_SETTING_KEYS: ReadonlySet<string> = new Set([
@@ -94,6 +126,15 @@ export const OBSERVED_PART_SETTING_KEYS: ReadonlySet<string> = new Set([
   // Membership here also makes it reserved, so _unknown_settings.max_points cannot smuggle
   // it back into an outgoing payload.
   'max_points',
+  // Field report #3. Probed 2026-11-10: a part PUT ignores both when sent
+  // without labtype, and with labtype the server validates them against the
+  // labtype's CURRENT image list (and push never sends labtype). Image IDs are
+  // tenant-scoped — an NA id means nothing on EU — so they are kept for
+  // reference only. Membership here also reserves them: a pulled
+  // `_unknown_settings.container_image_id` can never ride a push to another
+  // tenant.
+  'container_image_id',
+  'container_image_label',
 ]);
 
 export const NON_SETTING_FIELDS_PART: ReadonlySet<string> = new Set([

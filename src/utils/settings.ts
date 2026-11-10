@@ -43,6 +43,47 @@ function normalizeUpperEnum<T extends string>(
   return allowed.includes(normalized) ? normalized : undefined;
 }
 
+/** A number from the API's number-or-numeric-string fields, else undefined. */
+function toFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === 'number') { return Number.isFinite(value) ? value : undefined; }
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Peer-review settings (field report #5). Enums are normalized to the API's
+ * spelling; a value outside the known set is dropped here rather than written
+ * into a config the schema would then reject.
+ */
+function mapPeerReviewSettings(
+  api: VocareumAssignmentResponse,
+  settings: NonNullable<AssignmentSettings>
+): void {
+  for (const key of ['peer_review_toggle', 'peer_hide_code', 'peer_gallery', 'peer_grading_toggle'] as const) {
+    const coerced = coerceBooleanFlag(api[key]);
+    if (coerced !== undefined) { settings[key] = coerced; }
+  }
+  const mode = normalizeUpperEnum(api.peer_schedule_mode, ['SCHEDULED', 'MANUAL', 'AUTO'] as const);
+  if (mode !== undefined) { settings.peer_schedule_mode = mode; }
+  const calc = normalizeUpperEnum(api.reviewcalc, ['AVERAGE', 'MEDIAN', 'MAXIMUM'] as const);
+  if (calc !== undefined) { settings.reviewcalc = calc; }
+  const rule = normalizeUpperEnum(api.reviewpenalty_percentrule, ['STUDENT_SCORE', 'MAX_SCORE'] as const);
+  if (rule !== undefined) { settings.reviewpenalty_percentrule = rule; }
+  for (const key of ['peer_review_start_date', 'peer_review_end_date'] as const) {
+    const v = api[key];
+    if (v === null) { settings[key] = null; }
+    else if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) { settings[key] = v; }
+  }
+  const reviews = toFiniteNumber(api.reviews_number);
+  if (reviews !== undefined) { settings.reviews_number = reviews; }
+  const penalty = toFiniteNumber(api.reviewpenalty);
+  if (penalty !== undefined) { settings.reviewpenalty = penalty; }
+  if (typeof api.reviewguide === 'string') { settings.reviewguide = api.reviewguide; }
+}
+
 function addObservedSetting(
   observed: Record<string, unknown>,
   key: string,
@@ -108,6 +149,7 @@ export function mapAssignmentSettings(
   }
   addObservedSetting(observedSettings, 'send_webhook', apiResponse.send_webhook);
   if (apiResponse.live_code_comments !== undefined) { settings.live_code_comments = apiResponse.live_code_comments; }
+  mapPeerReviewSettings(apiResponse, settings);
   if (Object.keys(observedSettings).length > 0) {
     settings._observed_settings = observedSettings;
   }
@@ -201,6 +243,9 @@ export function mapPartSettings(
 
   addObservedSetting(observedSettings, 'description', apiResponse.description);
   addObservedSetting(observedSettings, 'max_points', apiResponse.max_points);
+  // Tenant-scoped image identity (field report #3): kept for reference, never pushed.
+  addObservedSetting(observedSettings, 'container_image_id', apiResponse.container_image_id);
+  addObservedSetting(observedSettings, 'container_image_label', apiResponse.container_image_label);
   if (apiResponse.late_penalty_percent !== undefined) { settings.late_penalty_percent = apiResponse.late_penalty_percent; }
   if (apiResponse.late_penalty_percent_rule !== undefined) { settings.late_penalty_percent_rule = apiResponse.late_penalty_percent_rule; }
   if (apiResponse.deadlinedate !== undefined) { settings.deadlinedate = apiResponse.deadlinedate; }
@@ -229,6 +274,8 @@ export function mapPartSettings(
     if (!isNaN(parsed)) { settings.databricks_maxusers = parsed; }
   }
   if (apiResponse.tags !== undefined) { settings.tags = apiResponse.tags; }
+  const cleanupTime = toFiniteNumber(apiResponse.cleanup_time);
+  if (cleanupTime !== undefined) { settings.cleanup_time = cleanupTime; }
   if (Object.keys(observedSettings).length > 0) {
     settings._observed_settings = observedSettings;
   }

@@ -32,6 +32,7 @@ import {
 } from '../utils/settings-sync';
 import { mapRubrics, planRubricSync } from '../utils/rubrics';
 import { deepEqual } from '../utils/deep-equal';
+import { PEER_REVIEW_SETTING_KEYS } from '../utils/known-settings';
 
 const ACCEPTED_UNVERIFIED_ASSIGNMENT_KEYS = [
   'anonymous_grading',
@@ -528,7 +529,8 @@ function settingsDiffer(local: unknown, remote: unknown): boolean {
  * Non-schema/create-only fields may be preserved under _observed_settings but
  * should not trigger push updates.
  */
-function detectAssignmentSettingsChanged(
+/** @internal Exported for testing */
+export function detectAssignmentSettingsChanged(
   configAssignment: Assignment,
   remoteAssignment: VocareumAssignmentResponse
 ): boolean {
@@ -561,6 +563,14 @@ function detectAssignmentSettingsChanged(
   if (hasValue(s.exam_duration) && remoteAssignment.exam_duration !== undefined && settingsDiffer(s.exam_duration, remoteAssignment.exam_duration)) { return true; }
   if (hasValue(s.num_attempts) && remoteAssignment.num_attempts !== undefined && settingsDiffer(s.num_attempts, remoteAssignment.num_attempts)) { return true; }
 
+  // Peer review (field report #5). A key the server does not return is not
+  // drift — older tenants or plans may not expose peer review at all.
+  const remoteRecord = remoteAssignment as unknown as Record<string, unknown>;
+  for (const key of PEER_REVIEW_SETTING_KEYS) {
+    const local = s[key];
+    if (hasValue(local) && remoteRecord[key] !== undefined && settingsDiffer(local, remoteRecord[key])) { return true; }
+  }
+
   return false;
 }
 
@@ -578,7 +588,8 @@ function detectAssignmentSettingsChanged(
  * Accepted-unverified fields are written when payloads are sent, but absent
  * readback is not treated as drift.
  */
-function detectPartSettingsChanged(
+/** @internal Exported for testing */
+export function detectPartSettingsChanged(
   configPart: Part,
   remotePart?: VocareumPartResponse
 ): boolean {
@@ -610,6 +621,7 @@ function detectPartSettingsChanged(
   if (s.container_image !== undefined && s.container_image !== null && settingsDiffer(s.container_image, remotePart.container_image)) { return true; }
   if (s.number_of_submissions !== undefined && s.number_of_submissions !== null && remotePart.number_of_submissions !== undefined && settingsDiffer(s.number_of_submissions, remotePart.number_of_submissions)) { return true; }
   if (s.databricks_maxusers !== undefined && s.databricks_maxusers !== null && settingsDiffer(s.databricks_maxusers, remotePart.databricks_maxusers)) { return true; }
+  if (s.cleanup_time !== undefined && s.cleanup_time !== null && remotePart.cleanup_time !== undefined && settingsDiffer(s.cleanup_time, remotePart.cleanup_time)) { return true; }
 
   // Compare submission filters (normalize both to object format)
   if (s.submission_filters !== undefined && s.submission_filters !== null) {

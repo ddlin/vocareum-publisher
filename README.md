@@ -200,7 +200,33 @@ Because Vocareum's API treats fields inconsistently — some are writable, some 
   assignment is rejected outright. **To change a course's points, edit `parts[].rubrics`
   in `vocareum.yaml` and push** — see [Rubrics](#rubrics) below. This is the *only* way
   vocgit can change a course's points, since both point fields are otherwise read-only.
+
+  A container part's **`container_image_id`** and **`container_image_label`** are
+  observed too. The image *ID* belongs to one Vocareum tenant: an NA ID means nothing on
+  EU. The part-update API ignores both fields, so vocgit keeps them for reference and never
+  sends them, including when you push a config pulled from one tenant to another.
 - **`_unknown_settings`** — fields vocgit doesn't recognize yet (typically new Vocareum features). vocgit preserves them verbatim and passes them back through unchanged on the next push, so nothing is silently lost. When these appear, vocgit prints an end-of-run notice asking you to [file an issue](https://github.com/ddlin/vocareum-publisher/issues/new) so the field can be promoted to a supported setting.
+
+**Peer review settings** (assignment `settings:`). Vocareum enforces these rules, and vocgit checks them when it loads `vocareum.yaml` so a mistake fails before the push starts:
+
+| Setting | Values |
+|---------|--------|
+| `peer_review_toggle` | `true` / `false`. Turning it off makes Vocareum reset the three options marked * to `false`. |
+| `peer_schedule_mode` | `SCHEDULED`, `MANUAL`, `AUTO` |
+| `peer_review_start_date`, `peer_review_end_date` | `YYYY-MM-DD` (a date and time is rejected), or `null` |
+| `peer_hide_code`*, `peer_gallery`*, `peer_grading_toggle`* | `true` only when `peer_review_toggle: true` |
+| `reviews_number` | reviews each student writes (whole number) |
+| `reviewguide` | guidance text for reviewers |
+| `reviewpenalty` | penalty for missing reviews |
+| `reviewpenalty_percentrule` | `STUDENT_SCORE`, `MAX_SCORE` |
+| `reviewcalc` | `AVERAGE`, `MEDIAN`, `MAXIMUM` |
+
+Part `cleanup_time` is a known setting too. Vocareum stores it on container labs and
+ignores it on Vocareum Standard parts.
+
+Configs pulled by an older vocgit keep these fields under `_unknown_settings`. vocgit moves
+each one to its proper place when it loads the config, so they push as normal settings, and
+the YAML is updated the next time `pull` rewrites that assignment's settings.
 
 **"Accepted but not confirmed" fields.** Some writable fields (e.g. `exam_mode`, `exam_duration`, `deadlinedate`, `late_penalty_percent`) are accepted by the API on write but are not echoed back on read. vocgit writes them and trusts the success response — it just can't read them back to confirm the value applied, so it won't report drift on them.
 

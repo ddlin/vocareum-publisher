@@ -37,6 +37,7 @@ import type { PullRequest } from './types';
 import {
   OBSERVED_ASSIGNMENT_SETTING_KEYS,
   OBSERVED_PART_SETTING_KEYS,
+  PEER_REVIEW_SETTING_KEYS,
 } from '../../utils/known-settings';
 import {
   shouldSyncAssignmentSettings,
@@ -380,7 +381,8 @@ function clearObservedTopLevelSettings(
   }
 }
 
-function compareAssignmentSettings(
+/** @internal Exported for testing */
+export function compareAssignmentSettings(
   localSettings: NonNullable<AssignmentSettings> | undefined,
   remoteSettings: NonNullable<AssignmentSettings>
 ): SettingDiff[] {
@@ -395,6 +397,7 @@ function compareAssignmentSettings(
     'show_end_exam_button',
     'lti_on', 'anonymous_grading', 'grading_visibility',
     'live_code_comments',
+    ...PEER_REVIEW_SETTING_KEYS,
   ];
 
   for (const key of keys) {
@@ -408,7 +411,8 @@ function compareAssignmentSettings(
   return diffs;
 }
 
-function comparePartSettings(
+/** @internal Exported for testing */
+export function comparePartSettings(
   localSettings: NonNullable<PartSettings> | undefined,
   remoteSettings: NonNullable<PartSettings>
 ): SettingDiff[] {
@@ -420,7 +424,7 @@ function comparePartSettings(
     'submission_filters', 'cloud_labs', 'instant_aws_access',
     'session_length', 'monthly_dollar', 'monthly_time', 'total_time', 'total_dollar',
     'endlab', 'labtype', 'container_image', 'lab_interface',
-    'databricks_maxusers', 'tags',
+    'databricks_maxusers', 'tags', 'cleanup_time',
   ];
 
   for (const key of keys) {

@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { ConfigSchema, type Config, type ConfigUpdates, type Assignment } from '../types/config';
 import type { ValidationResult, ValidationError } from '../types/state';
 import { logger } from '../utils/logger';
+import { promoteRecognizedUnknownSettings } from './settings-migration';
 
 /**
  * Custom error for configuration issues
@@ -58,6 +59,9 @@ export async function loadConfig(configPath: string): Promise<Config> {
       );
     }
 
+    // Settings a newer vocgit recognizes may still sit in `_unknown_settings`
+    // from an older pull; move them where they belong before validation.
+    promoteRecognizedUnknownSettings(result.config);
     const parsed = ConfigSchema.safeParse(result.config);
 
     if (!parsed.success) {

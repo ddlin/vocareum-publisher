@@ -220,6 +220,32 @@ const GradingVisibilitySchema = z.union([
   z.enum(['all', 'assigned']).transform((value) => value.toUpperCase() as 'ALL' | 'ASSIGNED'),
 ]);
 
+/** Case-insensitive enum that always yields the API's upper-case spelling. */
+function upperEnum<const T extends readonly [string, ...string[]]>(
+  values: T
+): z.ZodEffects<z.ZodString, T[number], string> {
+  const allowed = new Set<string>(values);
+  const isAllowed = (x: string): x is T[number] => allowed.has(x);
+  return z.string().transform((v, ctx) => {
+    const upper = v.toUpperCase();
+    if (!isAllowed(upper)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `must be one of ${values.join(', ')} (got "${v}")` });
+      return z.NEVER;
+    }
+    return upper;
+  });
+}
+
+// Allowed values come from the API's own 400 messages (probe, 2026-11-10).
+const PeerScheduleModeSchema = upperEnum(['SCHEDULED', 'MANUAL', 'AUTO'] as const);
+const ReviewCalcSchema = upperEnum(['AVERAGE', 'MEDIAN', 'MAXIMUM'] as const);
+const ReviewPenaltyRuleSchema = upperEnum(['STUDENT_SCORE', 'MAX_SCORE'] as const);
+/** The API accepts only a bare date here (an ISO datetime is rejected). */
+const PeerReviewDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be a date in YYYY-MM-DD format');
+
+/** Peer-review options the server accepts only while peer review is enabled. */
+const PEER_REVIEW_DEPENDENT_KEYS = ['peer_hide_code', 'peer_gallery', 'peer_grading_toggle'] as const;
+
 /**
  * Remote fields observed from Vocareum but not written by vocgit push.
  * Pull/import may update this bucket to document server state without turning
@@ -276,6 +302,8 @@ export const PartSettingsSchema = z
     lab_interface: LabInterfaceConfigSchema.nullish(),
     /** Maximum users for Databricks labs (API returns string, coerce to number) */
     databricks_maxusers: z.coerce.number().nullish(),
+    /** Container labs only (ignored on Vocareum Standard). API returns string, coerce to number. */
+    cleanup_time: z.coerce.number().nonnegative().nullish(),
     /** Tags for the part (API returns object, but older configs may have empty array) */
     tags: z.union([z.array(z.string()), z.record(z.string(), TagValueSchema)]).nullish(),
     /** Pass-through bucket for settings vocgit does not formally understand.
@@ -400,6 +428,31 @@ export const AssignmentSettingsSchema = z
     send_webhook: z.boolean().nullish(),
     /** Enable live code comments */
     live_code_comments: z.boolean().nullish(),
+    // ── Peer review (field report #5; probed writable 2026-11-10) ──
+    /** Enable peer review. Turning it off resets the three options below server-side. */
+    peer_review_toggle: z.boolean().nullish(),
+    /** SCHEDULED, MANUAL or AUTO */
+    peer_schedule_mode: PeerScheduleModeSchema.nullish(),
+    /** YYYY-MM-DD */
+    peer_review_start_date: PeerReviewDateSchema.nullish(),
+    /** YYYY-MM-DD */
+    peer_review_end_date: PeerReviewDateSchema.nullish(),
+    /** Requires peer_review_toggle: true */
+    peer_hide_code: z.boolean().nullish(),
+    /** Requires peer_review_toggle: true */
+    peer_gallery: z.boolean().nullish(),
+    /** Requires peer_review_toggle: true */
+    peer_grading_toggle: z.boolean().nullish(),
+    /** Reviews each student writes */
+    reviews_number: z.coerce.number().int().nonnegative().nullish(),
+    /** Guidance text shown to reviewers */
+    reviewguide: z.string().nullish(),
+    /** Penalty for not completing reviews */
+    reviewpenalty: z.coerce.number().nonnegative().nullish(),
+    /** STUDENT_SCORE or MAX_SCORE */
+    reviewpenalty_percentrule: ReviewPenaltyRuleSchema.nullish(),
+    /** AVERAGE, MEDIAN or MAXIMUM */
+    reviewcalc: ReviewCalcSchema.nullish(),
     /** Pass-through bucket for settings vocgit does not formally understand.
      *  Populated by mapAssignmentSettings from unknown API response fields;
      *  spread back into outgoing API payloads on publish. See spec
@@ -408,6 +461,20 @@ export const AssignmentSettingsSchema = z
     _unknown_settings: z.record(z.string(), z.unknown()).optional(),
     /** Fields observed from Vocareum but intentionally not written by push. */
     _observed_settings: ObservedSettingsSchema.optional(),
+  })
+  .superRefine((settings, ctx) => {
+    // Mirror the server rule so a bad combination fails at config load with a
+    // fix, not as a 400 halfway through a push.
+    if (settings.peer_review_toggle === true) { return; }
+    for (const key of PEER_REVIEW_DEPENDENT_KEYS) {
+      if (settings[key] === true) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key}: true requires peer_review_toggle: true (Vocareum rejects it otherwise)`,
+        });
+      }
+    }
   })
   .optional();
 

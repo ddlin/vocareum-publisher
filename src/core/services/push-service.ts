@@ -197,10 +197,12 @@ import {
   pushSettingChange,
   buildPartSettingsPayload,
   omitPlatformKeysForUpdate,
+  peerReviewPayload,
   findPlatformFieldDrift,
   collectSettingsState,
   withoutUndefined,
 } from '../payload-helpers';
+import { PEER_REVIEW_SETTING_KEYS } from '../../utils/known-settings';
 import { writePartSettingsWithFallback } from './part-settings-writer';
 
 // ---------------------------------------------------------------------------
@@ -362,6 +364,7 @@ export async function planPush(
           'nosubmit', 'publish', 'publish_grades', 'auto_submit', 'grading_on_submit',
           'noworkarea', 'exam_mode', 'exam_duration', 'num_attempts', 'show_end_exam_button',
           'lti_on', 'anonymous_grading', 'grading_visibility', 'live_code_comments',
+          ...PEER_REVIEW_SETTING_KEYS,
         ] as const;
         for (const key of asnKeys) {
           const v = asnSettings[key];
@@ -835,6 +838,7 @@ export async function executePush(
             'nosubmit', 'publish', 'publish_grades', 'auto_submit', 'grading_on_submit',
             'noworkarea', 'exam_mode', 'exam_duration', 'num_attempts', 'show_end_exam_button',
             'lti_on', 'anonymous_grading', 'grading_visibility', 'live_code_comments',
+            ...PEER_REVIEW_SETTING_KEYS,
           ];
 
           pushSettingChange(settingChanges, {
@@ -875,6 +879,7 @@ export async function executePush(
             anonymous_grading: nullToUndefined(asnSettings?.anonymous_grading),
             grading_visibility: nullToUndefined(asnSettings?.grading_visibility),
             live_code_comments: nullToUndefined(asnSettings?.live_code_comments),
+            ...peerReviewPayload(asnSettings),
           });
 
           const filteredAsnUnknowns = filterUnknownSettingsForPayload(
@@ -985,7 +990,7 @@ export async function executePush(
               'monthly_time', 'total_time', 'total_dollar', 'late_penalty_percent',
               'late_penalty_percent_rule', 'deadlinedate', 'endlab', 'labtype',
               'container_image', 'number_of_submissions', 'lab_interface',
-              'databricks_maxusers', 'tags',
+              'databricks_maxusers', 'tags', 'cleanup_time',
             ];
             const normalizedToFilters = sanitizeSubmissionFilters(normalizeSubmissionFilters(toPartSettings.submission_filters));
             const normalizedFromFilters = sanitizeSubmissionFilters(normalizeSubmissionFilters(remotePart.submission_filters));

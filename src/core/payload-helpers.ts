@@ -20,6 +20,7 @@ import {
   NON_SETTING_FIELDS_PART,
   OBSERVED_ASSIGNMENT_SETTING_KEYS,
   OBSERVED_PART_SETTING_KEYS,
+  PEER_REVIEW_SETTING_KEYS,
 } from '../utils/known-settings';
 import {
   shouldSyncAssignmentSettings,
@@ -30,6 +31,25 @@ import type { EventSink } from './services/event-sink';
 // ---------------------------------------------------------------------------
 // Reserved-key sets
 // ---------------------------------------------------------------------------
+
+/**
+ * Peer-review fields for an assignment UPDATE payload (field report #5).
+ * `null`/absent means "not managed by this config" and is not sent, the same as
+ * every other setting. All twelve go in ONE payload: the server accepts
+ * peer_hide_code / peer_gallery / peer_grading_toggle = true only alongside
+ * peer_review_toggle = true, and checks them against the toggle in the same
+ * request.
+ */
+export function peerReviewPayload(
+  settings: { [K in (typeof PEER_REVIEW_SETTING_KEYS)[number]]?: unknown } | null | undefined
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of PEER_REVIEW_SETTING_KEYS) {
+    const v = settings?.[key];
+    if (v !== undefined && v !== null) { out[key] = v; }
+  }
+  return out;
+}
 
 /** All keys that must not be overridden by _unknown_settings for assignment payloads. */
 export const RESERVED_ASSIGNMENT_KEYS: ReadonlySet<string> = new Set([
@@ -245,6 +265,7 @@ export function buildPartSettingsPayload(
     number_of_submissions: nullToUndefined(partSettings?.number_of_submissions),
     lab_interface: labInterfaceToWriteObject(partSettings?.lab_interface),
     databricks_maxusers: nullToUndefined(partSettings?.databricks_maxusers),
+    cleanup_time: nullToUndefined(partSettings?.cleanup_time),
     tags: normalizeTags(partSettings?.tags),
   });
 
