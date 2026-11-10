@@ -944,6 +944,7 @@ export async function detectContentDrift(
           configPart.directories
         );
 
+        const managedLinks: string[] = [];
         const remoteFiles = await downloadContent(
           client,
           config.vocareum.course_id,
@@ -951,7 +952,7 @@ export async function detectContentDrift(
           configPart.part_id,
           downloadPlan.directories,
           downloadPlan.architecture,
-          { strict: true }
+          { strict: true, managedLinks }
         );
 
         const fileDiffs: FileDiff[] = [];
@@ -1028,6 +1029,7 @@ export async function detectContentDrift(
         }
 
         const directories = downloadPlan.directories;
+        const shadowedByLink = new Set<string>();
         for (const dir of directories) {
           const localDirPath = path.join(localBaseAbs, dir);
           if (!await pathExists(localDirPath)) { continue; }
@@ -1053,12 +1055,31 @@ export async function detectContentDrift(
               if (!await isPathConfinedToBase(localBaseAbs, fullPath)) { continue; }
               const stat = await fs.stat(fullPath);
               if (stat.isFile() && remoteFiles[relativePath] === undefined) {
+                // Under a Vocareum-managed link the remote content is unreadable,
+                // not deleted: never plan an unlink there. Report the check as
+                // incomplete instead (the pull exits 1, nothing is removed).
+                const underLink = managedLinks.find(
+                  link => relativePath === link || relativePath.startsWith(`${link}${path.sep}`) || relativePath.startsWith(`${link}/`)
+                );
+                if (underLink !== undefined) {
+                  shadowedByLink.add(underLink);
+                  continue;
+                }
                 fileDiffs.push({ filePath: relativePath, status: 'deleted' });
               }
             }
           } catch {
             // Directory doesn't exist or can't be read
           }
+        }
+
+        if (shadowedByLink.size > 0) {
+          skipped?.push({
+            assignmentName: assignment.name,
+            reason: `local files under ${[...shadowedByLink].map(l => `${l}/`).join(', ')} were not compared: ` +
+              `on Vocareum that path is a link it manages, which cannot be read. Move them elsewhere; ` +
+              `they are not deleted.`,
+          });
         }
 
         const contentState = config.publish_history?.[0]?.content_state ?? {};
@@ -1077,7 +1098,10 @@ export async function detectContentDrift(
               `some remote files could not be written locally (see the warnings above)`,
           });
         }
-        if (fileDiffs.length > 0 || incompleteDirectories.length > 0) {
+        // A still-incomplete directory with nothing else to change must still
+        // reach apply, or its failed recovery leaves no publish_history entry
+        // (AGENTS.md #9) and a mixed run can record plain success.
+        if (fileDiffs.length > 0 || incompleteDirectories.length > 0 || stillIncomplete.length > 0) {
           partsDrift.push({
             partId: configPart.part_id,
             partName: configPart.name ?? 'Part',

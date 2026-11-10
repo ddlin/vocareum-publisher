@@ -127,6 +127,8 @@ export function resolveMaxDownloadFiles(env: NodeJS.ProcessEnv = process.env): n
 interface DownloadBudget {
   /** Per-walk collector for entries a non-strict walk skipped. */
   failures?: DownloadFailure[];
+  /** Vocareum-managed link entries the walk left out (see isVocareumManagedLink). */
+  managedLinks?: string[];
   limits: DownloadContentLimits;
   files: number;
   bytes: number;
@@ -831,6 +833,10 @@ export function downloadContent(
     /** Non-strict only: receives every entry that was skipped, so the caller
      *  can report the pull as incomplete instead of successful. */
     failures?: DownloadFailure[];
+    /** Receives the FileMap key of every Vocareum-managed link the walk left
+     *  out (e.g. `lib/publicdata`), so a caller comparing against local files
+     *  does not read their absence as a remote deletion. */
+    managedLinks?: string[];
   }
 ): Promise<FileMap> {
   return (async (): Promise<FileMap> => {
@@ -843,6 +849,7 @@ export function downloadContent(
       files: 0,
       bytes: 0,
       failures: options?.failures,
+      managedLinks: options?.managedLinks,
     };
 
     const strict = options?.strict === true;
@@ -996,6 +1003,7 @@ async function downloadDirectoryTree(
         }
         if (childListing.absent) {
           if (isVocareumManagedLink(directory, relativePath, entry.path)) {
+            budget.managedLinks?.push(filemapKey);
             client.events.emit({
               level: 'debug',
               message: `Skipping ${filemapKey}: Vocareum's course-wide data link, not assignment content`,
@@ -1027,7 +1035,10 @@ async function downloadDirectoryTree(
  * Valid targets: [course, data, docs, ...]", seen 2026-11-10 on a Vocareum
  * Standard part inside Container course 215500). vocgit picks the directory set
  * from the part's labtype, which can disagree with the course; say how to fix
- * the config instead of passing the raw API text through.
+ * the config instead of passing the raw API text through. The fix is the part's
+ * own `directories` list: pull writes one for every imported part, so changing
+ * `vocareum.architecture` would not stop the upload (and would move every
+ * other directory to the other path prefix).
  *
  * @internal Exported for testing
  */
@@ -1038,9 +1049,8 @@ export function invalidTargetMessage(error: unknown, directory: DirectoryType): 
   return (
     `Vocareum does not accept "${directory}/" as an upload target for this part` +
     `${m[2] !== undefined ? ` (${m[2]})` : ''}. The course's workspace layout differs ` +
-    `from the one vocgit inferred from the part's labtype. Remove "${directory}" from this ` +
-    `part's directories in vocareum.yaml, or set vocareum.architecture to match the course ` +
-    `(Container courses have no lib/ or asnlib/ upload target).`
+    `from the one vocgit inferred from the part's labtype. Remove "${directory}" (and any other ` +
+    `directory not in that list, such as asnlib) from this part's \`directories\` in vocareum.yaml.`
   );
 }
 

@@ -427,7 +427,8 @@ describe('an upload target the course does not have (seen 2026-11-10)', () => {
     const msg = invalidTargetMessage(raw, 'lib');
     expect(msg).toContain('Vocareum does not accept "lib/"');
     expect(msg).toContain('Valid targets: [course, data, docs, scripts, startercode, private]');
-    expect(msg).toContain('vocareum.architecture');
+    expect(msg).toContain("from this part's `directories`");
+    expect(msg).not.toContain('vocareum.architecture');
     expect(invalidTargetMessage(new APIError('specified file does not exist x', 400), 'lib')).toBeUndefined();
   });
 });

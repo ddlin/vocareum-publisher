@@ -28,8 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   counts.
 - **An upload target the course does not have is explained.** Vocareum rejects
   `lib` as a target in a Container course, which happens when a Vocareum
-  Standard part sits in one. Push now says to remove `lib` from that part's
-  directories or set `vocareum.architecture`, instead of passing the raw API
+  Standard part sits in one. Push now says to remove `lib` (and `asnlib`) from
+  that part's `directories` in `vocareum.yaml`, instead of passing the raw API
   error through.
 
 ### Fixed
