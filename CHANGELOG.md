@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environments under `data/` list tens of thousands of files.
 
 ### Changed
+- **Dependencies upgraded to clear `npm audit`:** `zod` 3 → 4 (memory exhaustion
+  advisory GHSA-mrhx-c7xc-m3w5), `simple-git` 3 → 4 (critical advisory
+  GHSA-v5rq-49vh-5v5c), and `follow-redirects` (via axios) to 1.16.3. Config
+  validation errors now use zod 4's wording, e.g. `Invalid input: expected string,
+  received number` rather than `Expected string, received number`. The hints
+  vocgit adds to those errors are unchanged.
 - **Download safety limits keep what arrived.** When a pull hits the file-count
   or total-size cap, the download now stops and keeps the files already
   fetched. The import is saved, marked `INCOMPLETE` and exits 1, with the

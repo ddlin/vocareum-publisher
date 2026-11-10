@@ -143,18 +143,20 @@ export function validateConfig(config: unknown): ValidationResult {
  * Convert Zod issues into ValidationError records with user-facing hints.
  */
 function zodErrorsToValidationErrors(error: z.ZodError): ValidationError[] {
-  return error.errors.map((err) => {
+  return error.issues.map((err) => {
     const path = err.path.join('.');
     let message = `${path}: ${err.message}`;
+    // zod 4 words these as "Invalid input: expected string, received number".
+    const text = err.message.toLowerCase();
 
     // Add helpful hints for common errors
-    if (path.includes('tags') && err.message.includes('Expected')) {
+    if (path.includes('tags') && text.includes('expected')) {
       message += '\n  Hint: tags should be an object like { key: "value" } or an empty array []';
-    } else if ((path.includes('_id') || path.includes('Id')) && err.message.includes('Expected string')) {
+    } else if ((path.includes('_id') || path.includes('Id')) && text.includes('expected string')) {
       message += '\n  Hint: All IDs must be quoted strings (e.g., "12345" not 12345)';
-    } else if (err.message.includes('Expected array, received object')) {
+    } else if (text.includes('expected array, received object')) {
       message += '\n  Hint: This field expects an array [...] but got an object {...}';
-    } else if (err.message.includes('Expected object, received array')) {
+    } else if (text.includes('expected object, received array')) {
       message += '\n  Hint: This field expects an object {...} but got an array [...]';
     }
 

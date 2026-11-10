@@ -4,7 +4,7 @@
  * Git operations using simple-git library.
  */
 
-import simpleGit, { SimpleGit } from 'simple-git';
+import { simpleGit, type SimpleGit } from 'simple-git';
 import { logger } from './logger';
 
 /**

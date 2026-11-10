@@ -49,7 +49,7 @@ describe('validateSchema', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(SchemaValidationError);
       expect((error as SchemaValidationError).errors).toBeDefined();
-      expect((error as SchemaValidationError).errors.errors).toHaveLength(2);
+      expect((error as SchemaValidationError).errors.issues).toHaveLength(2);
     }
   });
 

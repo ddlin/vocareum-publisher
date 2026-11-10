@@ -223,13 +223,13 @@ const GradingVisibilitySchema = z.union([
 /** Case-insensitive enum that always yields the API's upper-case spelling. */
 function upperEnum<const T extends readonly [string, ...string[]]>(
   values: T
-): z.ZodEffects<z.ZodString, T[number], string> {
+): z.ZodType<T[number], string> {
   const allowed = new Set<string>(values);
   const isAllowed = (x: string): x is T[number] => allowed.has(x);
   return z.string().transform((v, ctx) => {
     const upper = v.trim().toUpperCase();
     if (!isAllowed(upper)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `must be one of ${values.join(', ')} (got "${v}")` });
+      ctx.addIssue({ code: 'custom', message: `must be one of ${values.join(', ')} (got "${v}")` });
       return z.NEVER;
     }
     return upper;
@@ -259,7 +259,7 @@ const PeerReviewDateSchema = z.string().refine(isCalendarDate, 'must be a real d
  * z.coerce.number(), "" / true / [] are rejected instead of becoming 0 or 1,
  * so a hand-edit typo can never turn into a real write.
  */
-function wholeNumber(min: number, max?: number): z.ZodEffects<z.ZodNumber, number, unknown> {
+function wholeNumber(min: number, max?: number): z.ZodType<number, unknown> {
   let n = z.number().int().min(min);
   if (max !== undefined) { n = n.max(max); }
   return z.preprocess(
