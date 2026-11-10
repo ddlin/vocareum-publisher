@@ -207,26 +207,32 @@ Because Vocareum's API treats fields inconsistently — some are writable, some 
   sends them, including when you push a config pulled from one tenant to another.
 - **`_unknown_settings`** — fields vocgit doesn't recognize yet (typically new Vocareum features). vocgit preserves them verbatim and passes them back through unchanged on the next push, so nothing is silently lost. When these appear, vocgit prints an end-of-run notice asking you to [file an issue](https://github.com/ddlin/vocareum-publisher/issues/new) so the field can be promoted to a supported setting.
 
-**Peer review settings** (assignment `settings:`). Vocareum enforces these rules, and vocgit checks them when it loads `vocareum.yaml` so a mistake fails before the push starts:
+**Peer review settings** (assignment `settings:`). vocgit checks the limits Vocareum enforces when it loads `vocareum.yaml`, so a mistake fails before the push starts:
 
 | Setting | Values |
 |---------|--------|
-| `peer_review_toggle` | `true` / `false`. Turning it off makes Vocareum reset the three options marked * to `false`. |
+| `peer_review_toggle` | `true` / `false` |
 | `peer_schedule_mode` | `SCHEDULED`, `MANUAL`, `AUTO` |
-| `peer_review_start_date`, `peer_review_end_date` | `YYYY-MM-DD` (a date and time is rejected), or `null` |
-| `peer_hide_code`*, `peer_gallery`*, `peer_grading_toggle`* | `true` only when `peer_review_toggle: true` |
-| `reviews_number` | reviews each student writes (whole number) |
+| `peer_review_start_date`, `peer_review_end_date` | a real date, `YYYY-MM-DD` (a date and time is rejected), or `null` to clear it |
+| `peer_hide_code`*, `peer_gallery`*, `peer_grading_toggle`* | `true` / `false` |
+| `reviews_number` | reviews each student writes, 1–10 |
 | `reviewguide` | guidance text for reviewers |
-| `reviewpenalty` | penalty for missing reviews |
+| `reviewpenalty` | penalty percentage for missing reviews, 0–100 |
 | `reviewpenalty_percentrule` | `STUDENT_SCORE`, `MAX_SCORE` |
 | `reviewcalc` | `AVERAGE`, `MEDIAN`, `MAXIMUM` |
 
-Part `cleanup_time` is a known setting too. Vocareum stores it on container labs and
-ignores it on Vocareum Standard parts.
+\* These take effect only while peer review is on. With `peer_review_toggle: false`, push
+sends them as `false`: Vocareum rejects `true` there, and resets them to `false` when
+peer review is turned off.
+
+Part `cleanup_time` is a known setting too: a whole number, 0 or more. Vocareum stores it
+on container labs and ignores it on Vocareum Standard parts. If a push has already sent a
+value that Vocareum did not store, later pushes warn instead of sending it again.
 
 Configs pulled by an older vocgit keep these fields under `_unknown_settings`. vocgit moves
-each one to its proper place when it loads the config, so they push as normal settings, and
-the YAML is updated the next time `pull` rewrites that assignment's settings.
+each one to its proper place when it loads the config, so they push as normal settings. A
+leftover value that is not valid stays where it is, is not pushed, and vocgit warns about it.
+The YAML is written in the new layout the next time a command saves `vocareum.yaml`.
 
 **"Accepted but not confirmed" fields.** Some writable fields (e.g. `exam_mode`, `exam_duration`, `deadlinedate`, `late_penalty_percent`) are accepted by the API on write but are not echoed back on read. vocgit writes them and trusts the success response — it just can't read them back to confirm the value applied, so it won't report drift on them.
 

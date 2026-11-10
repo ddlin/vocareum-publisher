@@ -17,7 +17,6 @@ import { normalizeSubmissionFilters, nullToUndefined,
 } from '../../types/config';
 import type {
   AssignmentSettingsPayload,
-  VocareumAssignmentResponse,
   VocareumPartResponse,
   RubricSyncPlan,
   RemoteRubric,
@@ -202,7 +201,6 @@ import {
   collectSettingsState,
   withoutUndefined,
 } from '../payload-helpers';
-import { PEER_REVIEW_SETTING_KEYS } from '../../utils/known-settings';
 import { writePartSettingsWithFallback } from './part-settings-writer';
 
 // ---------------------------------------------------------------------------
@@ -364,12 +362,13 @@ export async function planPush(
           'nosubmit', 'publish', 'publish_grades', 'auto_submit', 'grading_on_submit',
           'noworkarea', 'exam_mode', 'exam_duration', 'num_attempts', 'show_end_exam_button',
           'lti_on', 'anonymous_grading', 'grading_visibility', 'live_code_comments',
-          ...PEER_REVIEW_SETTING_KEYS,
         ] as const;
         for (const key of asnKeys) {
           const v = asnSettings[key];
           if (v !== undefined && v !== null) { knownPayload[key] = v; }
         }
+        // Same builder as executePush, so the fingerprint covers exactly what is sent.
+        Object.assign(knownPayload, peerReviewPayload(asnSettings));
         const filteredUnknowns = filterUnknownSettingsForPayload(
           asnSettings._unknown_settings,
           RESERVED_ASSIGNMENT_KEYS,
@@ -838,8 +837,9 @@ export async function executePush(
             'nosubmit', 'publish', 'publish_grades', 'auto_submit', 'grading_on_submit',
             'noworkarea', 'exam_mode', 'exam_duration', 'num_attempts', 'show_end_exam_button',
             'lti_on', 'anonymous_grading', 'grading_visibility', 'live_code_comments',
-            ...PEER_REVIEW_SETTING_KEYS,
           ];
+          // History records the peer-review values as sent (see peerReviewPayload).
+          const peerPayload = peerReviewPayload(asnSettings);
 
           pushSettingChange(settingChanges, {
             scope: 'assignment',
@@ -849,10 +849,13 @@ export async function executePush(
             from: remoteAssignment.name,
             to: action.assignment.name,
           });
-          for (const key of assignmentKeys) {
-            const toValue = asnSettings?.[key];
+          const historyEntries: [string, unknown][] = [
+            ...assignmentKeys.map((key): [string, unknown] => [key, asnSettings?.[key]]),
+            ...Object.entries(peerPayload),
+          ];
+          for (const [key, toValue] of historyEntries) {
             if (!hasSettingValue(toValue)) { continue; }
-            const fromValue = remoteAssignment[key as keyof VocareumAssignmentResponse];
+            const fromValue = (remoteAssignment as unknown as Record<string, unknown>)[key];
             pushSettingChange(settingChanges, {
               scope: 'assignment',
               assignment_id: updateId,
@@ -879,7 +882,7 @@ export async function executePush(
             anonymous_grading: nullToUndefined(asnSettings?.anonymous_grading),
             grading_visibility: nullToUndefined(asnSettings?.grading_visibility),
             live_code_comments: nullToUndefined(asnSettings?.live_code_comments),
-            ...peerReviewPayload(asnSettings),
+            ...peerPayload,
           });
 
           const filteredAsnUnknowns = filterUnknownSettingsForPayload(

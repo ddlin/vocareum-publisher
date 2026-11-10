@@ -14,13 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `reviews_number`, `reviewguide`, `reviewpenalty`, `reviewpenalty_percentrule`,
   `reviewcalc`) are now typed settings. Before, they were passed through untyped in
   `_unknown_settings`. Each was checked against the live API before being promoted: all
-  twelve are stored. Vocareum's own rules are enforced when the config loads:
-  - the three peer options can be `true` only while `peer_review_toggle` is `true`;
-  - the dates must be `YYYY-MM-DD`;
-  - the three enums accept only the values the API lists.
-  Drift on these fields is detected by both pull and push. (Field report #5.)
-- **Part `cleanup_time`** is a known setting. Vocareum stores it on container labs and
-  ignores it on Vocareum Standard.
+  twelve are stored. The config is checked against the API's own limits when it loads:
+  - dates must be real `YYYY-MM-DD` dates (an unquoted YAML date works too), and `null`
+    clears a date on push;
+  - `reviews_number` is a whole number 1–10 and `reviewpenalty` a whole number 0–100;
+  - the three enums accept only the values the API lists, in any case.
+  With `peer_review_toggle: false`, push sends the three peer options as `false`, which is
+  what Vocareum stores anyway; it rejects them as `true` in that request. Changes to these
+  fields are detected by both pull and push. (Field report #5.)
+- **Part `cleanup_time`** is a known setting: a whole number, 0 or more. Vocareum stores it
+  on container labs and ignores it on Vocareum Standard. When a push has already sent a
+  value that Vocareum did not store, later pushes warn instead of sending it again.
 
 ### Fixed
 - **A pulled container image ID is no longer pushed back.** `container_image_id` and
@@ -33,8 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recognizes such a field, loading the config moves it where it now belongs. Known fields
   become top-level settings, observed fields move to `_observed_settings`, and server-only
   fields are dropped. This replaces a warning-and-drop on every push. A top-level value
-  always wins over a leftover copy. A leftover value that fails its schema stays where it
-  is, so it cannot stop the config from loading.
+  always wins over a leftover copy, and raw API spellings such as `"1"` or `median` are
+  normalized first. A leftover value that is still invalid stays where it is, so it cannot
+  stop the config from loading. It is not pushed, and vocgit warns about it. The file is
+  written in the new layout the next time any command saves `vocareum.yaml`.
+- **A peer-review value that vocgit does not recognize is kept.** If Vocareum returns an
+  enum value or date format newer than this release, pull now keeps it in
+  `_unknown_settings` and reports it, instead of dropping it.
 
 ## [1.5.0] — 2026-11-09
 

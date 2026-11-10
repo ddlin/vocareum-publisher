@@ -32,7 +32,8 @@ import {
 } from '../utils/settings-sync';
 import { mapRubrics, planRubricSync } from '../utils/rubrics';
 import { deepEqual } from '../utils/deep-equal';
-import { PEER_REVIEW_SETTING_KEYS } from '../utils/known-settings';
+import { mapPeerReviewSettings } from '../utils/settings';
+import { peerReviewPayload } from './payload-helpers';
 
 const ACCEPTED_UNVERIFIED_ASSIGNMENT_KEYS = [
   'anonymous_grading',
@@ -93,6 +94,33 @@ function hasAcceptedUnverifiedPartChange(
     }
   }
   return false;
+}
+
+/** Local cleanup_time is set and differs numerically from what Vocareum returns. */
+function cleanupTimeDiffers(configPart: Part, remotePart: VocareumPartResponse | undefined): boolean {
+  const local = configPart.settings?.cleanup_time;
+  if (local === undefined || local === null || remotePart?.cleanup_time === undefined) { return false; }
+  const remote = Number(remotePart.cleanup_time);
+  return !Number.isFinite(remote) || remote !== local;
+}
+
+/**
+ * cleanup_time differs from Vocareum's, but the last successful push already
+ * sent this exact value: the server did not store it (Standard labs read back
+ * 0), so sending it again cannot help.
+ *
+ * @internal Exported for testing
+ */
+export function cleanupTimeIgnoredByServer(
+  assignment: Assignment,
+  part: Part,
+  remotePart: VocareumPartResponse | undefined,
+  lastPublishHistory?: PublishHistory
+): boolean {
+  if (!cleanupTimeDiffers(part, remotePart)) { return false; }
+  const state = lastPublishHistory?.status === 'failed' ? undefined : lastPublishHistory?.settings_state;
+  if (!state) { return false; }
+  return deepEqual(part.settings?.cleanup_time, state[partSettingStateKey(assignment, part, 'cleanup_time')]);
 }
 
 /**
@@ -250,8 +278,20 @@ export async function reconcile(
           let metadataChanged = false;
           if (shouldSyncPartSettings(config, configAssignment, configPart)) {
             const fullPart = await getPart(client, config.vocareum.course_id, remoteAssignment.id, mapping.apiPartId);
+            // Vocareum stores cleanup_time only on container labs; a Standard
+            // lab accepts the PUT and reads back 0. Once the last successful
+            // push already sent this exact value, re-sending it cannot change
+            // anything, so it stops counting as drift (otherwise every push
+            // would update the part again, forever).
+            const cleanupIgnored = cleanupTimeIgnoredByServer(configAssignment, configPart, fullPart, lastPublishHistory);
+            if (cleanupIgnored) {
+              events.emit({
+                level: 'warn',
+                message: `Part "${configPart.name ?? configPart.path}" of "${configAssignment.name}": Vocareum did not store cleanup_time ${String(configPart.settings?.cleanup_time)} (it reads back ${String(fullPart.cleanup_time)}). It applies to container labs only, so it is not re-sent.`,
+              });
+            }
             metadataChanged =
-              detectPartSettingsChanged(configPart, fullPart) ||
+              detectPartSettingsChanged(configPart, fullPart, { ignoreCleanupTime: cleanupIgnored }) ||
               hasAcceptedUnverifiedPartChange(configAssignment, configPart, lastPublishHistory);
           }
 
@@ -563,12 +603,16 @@ export function detectAssignmentSettingsChanged(
   if (hasValue(s.exam_duration) && remoteAssignment.exam_duration !== undefined && settingsDiffer(s.exam_duration, remoteAssignment.exam_duration)) { return true; }
   if (hasValue(s.num_attempts) && remoteAssignment.num_attempts !== undefined && settingsDiffer(s.num_attempts, remoteAssignment.num_attempts)) { return true; }
 
-  // Peer review (field report #5). A key the server does not return is not
-  // drift — older tenants or plans may not expose peer review at all.
-  const remoteRecord = remoteAssignment as unknown as Record<string, unknown>;
-  for (const key of PEER_REVIEW_SETTING_KEYS) {
-    const local = s[key];
-    if (hasValue(local) && remoteRecord[key] !== undefined && settingsDiffer(local, remoteRecord[key])) { return true; }
+  // Peer review (field report #5). Compare what push would SEND (see
+  // peerReviewPayload: off-toggle dependents as false, null dates as clears)
+  // with the remote run through the same mapper pull uses, so case, numeric
+  // strings and "1"/"0" flags compare like for like. A key the server does not
+  // return (or returns in a form the mapper cannot read) is not drift — older
+  // tenants or plans may not expose peer review at all.
+  const remotePeer: Record<string, unknown> = {};
+  mapPeerReviewSettings(remoteAssignment, remotePeer);
+  for (const [key, local] of Object.entries(peerReviewPayload(s))) {
+    if (remotePeer[key] !== undefined && !deepEqual(local, remotePeer[key])) { return true; }
   }
 
   return false;
@@ -591,7 +635,8 @@ export function detectAssignmentSettingsChanged(
 /** @internal Exported for testing */
 export function detectPartSettingsChanged(
   configPart: Part,
-  remotePart?: VocareumPartResponse
+  remotePart?: VocareumPartResponse,
+  options: { ignoreCleanupTime?: boolean } = {}
 ): boolean {
   if (!remotePart) { return false; }
 
@@ -621,7 +666,10 @@ export function detectPartSettingsChanged(
   if (s.container_image !== undefined && s.container_image !== null && settingsDiffer(s.container_image, remotePart.container_image)) { return true; }
   if (s.number_of_submissions !== undefined && s.number_of_submissions !== null && remotePart.number_of_submissions !== undefined && settingsDiffer(s.number_of_submissions, remotePart.number_of_submissions)) { return true; }
   if (s.databricks_maxusers !== undefined && s.databricks_maxusers !== null && settingsDiffer(s.databricks_maxusers, remotePart.databricks_maxusers)) { return true; }
-  if (s.cleanup_time !== undefined && s.cleanup_time !== null && remotePart.cleanup_time !== undefined && settingsDiffer(s.cleanup_time, remotePart.cleanup_time)) { return true; }
+  // cleanup_time: whole numbers, so compare numerically (the API echoes a string).
+  // A value Vocareum ignored (Standard labs read back 0) is handled by the
+  // caller against the last push, not here.
+  if (options.ignoreCleanupTime !== true && cleanupTimeDiffers(configPart, remotePart)) { return true; }
 
   // Compare submission filters (normalize both to object format)
   if (s.submission_filters !== undefined && s.submission_filters !== null) {

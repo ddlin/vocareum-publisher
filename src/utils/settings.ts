@@ -14,7 +14,9 @@ import {
   NON_SETTING_FIELDS_PART,
   OBSERVED_ASSIGNMENT_SETTING_KEYS,
   OBSERVED_PART_SETTING_KEYS,
+  PEER_REVIEW_SETTING_KEYS,
   partitionApiResponse,
+  type PeerReviewSettingKey,
 } from './known-settings';
 import type { UnknownFieldReporter } from './unknown-field-reporter';
 
@@ -58,9 +60,16 @@ function toFiniteNumber(value: unknown): number | undefined {
  * spelling; a value outside the known set is dropped here rather than written
  * into a config the schema would then reject.
  */
-function mapPeerReviewSettings(
-  api: VocareumAssignmentResponse,
-  settings: NonNullable<AssignmentSettings>
+/**
+ * Map the peer-review fields of an assignment response into settings, in the
+ * normalized form the config holds (booleans, upper-case enums, numbers,
+ * YYYY-MM-DD or null dates). A field whose value cannot be normalized is left
+ * out; mapAssignmentSettings preserves it in _unknown_settings instead.
+ * Also used by push drift detection, so local and remote compare like for like.
+ */
+export function mapPeerReviewSettings(
+  api: Partial<Record<PeerReviewSettingKey, unknown>>,
+  settings: Partial<Record<PeerReviewSettingKey, unknown>>
 ): void {
   for (const key of ['peer_review_toggle', 'peer_hide_code', 'peer_gallery', 'peer_grading_toggle'] as const) {
     const coerced = coerceBooleanFlag(api[key]);
@@ -81,7 +90,7 @@ function mapPeerReviewSettings(
   if (reviews !== undefined) { settings.reviews_number = reviews; }
   const penalty = toFiniteNumber(api.reviewpenalty);
   if (penalty !== undefined) { settings.reviewpenalty = penalty; }
-  if (typeof api.reviewguide === 'string') { settings.reviewguide = api.reviewguide; }
+  if (typeof api.reviewguide === 'string' || api.reviewguide === null) { settings.reviewguide = api.reviewguide; }
 }
 
 function addObservedSetting(
@@ -163,6 +172,16 @@ export function mapAssignmentSettings(
     unionKeys(KNOWN_ASSIGNMENT_SETTING_KEYS, OBSERVED_ASSIGNMENT_SETTING_KEYS),
     NON_SETTING_FIELDS_ASSIGNMENT
   );
+  // A peer-review value the mapper could not normalize (an enum value newer
+  // than this release, a datetime where a date belongs) is kept and reported
+  // like any unknown field rather than silently dropped. It is never pushed:
+  // known keys are reserved in the outgoing payload.
+  const apiRecord = apiResponse as unknown as Record<string, unknown>;
+  for (const key of PEER_REVIEW_SETTING_KEYS) {
+    if (apiRecord[key] !== undefined && settings[key] === undefined) {
+      unknownFields[key] = apiRecord[key];
+    }
+  }
   if (Object.keys(unknownFields).length > 0) {
     settings._unknown_settings = unknownFields;
     if (reporter && resourceId !== undefined) {

@@ -17,7 +17,7 @@ import { mapAssignmentSettings, mapPartSettings } from '../../src/utils/settings
 import { AssignmentSettingsSchema, PartSettingsSchema } from '../../src/types/config';
 import type { Assignment, Part } from '../../src/types/config';
 import { buildPartSettingsPayload, peerReviewPayload, RESERVED_PART_KEYS } from '../../src/core/payload-helpers';
-import { detectAssignmentSettingsChanged, detectPartSettingsChanged } from '../../src/core/reconciler';
+import { cleanupTimeIgnoredByServer, detectAssignmentSettingsChanged, detectPartSettingsChanged } from '../../src/core/reconciler';
 import { compareAssignmentSettings, comparePartSettings } from '../../src/core/services/pull-service';
 import { loadConfig } from '../../src/core/config';
 import type { VocareumAssignmentResponse, VocareumPartResponse } from '../../src/types/api';
@@ -70,18 +70,26 @@ describe('pull: peer-review fields arrive as typed, known settings', () => {
     });
   });
 
-  it('keeps a YYYY-MM-DD date and drops a value the server would never send back', () => {
+  it('keeps a YYYY-MM-DD date; an unreadable one is preserved in _unknown_settings, not dropped', () => {
     const s = mapAssignmentSettings(apiAssignment({
       peer_review_toggle: true, peer_review_start_date: '2026-12-01', peer_review_end_date: 'not a date',
     }));
     expect(s.peer_review_start_date).toBe('2026-12-01');
     expect(s).not.toHaveProperty('peer_review_end_date');
+    expect(s._unknown_settings).toEqual({ peer_review_end_date: 'not a date' });
   });
 
-  it('an enum value outside the known set is dropped, not written into a config that would then fail to load', () => {
+  it('an enum value newer than this release is preserved (and reported) in _unknown_settings, and the config still loads', () => {
     const s = mapAssignmentSettings(apiAssignment({ reviewcalc: 'GEOMETRIC_MEAN' }));
     expect(s).not.toHaveProperty('reviewcalc');
+    expect(s._unknown_settings).toEqual({ reviewcalc: 'GEOMETRIC_MEAN' });
     expect(AssignmentSettingsSchema.safeParse(s).success).toBe(true);
+  });
+
+  it('a null review guide is kept as null, so pull can clear a stale local guide', () => {
+    expect(mapAssignmentSettings(apiAssignment({ reviewguide: null })).reviewguide).toBeNull();
+    const diffs = compareAssignmentSettings({ reviewguide: 'old text' } as never, mapAssignmentSettings(apiAssignment({ reviewguide: null })));
+    expect(diffs.map(d => d.key)).toContain('reviewguide');
   });
 
   it('the mapped settings always pass the schema (pull never writes an unloadable config)', () => {
@@ -109,12 +117,21 @@ describe('pull: container image identity is observed, cleanup_time is known', ()
 });
 
 describe('push: what reaches the PUT', () => {
-  it('peer-review fields are sent together; null and absent are not sent', () => {
+  it('peer-review fields are sent together; absent and null are not sent, except a null date, which clears it', () => {
     expect(peerReviewPayload({
       peer_review_toggle: true, peer_hide_code: true, peer_review_start_date: '2026-12-01',
-      peer_review_end_date: null, reviewguide: undefined,
-    })).toEqual({ peer_review_toggle: true, peer_hide_code: true, peer_review_start_date: '2026-12-01' });
+      peer_review_end_date: null, reviewguide: null, reviewcalc: undefined,
+    })).toEqual({ peer_review_toggle: true, peer_hide_code: true, peer_review_start_date: '2026-12-01', peer_review_end_date: null });
     expect(peerReviewPayload(undefined)).toEqual({});
+  });
+
+  it('with the toggle off, the three dependent options go out as false (the API rejects true and resets them)', () => {
+    expect(peerReviewPayload({ peer_review_toggle: false, peer_gallery: true, peer_hide_code: true, peer_grading_toggle: false }))
+      .toEqual({ peer_review_toggle: false, peer_gallery: false, peer_hide_code: false, peer_grading_toggle: false });
+  });
+
+  it('a dependent option without the toggle in the config is sent as is (accepted while peer review is already on)', () => {
+    expect(peerReviewPayload({ peer_gallery: true })).toEqual({ peer_gallery: true });
   });
 
   it('cleanup_time is part of the full part payload', () => {
@@ -148,6 +165,20 @@ describe('drift: push side (reconciler) and pull side (settings diff)', () => {
     expect(detectAssignmentSettingsChanged(assignment({ ...API_PEER_DEFAULTS }), apiAssignment())).toBe(false);
   });
 
+  it('a remote value in another spelling (lower case, numeric string, "1" flag) is not drift', () => {
+    const remote = apiAssignment({ reviewcalc: 'average', reviews_number: '1', reviewpenalty: '0', peer_review_toggle: '0' });
+    expect(detectAssignmentSettingsChanged(assignment({ ...API_PEER_DEFAULTS }), remote)).toBe(false);
+  });
+
+  it('a null local date against a set remote date is drift (push clears it); null against null is not', () => {
+    expect(detectAssignmentSettingsChanged(assignment({ peer_review_start_date: null }), apiAssignment({ peer_review_start_date: '2026-12-01' }))).toBe(true);
+    expect(detectAssignmentSettingsChanged(assignment({ peer_review_start_date: null }), apiAssignment())).toBe(false);
+  });
+
+  it('toggle off with a dependent still true locally is not drift once the server has reset it', () => {
+    expect(detectAssignmentSettingsChanged(assignment({ peer_review_toggle: false, peer_gallery: true }), apiAssignment())).toBe(false);
+  });
+
   it('a field the server does not return is not drift (tenant without peer review)', () => {
     const remote = apiAssignment();
     delete (remote as unknown as Record<string, unknown>).reviewcalc;
@@ -161,6 +192,24 @@ describe('drift: push side (reconciler) and pull side (settings diff)', () => {
     expect(comparePartSettings({ cleanup_time: 30 } as never, mapPartSettings(apiContainerPart({ cleanup_time: '0' }))).map(d => d.key)).toContain('cleanup_time');
   });
 
+  it('cleanup_time that Vocareum did not store (Standard lab reads back 0) is not re-sent after one push', () => {
+    const part = { part_id: '6036046', path: 'p1', name: 'Part 1', settings: { cleanup_time: 30 } } as unknown as Part;
+    const asn = assignment({});
+    const stateKey = 'assignments/cd/parts/p1/settings/cleanup_time';
+    const history = (value: unknown, status = 'success') =>
+      ({ status, settings_state: { [stateKey]: value } }) as never;
+    const remote = apiContainerPart({ labtype: 'Vocareum Standard', cleanup_time: '0' });
+    // Never pushed yet: it is real drift.
+    expect(cleanupTimeIgnoredByServer(asn, part, remote, undefined)).toBe(false);
+    // Pushed 30 last time, server still says 0: stop re-sending.
+    expect(cleanupTimeIgnoredByServer(asn, part, remote, history(30))).toBe(true);
+    expect(detectPartSettingsChanged(part, remote, { ignoreCleanupTime: true })).toBe(false);
+    // The user changed it since: drift again.
+    expect(cleanupTimeIgnoredByServer(asn, part, remote, history(20))).toBe(false);
+    // A failed last push proves nothing.
+    expect(cleanupTimeIgnoredByServer(asn, part, remote, history(30, 'failed'))).toBe(false);
+  });
+
   it('container image identity is never drift (observed only)', () => {
     const part = { part_id: '6036046', path: '.', name: 'Part 1', settings: { _observed_settings: { container_image_id: '3607' } } } as unknown as Part;
     expect(detectPartSettingsChanged(part, apiContainerPart())).toBe(false);
@@ -168,15 +217,47 @@ describe('drift: push side (reconciler) and pull side (settings diff)', () => {
 });
 
 describe('schema: the server rules, enforced at config load (adversarial input)', () => {
-  it('a dependent option without peer review enabled is rejected with the fix in the message', () => {
-    const r = AssignmentSettingsSchema.safeParse({ peer_review_toggle: false, peer_gallery: true });
-    expect(r.success).toBe(false);
-    expect(JSON.stringify(r.error?.issues)).toMatch(/peer_gallery: true requires peer_review_toggle: true/);
+  it('no combination of the toggle and its options can make the config fail to load', () => {
+    // The off-toggle case is resolved at push (sent as false); a partial config
+    // is valid while Vocareum already has peer review on. Probed 2026-11-10.
+    for (const s of [
+      { peer_review_toggle: false, peer_gallery: true },
+      { peer_gallery: true },
+      { peer_review_toggle: true, peer_hide_code: true },
+      { peer_hide_code: false },
+    ]) {
+      expect(AssignmentSettingsSchema.safeParse(s).success).toBe(true);
+    }
   });
 
-  it('dependents are allowed with the toggle on, and false is always allowed', () => {
-    expect(AssignmentSettingsSchema.safeParse({ peer_review_toggle: true, peer_hide_code: true }).success).toBe(true);
-    expect(AssignmentSettingsSchema.safeParse({ peer_hide_code: false }).success).toBe(true);
+  it('an unquoted YAML date (loaded as a Date object) is accepted as YYYY-MM-DD', () => {
+    expect(AssignmentSettingsSchema.parse({ peer_review_start_date: new Date('2026-12-01T00:00:00Z') })?.peer_review_start_date).toBe('2026-12-01');
+  });
+
+  it('an impossible calendar date is rejected (the API rejects it too)', () => {
+    expect(AssignmentSettingsSchema.safeParse({ peer_review_start_date: '2026-13-40' }).success).toBe(false);
+    expect(AssignmentSettingsSchema.safeParse({ peer_review_start_date: '2026-02-30' }).success).toBe(false);
+  });
+
+  it('counts use the API ranges: reviews_number 1-10, reviewpenalty 0-100, cleanup_time >= 0, whole numbers', () => {
+    expect(AssignmentSettingsSchema.safeParse({ reviews_number: 0 }).success).toBe(false);
+    expect(AssignmentSettingsSchema.safeParse({ reviews_number: 11 }).success).toBe(false);
+    expect(AssignmentSettingsSchema.safeParse({ reviewpenalty: 1.5 }).success).toBe(false);
+    expect(AssignmentSettingsSchema.safeParse({ reviewpenalty: 101 }).success).toBe(false);
+    expect(AssignmentSettingsSchema.parse({ reviewpenalty: '100' })?.reviewpenalty).toBe(100);
+    expect(PartSettingsSchema.safeParse({ cleanup_time: 1.5 }).success).toBe(false);
+  });
+
+  it('an empty string, a boolean or an array is rejected, never coerced into a real 0 or 1', () => {
+    for (const v of ['', ' ', true, false, [], 'abc']) {
+      expect(AssignmentSettingsSchema.safeParse({ reviews_number: v }).success).toBe(false);
+      expect(AssignmentSettingsSchema.safeParse({ reviewpenalty: v }).success).toBe(false);
+      expect(PartSettingsSchema.safeParse({ cleanup_time: v }).success).toBe(false);
+    }
+  });
+
+  it('enum values with stray whitespace are trimmed', () => {
+    expect(AssignmentSettingsSchema.parse({ reviewcalc: ' median ' })?.reviewcalc).toBe('MEDIAN');
   });
 
   it('a datetime where the API wants a bare date is rejected', () => {
@@ -192,9 +273,10 @@ describe('schema: the server rules, enforced at config load (adversarial input)'
     expect(JSON.stringify(bad.error?.issues)).toMatch(/must be one of AVERAGE, MEDIAN, MAXIMUM/);
   });
 
-  it('counts must be non-negative numbers; numeric strings are coerced', () => {
+  it('counts must be in range; numeric strings are coerced', () => {
     expect(AssignmentSettingsSchema.parse({ reviews_number: '2' })?.reviews_number).toBe(2);
     expect(AssignmentSettingsSchema.safeParse({ reviews_number: -1 }).success).toBe(false);
+    expect(AssignmentSettingsSchema.safeParse({ reviews_number: '-1' }).success).toBe(false);
     expect(PartSettingsSchema.parse({ cleanup_time: '30' })?.cleanup_time).toBe(30);
   });
 });
@@ -273,6 +355,60 @@ ${partSettings.split('\n').map(line => `  ${line}`).join('\n')}
     expect(asn).not.toHaveProperty('reviewcalc');
     expect(asn.reviews_number).toBe(2);
     expect(asn._unknown_settings).toEqual({ reviewcalc: 'GEOMETRIC_MEAN' });
+  });
+
+  it('a legacy toggle-off config with a dependent still true loads (both reviewers\' brick case)', async () => {
+    const { asn } = await load(
+      `      peer_review_toggle: false
+      _unknown_settings:
+        peer_review_toggle: true
+        peer_gallery: true`,
+      `        {}`,
+    );
+    expect(asn.peer_review_toggle).toBe(false);
+    expect(asn.peer_gallery).toBe(true);
+    expect(peerReviewPayload(asn)).toMatchObject({ peer_review_toggle: false, peer_gallery: false });
+  });
+
+  it('a legacy dependent option with no toggle anywhere loads', async () => {
+    const { asn } = await load(
+      `      _unknown_settings:
+        peer_gallery: true`,
+      `        {}`,
+    );
+    expect(asn.peer_gallery).toBe(true);
+    expect(asn._unknown_settings).toBeUndefined();
+  });
+
+  it('legacy raw API spellings ("1" flags, lower-case enums, numeric strings) are promoted, not stranded', async () => {
+    const { asn } = await load(
+      `      _unknown_settings:
+        peer_review_toggle: "1"
+        reviewcalc: median
+        reviews_number: "3"`,
+      `        {}`,
+    );
+    expect(asn).toMatchObject({ peer_review_toggle: true, reviewcalc: 'MEDIAN', reviews_number: 3 });
+    expect(asn._unknown_settings).toBeUndefined();
+  });
+
+  it('a legacy empty string is not promoted into a real 0', async () => {
+    const { asn } = await load(
+      `      _unknown_settings:
+        reviews_number: ""`,
+      `        {}`,
+    );
+    expect(asn).not.toHaveProperty('reviews_number');
+    expect(asn._unknown_settings).toEqual({ reviews_number: '' });
+  });
+
+  it('a malformed (non-object) _observed_settings is not silently replaced by migration', async () => {
+    await expect(load(
+      `      nosubmit: false`,
+      `        _observed_settings: not-an-object
+        _unknown_settings:
+          container_image_id: "3677"`,
+    )).rejects.toThrow();
   });
 
   it('wrapper keys inside _unknown_settings are left alone (never promoted to a real bucket)', async () => {

@@ -227,7 +227,7 @@ function upperEnum<const T extends readonly [string, ...string[]]>(
   const allowed = new Set<string>(values);
   const isAllowed = (x: string): x is T[number] => allowed.has(x);
   return z.string().transform((v, ctx) => {
-    const upper = v.toUpperCase();
+    const upper = v.trim().toUpperCase();
     if (!isAllowed(upper)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: `must be one of ${values.join(', ')} (got "${v}")` });
       return z.NEVER;
@@ -240,11 +240,36 @@ function upperEnum<const T extends readonly [string, ...string[]]>(
 const PeerScheduleModeSchema = upperEnum(['SCHEDULED', 'MANUAL', 'AUTO'] as const);
 const ReviewCalcSchema = upperEnum(['AVERAGE', 'MEDIAN', 'MAXIMUM'] as const);
 const ReviewPenaltyRuleSchema = upperEnum(['STUDENT_SCORE', 'MAX_SCORE'] as const);
-/** The API accepts only a bare date here (an ISO datetime is rejected). */
-const PeerReviewDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be a date in YYYY-MM-DD format');
+/** True for a real calendar date written as YYYY-MM-DD (rejects 2026-13-40). */
+function isCalendarDate(v: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { return false; }
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+}
 
-/** Peer-review options the server accepts only while peer review is enabled. */
-const PEER_REVIEW_DEPENDENT_KEYS = ['peer_hide_code', 'peer_gallery', 'peer_grading_toggle'] as const;
+/**
+ * The API accepts only a real bare date here (an ISO datetime and 2026-13-40
+ * are both rejected). An unquoted `2026-12-01` in YAML is loaded as a Date
+ * object, so that is accepted too and written back as the string.
+ */
+const PeerReviewDateSchema = z.preprocess(
+  (v) => (v instanceof Date && !Number.isNaN(v.getTime()) ? v.toISOString().slice(0, 10) : v),
+  z.string().refine(isCalendarDate, 'must be a real date in YYYY-MM-DD format')
+);
+
+/**
+ * A whole number in [min, max], given as a number or a numeric string. Unlike
+ * z.coerce.number(), "" / true / [] are rejected instead of becoming 0 or 1,
+ * so a hand-edit typo can never turn into a real write.
+ */
+function wholeNumber(min: number, max?: number): z.ZodEffects<z.ZodNumber, number, unknown> {
+  let n = z.number().int().min(min);
+  if (max !== undefined) { n = n.max(max); }
+  return z.preprocess(
+    (v) => (typeof v === 'string' && /^\s*-?\d+(\.\d+)?\s*$/.test(v) ? Number(v) : v),
+    n
+  );
+}
 
 /**
  * Remote fields observed from Vocareum but not written by vocgit push.
@@ -303,7 +328,7 @@ export const PartSettingsSchema = z
     /** Maximum users for Databricks labs (API returns string, coerce to number) */
     databricks_maxusers: z.coerce.number().nullish(),
     /** Container labs only (ignored on Vocareum Standard). API returns string, coerce to number. */
-    cleanup_time: z.coerce.number().nonnegative().nullish(),
+    cleanup_time: wholeNumber(0).nullish(),
     /** Tags for the part (API returns object, but older configs may have empty array) */
     tags: z.union([z.array(z.string()), z.record(z.string(), TagValueSchema)]).nullish(),
     /** Pass-through bucket for settings vocgit does not formally understand.
@@ -429,26 +454,30 @@ export const AssignmentSettingsSchema = z
     /** Enable live code comments */
     live_code_comments: z.boolean().nullish(),
     // ── Peer review (field report #5; probed writable 2026-11-10) ──
-    /** Enable peer review. Turning it off resets the three options below server-side. */
+    /**
+     * Enable peer review. While it is false the three options below are
+     * pushed as false: Vocareum rejects them as true and resets them to false
+     * when the toggle is turned off.
+     */
     peer_review_toggle: z.boolean().nullish(),
     /** SCHEDULED, MANUAL or AUTO */
     peer_schedule_mode: PeerScheduleModeSchema.nullish(),
-    /** YYYY-MM-DD */
+    /** YYYY-MM-DD; null clears it */
     peer_review_start_date: PeerReviewDateSchema.nullish(),
-    /** YYYY-MM-DD */
+    /** YYYY-MM-DD; null clears it */
     peer_review_end_date: PeerReviewDateSchema.nullish(),
-    /** Requires peer_review_toggle: true */
+    /** Only takes effect while peer review is enabled */
     peer_hide_code: z.boolean().nullish(),
-    /** Requires peer_review_toggle: true */
+    /** Only takes effect while peer review is enabled */
     peer_gallery: z.boolean().nullish(),
-    /** Requires peer_review_toggle: true */
+    /** Only takes effect while peer review is enabled */
     peer_grading_toggle: z.boolean().nullish(),
-    /** Reviews each student writes */
-    reviews_number: z.coerce.number().int().nonnegative().nullish(),
+    /** Reviews each student writes (1-10) */
+    reviews_number: wholeNumber(1, 10).nullish(),
     /** Guidance text shown to reviewers */
     reviewguide: z.string().nullish(),
-    /** Penalty for not completing reviews */
-    reviewpenalty: z.coerce.number().nonnegative().nullish(),
+    /** Penalty percentage for not completing reviews (0-100) */
+    reviewpenalty: wholeNumber(0, 100).nullish(),
     /** STUDENT_SCORE or MAX_SCORE */
     reviewpenalty_percentrule: ReviewPenaltyRuleSchema.nullish(),
     /** AVERAGE, MEDIAN or MAXIMUM */
@@ -461,20 +490,6 @@ export const AssignmentSettingsSchema = z
     _unknown_settings: z.record(z.string(), z.unknown()).optional(),
     /** Fields observed from Vocareum but intentionally not written by push. */
     _observed_settings: ObservedSettingsSchema.optional(),
-  })
-  .superRefine((settings, ctx) => {
-    // Mirror the server rule so a bad combination fails at config load with a
-    // fix, not as a 400 halfway through a push.
-    if (settings.peer_review_toggle === true) { return; }
-    for (const key of PEER_REVIEW_DEPENDENT_KEYS) {
-      if (settings[key] === true) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: [key],
-          message: `${key}: true requires peer_review_toggle: true (Vocareum rejects it otherwise)`,
-        });
-      }
-    }
   })
   .optional();
 

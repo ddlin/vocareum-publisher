@@ -15,6 +15,14 @@ import type { ValidationResult, ValidationError } from '../types/state';
 import { logger } from '../utils/logger';
 import { promoteRecognizedUnknownSettings } from './settings-migration';
 
+/** loadConfig runs several times per command (updateConfig re-loads); warn once per value. */
+const warnedUnpromoted = new Set<string>();
+function warnUnpromotedOnce(id: string, message: string): void {
+  if (warnedUnpromoted.has(id)) { return; }
+  warnedUnpromoted.add(id);
+  logger.warn(message);
+}
+
 /**
  * Custom error for configuration issues
  */
@@ -61,7 +69,11 @@ export async function loadConfig(configPath: string): Promise<Config> {
 
     // Settings a newer vocgit recognizes may still sit in `_unknown_settings`
     // from an older pull; move them where they belong before validation.
-    promoteRecognizedUnknownSettings(result.config);
+    for (const u of promoteRecognizedUnknownSettings(result.config)) {
+      warnUnpromotedOnce(`${configPath}:${u.location}:${u.key}`,
+        `${u.location}: _unknown_settings.${u.key} = ${JSON.stringify(u.value)} is not a valid ${u.key} value, ` +
+        `so it is not pushed. Set ${u.key} in settings (or remove it), or run \`vocgit pull\` to refresh it from Vocareum.`);
+    }
     const parsed = ConfigSchema.safeParse(result.config);
 
     if (!parsed.success) {

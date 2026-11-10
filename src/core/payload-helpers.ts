@@ -20,6 +20,8 @@ import {
   NON_SETTING_FIELDS_PART,
   OBSERVED_ASSIGNMENT_SETTING_KEYS,
   OBSERVED_PART_SETTING_KEYS,
+  PEER_REVIEW_DATE_KEYS,
+  PEER_REVIEW_DEPENDENT_KEYS,
   PEER_REVIEW_SETTING_KEYS,
 } from '../utils/known-settings';
 import {
@@ -33,20 +35,37 @@ import type { EventSink } from './services/event-sink';
 // ---------------------------------------------------------------------------
 
 /**
- * Peer-review fields for an assignment UPDATE payload (field report #5).
- * `null`/absent means "not managed by this config" and is not sent, the same as
- * every other setting. All twelve go in ONE payload: the server accepts
- * peer_hide_code / peer_gallery / peer_grading_toggle = true only alongside
- * peer_review_toggle = true, and checks them against the toggle in the same
- * request.
+ * Peer-review fields for an assignment UPDATE payload (field report #5), as
+ * Vocareum will actually store them. Probed 2026-11-10:
+ *
+ * - Absent/null means "not managed by this config" and is not sent, like every
+ *   other setting, EXCEPT the two dates, where null is sent because the API
+ *   uses null to clear a date (pull writes null for an unset date).
+ * - With `peer_review_toggle: false` the three dependent options go out as
+ *   false: the API rejects them as true in that payload and resets them to
+ *   false whenever the toggle is turned off. Sending what the server would
+ *   store keeps an off-toggle config pushable and drift-free.
+ * - A dependent option without the toggle in the payload is accepted while the
+ *   stored toggle is already on, so absence of the toggle is not treated as off.
  */
 export function peerReviewPayload(
   settings: { [K in (typeof PEER_REVIEW_SETTING_KEYS)[number]]?: unknown } | null | undefined
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
+  const dates: ReadonlySet<string> = new Set(PEER_REVIEW_DATE_KEYS);
   for (const key of PEER_REVIEW_SETTING_KEYS) {
     const v = settings?.[key];
-    if (v !== undefined && v !== null) { out[key] = v; }
+    if (v === undefined) { continue; }
+    if (v === null) {
+      if (dates.has(key)) { out[key] = null; }
+      continue;
+    }
+    out[key] = v;
+  }
+  if (out.peer_review_toggle === false) {
+    for (const key of PEER_REVIEW_DEPENDENT_KEYS) {
+      if (out[key] === true) { out[key] = false; }
+    }
   }
   return out;
 }

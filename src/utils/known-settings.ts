@@ -45,6 +45,12 @@ export const PEER_REVIEW_SETTING_KEYS = [
 
 export type PeerReviewSettingKey = (typeof PEER_REVIEW_SETTING_KEYS)[number];
 
+/** Peer-review options Vocareum accepts as true only while peer review is enabled. */
+export const PEER_REVIEW_DEPENDENT_KEYS = ['peer_hide_code', 'peer_gallery', 'peer_grading_toggle'] as const;
+
+/** Peer-review dates, where an explicit null means "clear it" (probed 2026-11-10). */
+export const PEER_REVIEW_DATE_KEYS = ['peer_review_start_date', 'peer_review_end_date'] as const;
+
 export const KNOWN_ASSIGNMENT_SETTING_KEYS: ReadonlySet<string> = new Set([
   'nosubmit',
   'publish',
