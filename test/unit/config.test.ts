@@ -453,3 +453,35 @@ describe('throttle config validation', () => {
     expect(validateConfig(withThrottle({ throttle: { max_concurrency: 1 } })).valid).toBe(false);
   });
 });
+
+// zod 4 reworded its errors; these pin that vocgit's hints still attach to the
+// right ones (and not to a missing field).
+describe('validateConfig hints under zod 4 wording', () => {
+  const base = {
+    version: '1.0',
+    vocareum: { org_id: 'o1', course_id: 'c1' },
+    assignments: [],
+  };
+  const messages = (config: unknown): string[] => validateConfig(config).errors.map((e) => e.message);
+
+  it('adds the quoting hint to a numeric ID', () => {
+    const [msg] = messages({ ...base, vocareum: { org_id: 'o1', course_id: 2 } });
+    expect(msg).toContain('vocareum.course_id');
+    expect(msg).toContain('Hint: All IDs must be quoted strings');
+  });
+
+  it('does not tell the user to quote an ID that is missing', () => {
+    const [msg] = messages({ ...base, vocareum: { org_id: 'o1' } });
+    expect(msg).toContain('vocareum.course_id');
+    expect(msg).not.toContain('Hint:');
+  });
+
+  it('adds the object-vs-array hint to a record field given an array', () => {
+    const [msg] = messages({
+      ...base,
+      publish_history: [{ timestamp: 'x', commit_sha: 'x', published_by: 'x', content_state: [] }],
+    });
+    expect(msg).toContain('content_state');
+    expect(msg).toContain('Hint: This field expects an object {...} but got an array [...]');
+  });
+});

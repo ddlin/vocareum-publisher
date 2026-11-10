@@ -4,7 +4,7 @@
  * Git operations using simple-git library.
  */
 
-import simpleGit, { SimpleGit } from 'simple-git';
+import { simpleGit, type SimpleGit } from 'simple-git';
 import { logger } from './logger';
 
 /**
@@ -21,12 +21,40 @@ export class GitError extends Error {
 }
 
 /**
+ * Ambient git variables that still reach git under simple-git 4.
+ *
+ * simple-git 4 strips every inherited `GIT_*` variable unless it is listed in
+ * `allowEnvironment`. That silently changed what an auto-commit does: commits
+ * lost a `GIT_AUTHOR_*`/`GIT_COMMITTER_*` identity, and a caller's alternate
+ * `GIT_INDEX_FILE` was ignored, so unrelated changes staged in the normal index
+ * were committed. These describe identity and which repository/index to use.
+ * Nothing that can run a program (`GIT_SSH_COMMAND`, `GIT_ASKPASS`, `GIT_EDITOR`,
+ * `GIT_EXEC_PATH`, `GIT_CONFIG_*`, ...) is listed, so the guard keeps blocking it.
+ */
+const PASSTHROUGH_GIT_ENV = [
+  'GIT_AUTHOR_NAME',
+  'GIT_AUTHOR_EMAIL',
+  'GIT_AUTHOR_DATE',
+  'GIT_COMMITTER_NAME',
+  'GIT_COMMITTER_EMAIL',
+  'GIT_COMMITTER_DATE',
+  'GIT_INDEX_FILE',
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_COMMON_DIR',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_CEILING_DIRECTORIES',
+  'GIT_DISCOVERY_ACROSS_FILESYSTEM',
+] as const;
+
+/**
  * Get a simple-git instance for a directory
  *
  * @param basePath - Directory path (defaults to cwd)
  */
 function getGit(basePath?: string): SimpleGit {
-  return simpleGit(basePath ?? process.cwd());
+  return simpleGit(basePath ?? process.cwd(), { allowEnvironment: PASSTHROUGH_GIT_ENV });
 }
 
 /**

@@ -32,7 +32,7 @@
  * new layout.
  */
 
-import type { ZodTypeAny } from 'zod';
+import { z, type ZodTypeAny } from 'zod';
 import { mapPeerReviewSettings } from '../utils/settings';
 import { AssignmentSettingsSchema, PartSettingsSchema } from '../types/config';
 import {
@@ -55,13 +55,14 @@ interface Classification {
 
 type Shape = Record<string, ZodTypeAny>;
 
-/** The object shape behind `z.object(...).optional()`. */
+/** The object shape behind `z.object(...).optional()` (zod 4: `.unwrap()` / `.shape`). */
 function shapeOf(schema: ZodTypeAny): Shape {
-  let current: ZodTypeAny = schema;
+  let current: unknown = schema;
   for (let i = 0; i < 4; i++) {
-    const def = current._def as { typeName?: string; innerType?: ZodTypeAny; schema?: ZodTypeAny; shape?: () => Shape };
-    if (def.typeName === 'ZodObject' && def.shape) { return def.shape(); }
-    current = def.innerType ?? def.schema ?? current;
+    if (current instanceof z.ZodObject) { return current.shape; }
+    const unwrap = (current as { unwrap?: () => unknown }).unwrap;
+    if (typeof unwrap !== 'function') { break; }
+    current = unwrap.call(current);
   }
   throw new Error('settings-migration: could not resolve settings schema shape');
 }
