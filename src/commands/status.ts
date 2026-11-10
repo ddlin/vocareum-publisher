@@ -14,6 +14,7 @@ import { CommandFailureError } from '../utils/command-failure';
 import { LoggerEventSink } from '../utils/logger-event-sink';
 import { InteractivePrompter } from '../core/services/context';
 import { inspectStatus, renderStatusHuman } from '../core/services/status-service';
+import { INCOMPLETE_PULL_MARKER } from '../core/local-scan';
 import type { ApiTargetFacts, RuntimeFacts } from '../core/services/context';
 
 export interface StatusCommandOptions {
@@ -129,6 +130,10 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
     ];
     const templateCount = templates.length + legacyTemplateIds.length;
     const excludedCount = config.vocareum.excluded_assignments?.length ?? 0;
+    const incompleteDirectories = Object.entries(config.publish_history?.[0]?.content_state ?? {})
+      .filter(([, value]) => value === INCOMPLETE_PULL_MARKER)
+      .map(([key]) => key)
+      .sort();
 
     // Derive assignment/part counts from config — not from the scan — so that
     // human status stays fast (no filesystem traversal) and counts are correct
@@ -163,6 +168,7 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
       verbose: options.verbose,
       templateCount,
       excludedCount,
+      incompleteDirectories,
       assignmentCount: configAssignmentCount,
       linkedAssignmentCount: configLinkedAssignmentCount,
       totalPartCount: configTotalPartCount,

@@ -42,6 +42,7 @@ const {
 // ── mock local-scan (assertConfinedToWorkspace) ────────────────────────────────
 vi.mock('../../src/core/local-scan', () => ({
   assertConfinedToWorkspace: vi.fn().mockResolvedValue(undefined),
+  INCOMPLETE_PULL_MARKER: 'incomplete-pull',
 }));
 
 // ── mock reconciler (used by inspectPull) ──────────────────────────────────────
@@ -1120,3 +1121,158 @@ describe('derived point fields — round-trip matrix', () => {
     expect(inspection.settingsDrift[0]?.partsDrift[0]?.remoteSettings._observed_settings).toBeUndefined();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Field report (1.3.7, NA course 196169): a pull that dropped 1,386 files still
+// printed "✓ Imported". A lossy import must keep what arrived but say INCOMPLETE.
+describe('applyPull — import that could not download every file', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function importWithFailures(failures: Array<{ path: string; reason: string }>) {
+    const { ctx, events } = makeCtx();
+    const { session, applyConfigUpdate } = makeSession();
+    mockGetAssignment.mockResolvedValueOnce({
+      assignments: [{ id: ORPHAN_1.id, name: ORPHAN_1.name, nosubmit: false }],
+    });
+    mockListParts.mockResolvedValueOnce([{ id: 'part-alpha-1', name: 'Part 1', seqnum: '1', deleted: '0' }]);
+    mockGetPart.mockResolvedValueOnce({
+      parts: [{ id: 'part-alpha-1', name: 'Part 1', seqnum: '1', deleted: '0', submission_filters: {} }],
+    });
+    mockDownloadContent.mockImplementationOnce(
+      async (...args: unknown[]) => {
+        const opts = args[6] as { failures?: Array<{ path: string; reason: string }> } | undefined;
+        opts?.failures?.push(...failures);
+        return {};
+      }
+    );
+    mockListRubrics.mockResolvedValueOnce([]);
+    const resolver = makeStubResolver({
+      resolveOrphanAction: vi.fn<[PullIssueOrphan], Promise<OrphanAction>>().mockResolvedValue('import'),
+    });
+    const inspection: PullInspection = { orphans: [ORPHAN_1], stale: [], settingsDrift: [], contentDrift: [] };
+    const result = await applyPull(session, ctx, { batch: true, verbose: false, skipContent: false }, inspection, resolver);
+    const emitted: Array<{ level: string; message: string }> = [];
+    events.flushTo({ emit: (e) => { emitted.push({ level: e.level, message: e.message ?? '' }); } });
+    return { result, emitted, applyConfigUpdate };
+  }
+
+  it('counts the missing files, warns INCOMPLETE instead of success, and still saves the import', async () => {
+    const { result, emitted, applyConfigUpdate } = await importWithFailures([
+      { path: 'startercode/py3.10-exercises', reason: 'x' },
+      { path: 'data/ec2-setup', reason: 'y' },
+    ]);
+    expect(result.imported).toBe(1);
+    expect(result.filesNotDownloaded).toBe(2);
+    const imported = emitted.filter(e => e.message.includes(`Imported "${ORPHAN_1.name}"`));
+    expect(imported).toHaveLength(1);
+    expect(imported[0].level).toBe('warn');
+    expect(imported[0].message).toMatch(/INCOMPLETE: 2 files could not be downloaded/);
+    expect(emitted.some(e => e.level === 'warn' && /Part 1\/1: downloaded 0 files, 2 could NOT be downloaded/.test(e.message))).toBe(true);
+    expect((applyConfigUpdate.mock.calls[0][0] as ConfigUpdates).assignments).toHaveLength(1);
+  });
+
+  it('records the run as failed and marks only the incomplete directories, never hashing them', async () => {
+    const { applyConfigUpdate } = await importWithFailures([
+      { path: 'startercode/py3.10-exercises', reason: 'r1' },
+      { path: 'data/ec2-setup', reason: 'r2' },
+    ]);
+    const update = applyConfigUpdate.mock.calls[0][0] as ConfigUpdates;
+    const entry = update.publish_history![0];
+    expect(entry.status).toBe('failed');
+    const state = entry.content_state;
+    const keyFor = (dir: string) => Object.keys(state).find(k => k.endsWith(`/${dir}`) || k === dir);
+    expect(state[keyFor('startercode')!]).toBe('incomplete-pull');
+    expect(state[keyFor('data')!]).toBe('incomplete-pull');
+    // A directory with no misses still gets its real hash.
+    const others = Object.entries(state).filter(([k]) => !/(startercode|data)$/.test(k));
+    expect(others.length).toBeGreaterThan(0);
+    expect(others.every(([, v]) => v === 'hash-abc123')).toBe(true);
+    expect(entry.failed).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'file', id: expect.stringMatching(/startercode\/py3\.10-exercises$/), error: 'not downloaded: r1' }),
+      expect.objectContaining({ type: 'file', id: expect.stringMatching(/data\/ec2-setup$/), error: 'not downloaded: r2' }),
+    ]));
+  });
+
+  it('caps the misses listed in history and summarizes the rest', async () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({ path: `data/f${i}`, reason: 'r' }));
+    const { applyConfigUpdate } = await importWithFailures(many);
+    const failed = (applyConfigUpdate.mock.calls[0][0] as ConfigUpdates).publish_history![0].failed!;
+    expect(failed).toHaveLength(51);
+    expect(failed[50].id).toBe('(10 more)');
+  });
+
+  it('a complete import still records success with real hashes', async () => {
+    const { applyConfigUpdate } = await importWithFailures([]);
+    const entry = (applyConfigUpdate.mock.calls[0][0] as ConfigUpdates).publish_history![0];
+    expect(entry.status).toBe('success');
+    expect(Object.values(entry.content_state)).not.toContain('incomplete-pull');
+    expect(entry.failed).toBeUndefined();
+  });
+
+  it('a complete import is still a plain success with nothing counted', async () => {
+    const { result, emitted } = await importWithFailures([]);
+    expect(result.filesNotDownloaded).toBe(0);
+    const imported = emitted.filter(e => e.message.includes(`Imported "${ORPHAN_1.name}"`));
+    expect(imported[0].level).toBe('success');
+  });
+});
+
+describe('applyPull — import that fails outright', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('is counted as importsFailed, not as a user skip, and nothing is saved', async () => {
+    const { ctx } = makeCtx();
+    const { session, applyConfigUpdate } = makeSession();
+    mockGetAssignment.mockResolvedValueOnce({
+      assignments: [{ id: ORPHAN_1.id, name: ORPHAN_1.name, nosubmit: false }],
+    });
+    mockListParts.mockResolvedValueOnce([{ id: 'part-alpha-1', name: 'Part 1', seqnum: '1', deleted: '0' }]);
+    mockGetPart.mockResolvedValueOnce({
+      parts: [{ id: 'part-alpha-1', name: 'Part 1', seqnum: '1', deleted: '0', submission_filters: {} }],
+    });
+    mockDownloadContent.mockRejectedValueOnce(new Error('Download limit exceeded: listed 5001 files'));
+    const resolver = makeStubResolver({
+      resolveOrphanAction: vi.fn<[PullIssueOrphan], Promise<OrphanAction>>().mockResolvedValue('import'),
+    });
+    const inspection: PullInspection = { orphans: [ORPHAN_1], stale: [], settingsDrift: [], contentDrift: [] };
+
+    const result = await applyPull(session, ctx, { batch: true, verbose: false, skipContent: false }, inspection, resolver);
+
+    expect(result.importsFailed).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(result.imported).toBe(0);
+    // The assignment is NOT saved — but the failed run IS recorded (AGENTS.md #9).
+    expect(applyConfigUpdate).toHaveBeenCalledTimes(1);
+    const update = applyConfigUpdate.mock.calls[0][0] as ConfigUpdates;
+    expect(update.assignments ?? []).toEqual([]);
+    expect(update.publish_history![0].status).toBe('failed');
+    expect(update.publish_history![0].failed).toEqual([
+      { type: 'assignment', id: ORPHAN_1.id, error: expect.stringMatching(/import of "Orphan Alpha" failed: Download limit exceeded/) },
+    ]);
+  });
+
+  it('a failed import alongside a complete one records the run as failed, not success', async () => {
+    const { ctx } = makeCtx();
+    const { session, applyConfigUpdate } = makeSession();
+    // Orphan 1 fails before any download; orphan 2 imports completely.
+    mockGetAssignment.mockRejectedValueOnce(new Error('HTTP 500'));
+    enqueueImportResponses({ request: vi.fn() });
+    mockListRubrics.mockResolvedValue([]);
+    const resolver = makeStubResolver({
+      resolveOrphanAction: vi.fn<[PullIssueOrphan], Promise<OrphanAction>>().mockResolvedValue('import'),
+    });
+
+    const result = await applyPull(session, ctx, { batch: true, verbose: false, skipContent: false }, INSPECTION_TWO_ORPHANS, resolver);
+
+    expect(result.imported).toBe(1);
+    expect(result.importsFailed).toBe(1);
+    const entry = (applyConfigUpdate.mock.calls[0][0] as ConfigUpdates).publish_history![0];
+    expect(entry.status).toBe('failed');
+    expect(entry.failed).toEqual([expect.objectContaining({ type: 'assignment', id: ORPHAN_1.id })]);
+  });
+});
+

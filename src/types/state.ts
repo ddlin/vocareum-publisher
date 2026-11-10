@@ -81,6 +81,10 @@ export interface PartAction {
    * push sent for another setting does not carry it either.
    */
   cleanupTimeIgnored?: boolean;
+  /** Directories push must not upload because the last pull of them was
+   *  incomplete (INCOMPLETE_PULL_MARKER in content_state). Uploading them
+   *  with reset:1 would delete the remote files the pull missed. */
+  blockedDirectories?: DirectoryType[];
   /** Rubric work this part needs, when rubric sync is enabled and the part has
    *  `rubrics` in config. Present only when non-empty — a part whose rubrics already
    *  match carries no plan and stays a `skip`. */

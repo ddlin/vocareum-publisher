@@ -505,6 +505,9 @@ export async function planPush(
         ...(reconcileDeleteDirectories !== undefined ? { reconcileDeleteDirectories } : {}),
         rubricPlan: partAction.rubricPlan,
         rubricReadFailed: partAction.rubricReadFailed,
+        ...(partAction.blockedDirectories !== undefined
+          ? { blockedDirectories: [...partAction.blockedDirectories] }
+          : {}),
       });
     }
 
@@ -1079,6 +1082,21 @@ export async function executePush(
       }
 
       const rubricPlan = partIntent.rubricPlan;
+
+      for (const dir of partIntent.blockedDirectories ?? []) {
+        // Uploading uses reset:1, which clears the directory on Vocareum first:
+        // pushing a partially-pulled directory would delete every remote file
+        // the pull could not download. Refuse, and say how to complete it.
+        const dirKey = path.join(action.assignment.path, partAction.part.path, dir);
+        const message =
+          `Not pushing ${dirKey}: the last pull could not download every file in it, ` +
+          `so uploading it would DELETE those files on Vocareum. Complete it first with ` +
+          `\`vocgit pull --batch --content --assignment ${action.assignment.name}\`.`;
+        events.emit({ level: 'error', message });
+        result.failed.push({ type: 'file', id: dirKey, error: message });
+        result.success = false;
+        if (abortOnError) { shouldAbort = true; break assignmentLoop; }
+      }
 
       if (partIntent.rubricReadFailed !== undefined) {
         // The plan-time read failed (403, body-encoded failure, pagination shortfall,

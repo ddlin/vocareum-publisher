@@ -6,7 +6,7 @@ import {
   uploadContent,
   PartialUploadError,
 } from '../../src/api/content';
-import { VocareumClient } from '../../src/api/client';
+import { APIError, VocareumClient } from '../../src/api/client';
 
 const buf = (n: number) => Buffer.alloc(n, 0x61);
 
@@ -297,5 +297,35 @@ describe('multi-chunk failure reporting', () => {
       expect((e as Error).message).toContain('PARTIALLY uploaded');
       expect((e as Error).message).toContain('Re-run');
     }
+  });
+});
+
+describe("Vocareum's \"Invalid target\" rejection (seen 2026-11-10, Container course 215500)", () => {
+  const live = 'Invalid target (lib) for content update. Valid targets: [course, data, docs, scripts, startercode, private]';
+  function rejectingClient() {
+    const requestMock = vi.fn().mockRejectedValueOnce(new APIError(live, 400));
+    return { requestMock, client: { request: requestMock, events: { emit: vi.fn() } } as unknown as VocareumClient };
+  }
+
+  it('single chunk: throws the config fix as an APIError, after one reset:1 attempt', async () => {
+    const { client, requestMock } = rejectingClient();
+    const err = await uploadContent(client, 'c1', 'a1', 'p1', 'lib', { a: 'x' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(APIError);
+    expect(err).not.toBeInstanceOf(PartialUploadError);
+    expect((err as Error).message).toContain("Remove \"lib\"");
+    expect((err as Error).message).toContain("from this part's `directories`");
+    expect(requestMock).toHaveBeenCalledTimes(1);
+    expect(requestMock.mock.calls[0][0].data.content[0]).toMatchObject({ target: 'lib', reset: 1 });
+  });
+
+  it('multi-chunk: refused on chunk 0, so it is not reported as a partial upload', async () => {
+    const { client, requestMock } = rejectingClient();
+    const err = await uploadContent(client, 'c1', 'a1', 'p1', 'lib', {
+      a: Buffer.alloc(80, 1), b: Buffer.alloc(80, 2),
+    }, { maxChunkBytes: 100 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(APIError);
+    expect(err).not.toBeInstanceOf(PartialUploadError);
+    expect((err as Error).message).toContain('Vocareum does not accept "lib/"');
+    expect(requestMock).toHaveBeenCalledTimes(1);
   });
 });

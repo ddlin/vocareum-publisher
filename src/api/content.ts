@@ -89,14 +89,46 @@ export const DEFAULT_DOWNLOAD_CONTENT_LIMITS: DownloadContentLimits = {
   maxTotalBytes: 500 * 1024 * 1024,
 };
 
+/**
+ * A download safety limit was hit.
+ * - `file`: one file is too large. Only that file is lost; the walk continues.
+ * - `walk`: the file-count or total-byte cap for the whole download was
+ *   reached. The walk stops; what already arrived is kept (non-strict).
+ */
 export class DownloadLimitError extends APIError {
-  constructor(message: string) {
+  constructor(message: string, public readonly scope: 'file' | 'walk' = 'walk') {
     super(message);
     this.name = 'DownloadLimitError';
   }
 }
 
+const MAX_DOWNLOAD_FILES_CEILING = 1_000_000;
+
+/**
+ * File-count cap for one download, from VOCAREUM_MAX_DOWNLOAD_FILES when set.
+ * Courses that ship Python environments under data/ list tens of thousands of
+ * entries, far past the 5,000 default.
+ */
+export function resolveMaxDownloadFiles(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.VOCAREUM_MAX_DOWNLOAD_FILES;
+  if (raw === undefined || raw.trim() === '') { return DEFAULT_DOWNLOAD_CONTENT_LIMITS.maxFiles; }
+  if (!/^\d+$/.test(raw.trim())) {
+    throw new Error(`VOCAREUM_MAX_DOWNLOAD_FILES must be a positive integer (got "${raw}").`);
+  }
+  const n = Number(raw.trim());
+  if (n < 1 || n > MAX_DOWNLOAD_FILES_CEILING) {
+    throw new Error(
+      `VOCAREUM_MAX_DOWNLOAD_FILES must be between 1 and ${MAX_DOWNLOAD_FILES_CEILING} (got "${raw}").`
+    );
+  }
+  return n;
+}
+
 interface DownloadBudget {
+  /** Per-walk collector for entries a non-strict walk skipped. */
+  failures?: DownloadFailure[];
+  /** Vocareum-managed link entries the walk left out (see isVocareumManagedLink). */
+  managedLinks?: string[];
   limits: DownloadContentLimits;
   files: number;
   bytes: number;
@@ -104,7 +136,7 @@ interface DownloadBudget {
 
 function resolveDownloadLimits(limits?: Partial<DownloadContentLimits>): DownloadContentLimits {
   return {
-    maxFiles: limits?.maxFiles ?? DEFAULT_DOWNLOAD_CONTENT_LIMITS.maxFiles,
+    maxFiles: limits?.maxFiles ?? resolveMaxDownloadFiles(),
     maxFileBytes: limits?.maxFileBytes ?? DEFAULT_DOWNLOAD_CONTENT_LIMITS.maxFileBytes,
     maxTotalBytes: limits?.maxTotalBytes ?? DEFAULT_DOWNLOAD_CONTENT_LIMITS.maxTotalBytes,
   };
@@ -215,6 +247,29 @@ export class NotAFileError extends Error {
   }
 }
 
+/** A remote entry a non-strict download could not retrieve. Path is the
+ *  FileMap key (`<directory>/<relative path>`), never an API-internal path. */
+export interface DownloadFailure {
+  path: string;
+  reason: string;
+}
+
+/**
+ * The v2 files API answers `?filename=<a directory>` with HTTP 400 and
+ * `{"error":{"message":"specified file does not exist <path>"}}` — observed on
+ * NA course 196169, 2026-11-09 — not the `status:"error"` body handled below.
+ * `lib/` entries say "specified source does not exist" for the same case.
+ * Treating it as an ordinary API error dropped every subdirectory of a pull
+ * (1,386 of 1,393 files) while the pull still reported success.
+ */
+function isNotAFileHttp400(error: unknown): boolean {
+  if (!isHttp400(error)) {
+    return false;
+  }
+  const message = error instanceof Error ? error.message : '';
+  return /specified (?:file|source) does not exist/i.test(message);
+}
+
 function isAxios404(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) {
     return false;
@@ -246,11 +301,19 @@ async function fetchFileContent(
   const fullPath = `${directory}/${filePath}`;
 
   // Request download URL from API
-  const response = await client.request<FileDownloadResponse>({
-    method: 'GET',
-    url,
-    params: { filename: fullPath },
-  });
+  let response: FileDownloadResponse;
+  try {
+    response = await client.request<FileDownloadResponse>({
+      method: 'GET',
+      url,
+      params: { filename: fullPath },
+    });
+  } catch (error) {
+    if (isNotAFileHttp400(error)) {
+      throw new NotAFileError(fullPath);
+    }
+    throw error;
+  }
 
   // Vocareum returns status:"error" with a literal "specified file does not exist"
   // in the download_url field when the path isn't a real file (usually a directory).
@@ -285,7 +348,7 @@ async function fetchFileContent(
     }
     if (isAxiosBodyLimitError(error)) {
       throw new DownloadLimitError(
-        `Download limit exceeded: ${fullPath} exceeds ${limits.maxFileBytes} bytes`
+        `Download limit exceeded: ${fullPath} exceeds ${limits.maxFileBytes} bytes`, 'file'
       );
     }
     throw error;
@@ -661,6 +724,12 @@ export async function uploadContent(
         });
       }
     } catch (error) {
+      // Vocareum refuses the target before applying anything, so this is not
+      // a partial upload even mid-sequence (it can only happen on chunk 0).
+      const invalidTarget = invalidTargetMessage(error, directory);
+      if (invalidTarget !== undefined) {
+        throw new APIError(invalidTarget, 400, error);
+      }
       // Any failure in a multi-chunk sequence is indeterminate, chunk 0
       // included. A client-side abort does not tell us whether the server
       // applied the request -- that indeterminacy is the whole premise of this
@@ -702,15 +771,19 @@ export async function uploadContent(
 const MAX_DOWNLOAD_DEPTH = 10;
 
 /**
- * Number of consecutive identical path segments that marks a walk as cyclic.
+ * Consecutive identical path segments that make a path a CYCLE CANDIDATE.
  *
  * Vocareum workspaces carry escaping symlinks such as
- * `publicdata -> /mnt/worktest/<course>/data` (see docs/vocareum-api-feedback.md).
- * The files API lists the same child under every level of one, so the walk sees
- * `lib/publicdata/publicdata/publicdata/...` without end and only stops when it
- * runs out of depth budget. Real content never nests a directory inside two more
- * of the same name, so three consecutive repeats identifies the cycle with room
- * to spare.
+ * `publicdata -> /mnt/worktest/<course>/data`. The files API lists the same
+ * child under every level of one, so the walk sees
+ * `lib/publicdata/publicdata/publicdata/...` without end.
+ *
+ * A repeated name alone is NOT treated as a cycle — `data/a/a/a` can be real.
+ * The walk (see `descend`) skips a candidate only when its listing names exactly
+ * the entries its parent lists; anything else is walked, and the depth limit
+ * (a recorded failure) still bounds it. The listing API returns names only, so
+ * a same-names-different-bytes tree is not distinguished — accepted as out of
+ * proportion (review triage, 2026-11-09).
  */
 const CYCLE_REPEAT_THRESHOLD = 3;
 
@@ -718,6 +791,15 @@ const CYCLE_REPEAT_THRESHOLD = 3;
  * True when a relative path ends in CYCLE_REPEAT_THRESHOLD identical segments,
  * i.e. the walk is going in circles rather than descending real content.
  */
+/** True when two listings name exactly the same entries (order-insensitive). */
+function sameEntryNames(a: FileInfo[], b: FileInfo[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  const names = new Set(a.map(e => e.path));
+  return b.every(e => names.has(e.path));
+}
+
 function isCyclicPath(relativePath: string): boolean {
   const segments = relativePath.split('/');
   if (segments.length < CYCLE_REPEAT_THRESHOLD) {
@@ -748,6 +830,13 @@ export function downloadContent(
     strict?: boolean;
     /** Defensive resource limits for remote content downloads. */
     limits?: Partial<DownloadContentLimits>;
+    /** Non-strict only: receives every entry that was skipped, so the caller
+     *  can report the pull as incomplete instead of successful. */
+    failures?: DownloadFailure[];
+    /** Receives the FileMap key of every Vocareum-managed link the walk left
+     *  out (e.g. `lib/publicdata`), so a caller comparing against local files
+     *  does not read their absence as a remote deletion. */
+    managedLinks?: string[];
   }
 ): Promise<FileMap> {
   return (async (): Promise<FileMap> => {
@@ -759,23 +848,38 @@ export function downloadContent(
       limits: resolveDownloadLimits(options?.limits),
       files: 0,
       bytes: 0,
+      failures: options?.failures,
+      managedLinks: options?.managedLinks,
     };
 
-    for (const directory of dirs) {
+    const strict = options?.strict === true;
+    for (let i = 0; i < dirs.length; i++) {
+      const directory = dirs[i];
       const baseApiPath = toApiDirPath(directory, architecture);
-      await downloadDirectoryTree(
-        client,
-        courseId,
-        assignmentId,
-        partId,
-        directory,
-        baseApiPath,
-        '',
-        0,
-        downloaded,
-        options?.strict === true,
-        budget
-      );
+      try {
+        await downloadDirectoryTree(
+          client, courseId, assignmentId, partId, directory, baseApiPath, '', 0, downloaded, strict, budget
+        );
+      } catch (error) {
+        if (!(error instanceof DownloadLimitError) || strict) {
+          throw error;
+        }
+        // The cap stops the walk; it must not also throw away what arrived.
+        // Record this directory and every one not reached, so callers know
+        // exactly which directories are incomplete (push refuses to upload
+        // them — see INCOMPLETE_PULL_MARKER).
+        recordDownloadFailure(
+          client, budget, strict, directory,
+          `${error.message}; the rest of this directory was NOT downloaded`
+        );
+        for (const notReached of dirs.slice(i + 1)) {
+          recordDownloadFailure(
+            client, budget, strict, notReached,
+            'NOT downloaded: the download limit was reached earlier in this part'
+          );
+        }
+        break;
+      }
     }
 
     return downloaded;
@@ -801,18 +905,54 @@ async function downloadDirectoryTree(
   depth: number,
   downloaded: FileMap,
   strict: boolean,
-  budget: DownloadBudget
+  budget: DownloadBudget,
+  /** Entries the caller already listed for this directory (saves a request). */
+  preListed?: FileInfo[]
 ): Promise<void> {
   const apiDirPath = relativePath ? `${baseApiPath}/${relativePath}` : baseApiPath;
   // Only the part's own declared directory is worth warning about; deeper
   // levels are paths we discovered, so their absence is not a config problem.
-  const entries = await listFilesByApiPath(
+  const entries = preListed ?? await listFilesByApiPath(
     client, courseId, assignmentId, partId, apiDirPath, relativePath === ''
   );
 
   for (const entry of entries) {
     const entryRelPath = relativePath ? `${relativePath}/${entry.path}` : entry.path;
     const filemapKey = `${directory}/${entryRelPath}`;
+
+    /**
+     * Walk into a confirmed directory. Every way a walk can stop short is
+     * either a recorded failure (strict: a throw) or a proven link cycle —
+     * never a silent drop, and never a placeholder stored as an empty file.
+     */
+    const descend = async (childEntries: FileInfo[]): Promise<void> => {
+      if (isCyclicPath(entryRelPath) && sameEntryNames(childEntries, entries)) {
+        // A repeated name alone does not prove a cycle — data/a/a/a can be
+        // real. A link back to an ancestor lists exactly what its parent
+        // lists; only then is there nothing below it to lose.
+        client.events.emit({
+          level: 'debug',
+          message: `Skipping cyclic path ${filemapKey} (lists the same entries as its parent)`,
+        });
+        return;
+      }
+      if (depth >= MAX_DOWNLOAD_DEPTH) {
+        // Truncating the walk drops files — the caller must not see a clean
+        // pull. Warn without --verbose (a debug line here once hid an entire
+        // course's nested assets) and record it as a failure.
+        recordDownloadFailure(
+          client, budget, strict, filemapKey,
+          `directory nesting exceeds the ${MAX_DOWNLOAD_DEPTH}-level download limit; ` +
+          `it and anything below it were NOT downloaded`
+        );
+        return;
+      }
+      await downloadDirectoryTree(
+        client, courseId, assignmentId, partId,
+        directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict, budget,
+        childEntries
+      );
+    };
 
     try {
       assertListedFileWithinBudget(filemapKey, entry, budget);
@@ -822,18 +962,14 @@ async function downloadDirectoryTree(
 
       // Some Vocareum workspaces expose directory placeholders as zero-byte
       // downloadable objects while also allowing the same path to be listed.
-      // Prefer the directory contents in that case so paths like scripts/python
-      // are imported recursively instead of as empty files.
-      if (isEmptyContent(content) && depth < MAX_DOWNLOAD_DEPTH && !isCyclicPath(entryRelPath)) {
-        const childApiDirPath = `${baseApiPath}/${entryRelPath}`;
+      // Probe every zero-byte entry: one that lists children is a directory,
+      // and must be walked (or recorded as cut off), never kept as an empty file.
+      if (isEmptyContent(content)) {
         const childEntries = await listFilesByApiPath(
-          client, courseId, assignmentId, partId, childApiDirPath
+          client, courseId, assignmentId, partId, `${baseApiPath}/${entryRelPath}`
         );
         if (childEntries.length > 0) {
-          await downloadDirectoryTree(
-            client, courseId, assignmentId, partId,
-            directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict, budget
-          );
+          await descend(childEntries);
           continue;
         }
       }
@@ -842,47 +978,115 @@ async function downloadDirectoryTree(
       downloaded[filemapKey] = content;
     } catch (error) {
       if (error instanceof DownloadLimitError) {
+        if (error.scope === 'file' && !strict) {
+          recordDownloadFailure(client, budget, strict, filemapKey, error.message);
+          continue;
+        }
         throw error;
       }
       if (error instanceof NotAFileError) {
-        if (isCyclicPath(entryRelPath)) {
-          // A symlink cycle, not truncated content — there is nothing below it
-          // to lose, so this stays at debug. Reserve the warning below for a
-          // real subtree the limit cut off, or it gets tuned out.
-          client.events.emit({
-            level: 'debug',
-            message: `Skipping cyclic path ${filemapKey} (repeating directory name)`,
-          });
+        // Not a file: list it as a directory. "Absent" here means the entry is
+        // neither — e.g. a dangling link, or a file deleted mid-walk. That must
+        // be reported, not silently treated as an empty directory.
+        let childListing: { entries: FileInfo[]; absent: boolean };
+        try {
+          childListing = await listDirectory(
+            client, courseId, assignmentId, partId, `${baseApiPath}/${entryRelPath}`, false
+          );
+        } catch (listError) {
+          // One unlistable subdirectory must not abort the rest of the part.
+          recordDownloadFailure(
+            client, budget, strict, filemapKey,
+            `could not be listed as a directory: ${listError instanceof Error ? listError.message : 'Unknown'}`
+          );
           continue;
         }
-        if (depth < MAX_DOWNLOAD_DEPTH) {
-          await downloadDirectoryTree(
-            client, courseId, assignmentId, partId,
-            directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict, budget
+        if (childListing.absent) {
+          if (isVocareumManagedLink(directory, relativePath, entry.path)) {
+            budget.managedLinks?.push(filemapKey);
+            client.events.emit({
+              level: 'debug',
+              message: `Skipping ${filemapKey}: Vocareum's course-wide data link, not assignment content`,
+            });
+            continue;
+          }
+          recordDownloadFailure(
+            client, budget, strict, filemapKey,
+            'not downloadable as a file and not listable as a directory'
           );
-        } else {
-          // Truncating the walk drops files silently — the caller still sees a
-          // successful pull. Warn so it is visible without --verbose; a debug
-          // line here hid an entire course's nested assets until someone
-          // compared the workspace against the Vocareum UI by eye.
-          client.events.emit({
-            level: 'warn',
-            message:
-              `Directory nesting exceeds the ${MAX_DOWNLOAD_DEPTH}-level download limit, ` +
-              `skipping ${filemapKey} and anything below it — these files were NOT downloaded`,
-          });
+          continue;
         }
+        await descend(childListing.entries);
         continue;
       }
       if (strict) {
         throw error;
       }
-      client.events.emit({
-        level: 'warn',
-        message: `Failed to download ${filemapKey}: ${error instanceof Error ? error.message : 'Unknown'}`,
-      });
+      recordDownloadFailure(
+        client, budget, strict, filemapKey, error instanceof Error ? error.message : 'Unknown'
+      );
     }
   }
+}
+
+/**
+ * Vocareum rejects an upload target the course's workspace does not have, e.g.
+ * `lib` in a Container course ("Invalid target (lib) for content update.
+ * Valid targets: [course, data, docs, ...]", seen 2026-11-10 on a Vocareum
+ * Standard part inside Container course 215500). vocgit picks the directory set
+ * from the part's labtype, which can disagree with the course; say how to fix
+ * the config instead of passing the raw API text through. The fix is the part's
+ * own `directories` list: pull writes one for every imported part, so changing
+ * `vocareum.architecture` would not stop the upload (and would move every
+ * other directory to the other path prefix).
+ *
+ * @internal Exported for testing
+ */
+export function invalidTargetMessage(error: unknown, directory: DirectoryType): string | undefined {
+  const message = error instanceof Error ? error.message : '';
+  const m = /Invalid target \(([^)]+)\) for content update\.?\s*(Valid targets: \[[^\]]*\])?/i.exec(message);
+  if (!m) { return undefined; }
+  return (
+    `Vocareum does not accept "${directory}/" as an upload target for this part` +
+    `${m[2] !== undefined ? ` (${m[2]})` : ''}. The course's workspace layout differs ` +
+    `from the one vocgit inferred from the part's labtype. Remove "${directory}" (and any other ` +
+    `directory not in that list, such as asnlib) from this part's \`directories\` in vocareum.yaml.`
+  );
+}
+
+/**
+ * `publicdata` at the top of the course-wide tree (`lib/` on Elite, `course/`
+ * on Container) is a root-owned link Vocareum creates to the course data mount
+ * (`/voc/course/publicdata -> /mnt/.../course<id>/data`, seen 2026-11-10). The
+ * API lists it but can neither fetch nor list it, and a `reset: 1` upload does
+ * not remove it: on Elite course 240788 a reset upload of `lib/` deleted a
+ * marker file added just before and left `publicdata` in place (2026-11-10).
+ * (On Container course 215500 `lib` is not an upload target at all.) It is not
+ * assignment content, so it is skipped rather than marking the pull incomplete
+ * and blocking every push of `lib/`.
+ */
+function isVocareumManagedLink(directory: DirectoryType, relativePath: string, name: string): boolean {
+  return relativePath === '' && (directory === 'lib' || directory === 'course') && name === 'publicdata';
+}
+
+/**
+ * A non-strict walk records the miss and carries on, so one bad entry does not
+ * cost the rest of the tree; callers read `failures` to report the pull as
+ * incomplete. A strict walk (drift detection) throws instead: a silently
+ * incomplete remote map would make the missing files look deleted remotely.
+ */
+function recordDownloadFailure(
+  client: VocareumClient,
+  budget: DownloadBudget,
+  strict: boolean,
+  filemapKey: string,
+  reason: string
+): void {
+  if (strict) {
+    throw new APIError(`Could not download ${filemapKey}: ${reason}`);
+  }
+  client.events.emit({ level: 'warn', message: `Failed to download ${filemapKey}: ${reason}` });
+  budget.failures?.push({ path: filemapKey, reason });
 }
 
 function assertListedFileWithinBudget(
@@ -893,7 +1097,8 @@ function assertListedFileWithinBudget(
   budget.files += 1;
   if (budget.files > budget.limits.maxFiles) {
     throw new DownloadLimitError(
-      `Download limit exceeded: more than ${budget.limits.maxFiles} files while downloading ${filemapKey}`
+      `Download limit exceeded: more than ${budget.limits.maxFiles} files while downloading ${filemapKey} ` +
+      `(raise it with VOCAREUM_MAX_DOWNLOAD_FILES)`
     );
   }
   // Many Vocareum listings are string-only and report size=0; this check is
@@ -902,7 +1107,7 @@ function assertListedFileWithinBudget(
   if (entry.size > budget.limits.maxFileBytes) {
     throw new DownloadLimitError(
       `Download limit exceeded: ${filemapKey} is listed as ${entry.size} bytes ` +
-      `(max ${budget.limits.maxFileBytes})`
+      `(max ${budget.limits.maxFileBytes})`, 'file'
     );
   }
 }
@@ -915,7 +1120,7 @@ function accountDownloadedFile(
   const bytes = Buffer.isBuffer(content) ? content.length : Buffer.byteLength(content);
   if (bytes > budget.limits.maxFileBytes) {
     throw new DownloadLimitError(
-      `Download limit exceeded: ${filemapKey} is ${bytes} bytes (max ${budget.limits.maxFileBytes})`
+      `Download limit exceeded: ${filemapKey} is ${bytes} bytes (max ${budget.limits.maxFileBytes})`, 'file'
     );
   }
   if (budget.bytes + bytes > budget.limits.maxTotalBytes) {
@@ -996,14 +1201,30 @@ async function listFilesByApiPath(
   assignmentId: string,
   partId: string,
   apiDirPath: string,
+  warnIfAbsent = false,
+): Promise<FileInfo[]> {
+  return (await listDirectory(client, courseId, assignmentId, partId, apiDirPath, warnIfAbsent)).entries;
+}
+
+/**
+ * List a directory, distinguishing "absent" from "empty" — the walk needs the
+ * difference to tell a real (empty) subdirectory from an entry that is not
+ * there at all.
+ */
+async function listDirectory(
+  client: VocareumClient,
+  courseId: string,
+  assignmentId: string,
+  partId: string,
+  apiDirPath: string,
   /**
    * Warn when the API reports this path absent. Only true for a directory the
    * part actually DECLARES. The walk also calls this speculatively — to decide
    * whether a zero-byte entry is really a directory — and those probes are
    * expected to miss constantly. Warning on them would bury the real signal.
    */
-  warnIfAbsent = false,
-): Promise<FileInfo[]> {
+  warnIfAbsent: boolean,
+): Promise<{ entries: FileInfo[]; absent: boolean }> {
   const url = `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
 
   try {
@@ -1012,11 +1233,12 @@ async function listFilesByApiPath(
       url,
       params: { dir: apiDirPath, list: true },
     });
-    return parseFileListResponse(response).map((entry) => ({
+    const entries = parseFileListResponse(response).map((entry) => ({
       path: entry.path,
       size: entry.size,
       modifiedAt: entry.modifiedAt,
     }));
+    return { entries, absent: false };
   } catch (error) {
     // Missing optional directories are normal, but only mask the error when it
     // names the requested directory. Other 400s likely indicate bad IDs/params.
@@ -1039,7 +1261,7 @@ async function listFilesByApiPath(
             `workspaces keep scripts, startercode, docs, data and private under /voc).`,
           });
         }
-        return [];
+        return { entries: [], absent: true };
       }
     }
     // Transient/non-400 errors must propagate: returning [] here would make an

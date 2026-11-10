@@ -61,4 +61,16 @@ describe('semanticFingerprint', () => {
     withCourse.assignments[0].templateCourseId = 'course-X';
     expect(semanticFingerprint(withoutCourse)).not.toBe(semanticFingerprint(withCourse));
   });
+  it('changes when a directory becomes blocked by an incomplete pull', () => {
+    const blocked: PushIntent = JSON.parse(JSON.stringify(base));
+    blocked.assignments[0].parts[0].blockedDirectories = ['data'];
+    expect(semanticFingerprint(base)).not.toBe(semanticFingerprint(blocked));
+  });
+  it('does not change when blockedDirectories order differs', () => {
+    const a: PushIntent = JSON.parse(JSON.stringify(base));
+    a.assignments[0].parts[0].blockedDirectories = ['data', 'startercode'];
+    const b: PushIntent = JSON.parse(JSON.stringify(base));
+    b.assignments[0].parts[0].blockedDirectories = ['startercode', 'data'];
+    expect(semanticFingerprint(a)).toBe(semanticFingerprint(b));
+  });
 });
