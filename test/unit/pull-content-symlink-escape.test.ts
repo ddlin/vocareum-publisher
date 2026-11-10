@@ -10,7 +10,7 @@ vi.mock('../../src/api/content', () => ({
   downloadContent: mockDownloadContent,
 }));
 
-import { detectContentDrift, applyPull } from '../../src/core/services/pull-service';
+import { detectContentDrift, applyPull, toRemoteKey, managedLinkCovering } from '../../src/core/services/pull-service';
 import type {
   PullResolver,
   PullInspection,
@@ -362,5 +362,247 @@ describe('applyPull — scaffolds configured empty directories with .gitkeep on 
     } finally {
       await fs.rm(outside, { recursive: true, force: true });
     }
+  });
+});
+
+// Recovery for an incomplete pull: the directory carries INCOMPLETE_PULL_MARKER
+// (push refuses it). Once the files are actually present, a complete
+// `pull --content` must replace the marker with a real hash — even when no
+// file differs — or push stays blocked forever.
+describe('content drift completes a directory an earlier pull left incomplete', () => {
+  let workspaceRoot: string;
+
+  beforeEach(async () => {
+    workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'vocgit-incomplete-'));
+    await fs.mkdir(path.join(workspaceRoot, 'asn1', 'data'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'asn1', 'data', 'a.txt'), 'same');
+  });
+  afterEach(async () => {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    vi.clearAllMocks();
+  });
+
+  const assignment = {
+    assignment_id: 'A1', name: 'CD15315 v2', path: 'asn1', create_from_template: false, settings: {},
+    parts: [{ part_id: 'P1', name: 'Part 1', path: '.', directories: ['data'] }],
+  } as unknown as Assignment;
+  const history = [{
+    timestamp: '2026-11-09T00:00:00Z', commit_sha: 'x', published_by: 'pull-command', status: 'failed' as const,
+    content_state: { [path.join('asn1', 'data')]: 'incomplete-pull' },
+  }];
+
+  it('flags the marked directory with no file differences, and pulling records a real hash', async () => {
+    mockDownloadContent.mockResolvedValue({ 'data/a.txt': Buffer.from('same') });
+
+    const drift = await detectContentDrift(
+      { assignments: [assignment], vocareum: { course_id: 'C1', architecture: 'container' }, publish_history: history },
+      {} as never, new Set<string>(), workspaceRoot, () => {},
+    );
+    expect(drift).toHaveLength(1);
+    expect(drift[0].partsDrift[0].fileDiffs).toEqual([]);
+    expect(drift[0].partsDrift[0].incompleteDirectories).toEqual(['data']);
+
+    const config = {
+      version: '1.0',
+      vocareum: { org_id: '1', course_id: 'C1', excluded_assignments: [] },
+      assignments: [assignment],
+      publish_history: history,
+    } as unknown as Config;
+    const ctx: PullContext = {
+      persistedConfig: config, effectiveConfig: config, configPath: `${workspaceRoot}/vocareum.yaml`,
+      workspaceRoot, events: new CollectingEventSink(), prompter: new NonInteractivePrompter(), client: {} as never,
+    };
+    const applyConfigUpdate = vi.fn().mockResolvedValue(undefined);
+    const resolver = {
+      resolveOrphanAction: vi.fn().mockResolvedValue('skip'),
+      resolveStaleAction: vi.fn().mockResolvedValue('skip'),
+      resolveSettingsDriftAction: vi.fn().mockResolvedValue('skip'),
+      resolveContentDriftAction: vi.fn().mockResolvedValue('pull'),
+      resolveImportPath: vi.fn(),
+    } as unknown as PullResolver;
+    const inspection: PullInspection = { orphans: [], stale: [], settingsDrift: [], contentDrift: drift };
+
+    await applyPull({ applyConfigUpdate } as LockedSession, ctx, { batch: true, verbose: false, skipContent: false }, inspection, resolver);
+
+    const entry = applyConfigUpdate.mock.calls[0][0].publish_history[0];
+    expect(entry.status).toBe('success');
+    const value = entry.content_state[path.join('asn1', 'data')];
+    expect(value).not.toBe('incomplete-pull');
+    expect(value).toMatch(/^[0-9a-f]{16,}$/);
+  });
+
+  it('a drift check that still cannot finish leaves the marker (push stays blocked)', async () => {
+    mockDownloadContent.mockRejectedValue(new Error('Download limit exceeded: more than 5000 files'));
+    const skipped: Array<{ assignmentName: string; reason: string }> = [];
+    const drift = await detectContentDrift(
+      { assignments: [assignment], vocareum: { course_id: 'C1', architecture: 'container' }, publish_history: history },
+      {} as never, new Set<string>(), workspaceRoot, () => {}, undefined, skipped,
+    );
+    expect(drift).toEqual([]);
+    expect(skipped).toHaveLength(1);
+  });
+
+  // Codex round 2 (P0): a remote file that cannot be written locally (the local
+  // path is a symlink) must keep the marker — otherwise push unblocks and its
+  // reset:1 upload deletes that remote file.
+  it('keeps the marker when a remote file in the directory cannot be written locally; clears it once fixed', async () => {
+    const dataDir = path.join(workspaceRoot, 'asn1', 'data');
+    await fs.writeFile(path.join(workspaceRoot, 'asn1', 'target.txt'), 'local target');
+    await fs.symlink('../target.txt', path.join(dataDir, 'missed.txt'));
+    mockDownloadContent.mockResolvedValue({
+      'data/a.txt': Buffer.from('changed on remote'),
+      'data/missed.txt': Buffer.from('remote only'),
+    });
+
+    const run = async () => {
+      const skipped: Array<{ assignmentName: string; reason: string }> = [];
+      const drift = await detectContentDrift(
+        { assignments: [assignment], vocareum: { course_id: 'C1', architecture: 'container' }, publish_history: history },
+        {} as never, new Set<string>(), workspaceRoot, () => {}, undefined, skipped,
+      );
+      const config = {
+        version: '1.0', vocareum: { org_id: '1', course_id: 'C1', excluded_assignments: [] },
+        assignments: [assignment], publish_history: history,
+      } as unknown as Config;
+      const ctx: PullContext = {
+        persistedConfig: config, effectiveConfig: config, configPath: `${workspaceRoot}/vocareum.yaml`,
+        workspaceRoot, events: new CollectingEventSink(), prompter: new NonInteractivePrompter(), client: {} as never,
+      };
+      const applyConfigUpdate = vi.fn().mockResolvedValue(undefined);
+      const resolver = {
+        resolveOrphanAction: vi.fn(), resolveStaleAction: vi.fn(), resolveSettingsDriftAction: vi.fn(),
+        resolveContentDriftAction: vi.fn().mockResolvedValue('pull'), resolveImportPath: vi.fn(),
+      } as unknown as PullResolver;
+      await applyPull({ applyConfigUpdate } as LockedSession, ctx, { batch: true, verbose: false, skipContent: false },
+        { orphans: [], stale: [], settingsDrift: [], contentDrift: drift }, resolver);
+      return { drift, skipped, entry: applyConfigUpdate.mock.calls[0]?.[0]?.publish_history?.[0] };
+    };
+
+    // Obstructed: the changed file is restored, but data/ stays marked and the run is failed.
+    const blocked = await run();
+    expect(blocked.skipped).toHaveLength(1);
+    expect(blocked.skipped[0].reason).toMatch(/data\/ still incomplete/);
+    expect(blocked.drift[0].partsDrift[0].stillIncompleteDirectories).toEqual(['data']);
+    expect(await fs.readFile(path.join(dataDir, 'a.txt'), 'utf8')).toBe('changed on remote');
+    expect(blocked.entry.content_state[path.join('asn1', 'data')]).toBe('incomplete-pull');
+    expect(blocked.entry.status).toBe('failed');
+    expect(blocked.entry.failed).toEqual([expect.objectContaining({ id: path.join('asn1', 'data') })]);
+
+    // Fixed: remove the symlink; a complete recovery now clears the marker.
+    await fs.unlink(path.join(dataDir, 'missed.txt'));
+    const fixed = await run();
+    expect(fixed.skipped).toEqual([]);
+    expect(fixed.entry.status).toBe('success');
+    expect(fixed.entry.content_state[path.join('asn1', 'data')]).toMatch(/^[0-9a-f]{16,}$/);
+  });
+
+  // Codex round 3 (P1): the obstruction is the ONLY difference. Without a drift
+  // entry the command returned before apply and no failed history was written.
+  it('a still-incomplete directory with no other difference still records a failed run', async () => {
+    const dataDir = path.join(workspaceRoot, 'asn1', 'data');
+    await fs.writeFile(path.join(workspaceRoot, 'asn1', 'target.txt'), 'local target');
+    await fs.symlink('../target.txt', path.join(dataDir, 'missed.txt'));
+    mockDownloadContent.mockResolvedValue({
+      'data/a.txt': Buffer.from('same'),
+      'data/missed.txt': Buffer.from('remote only'),
+    });
+    const drift = await detectContentDrift(
+      { assignments: [assignment], vocareum: { course_id: 'C1', architecture: 'container' }, publish_history: history },
+      {} as never, new Set<string>(), workspaceRoot, () => {},
+    );
+    expect(drift).toHaveLength(1);
+    expect(drift[0].partsDrift[0].fileDiffs).toEqual([]);
+    expect(drift[0].partsDrift[0].stillIncompleteDirectories).toEqual(['data']);
+
+    const config = {
+      version: '1.0', vocareum: { org_id: '1', course_id: 'C1', excluded_assignments: [] },
+      assignments: [assignment], publish_history: history,
+    } as unknown as Config;
+    const ctx: PullContext = {
+      persistedConfig: config, effectiveConfig: config, configPath: `${workspaceRoot}/vocareum.yaml`,
+      workspaceRoot, events: new CollectingEventSink(), prompter: new NonInteractivePrompter(), client: {} as never,
+    };
+    const applyConfigUpdate = vi.fn().mockResolvedValue(undefined);
+    const resolver = {
+      resolveOrphanAction: vi.fn(), resolveStaleAction: vi.fn(), resolveSettingsDriftAction: vi.fn(),
+      resolveContentDriftAction: vi.fn().mockResolvedValue('pull'), resolveImportPath: vi.fn(),
+    } as unknown as PullResolver;
+    const result = await applyPull({ applyConfigUpdate } as LockedSession, ctx, { batch: true, verbose: false, skipContent: false },
+      { orphans: [], stale: [], settingsDrift: [], contentDrift: drift }, resolver);
+    const entry = applyConfigUpdate.mock.calls[0]?.[0]?.publish_history?.[0];
+    expect(entry.status).toBe('failed');
+    expect(entry.content_state[path.join('asn1', 'data')]).toBe('incomplete-pull');
+    // Round 4: nothing was actually pulled, so it is not counted or announced as pulled.
+    expect(result.contentPulled).toBe(0);
+    const lines = (ctx.events as CollectingEventSink).events.map((e: ServiceEvent) => e.message ?? '');
+    expect(lines.some(l => l.includes('data/ (still incomplete'))).toBe(true);
+    expect(lines.some(l => l.startsWith('Pulled content changes'))).toBe(false);
+
+    // Skipping writes nothing (the help promises no changes); the exit-1 skip list still reports it.
+    const skipUpdate = vi.fn().mockResolvedValue(undefined);
+    const skipResolver = { ...resolver, resolveContentDriftAction: vi.fn().mockResolvedValue('skip') } as unknown as PullResolver;
+    await applyPull({ applyConfigUpdate: skipUpdate } as LockedSession, ctx, { batch: false, verbose: false, skipContent: false },
+      { orphans: [], stale: [], settingsDrift: [], contentDrift: drift }, skipResolver);
+    expect(skipUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe("detectContentDrift — Vocareum's lib/publicdata link (round-3 review)", () => {
+  let workspaceRoot: string;
+  beforeEach(async () => { workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'vocgit-drift-link-')); });
+  afterEach(async () => { await fs.rm(workspaceRoot, { recursive: true, force: true }); vi.clearAllMocks(); });
+
+  async function drift(localFiles: Record<string, string>) {
+    for (const [rel, content] of Object.entries(localFiles)) {
+      const full = path.join(workspaceRoot, 'asn1', rel);
+      await fs.mkdir(path.dirname(full), { recursive: true });
+      await fs.writeFile(full, content);
+    }
+    // The walk skipped the unreadable link and said so through `managedLinks`.
+    mockDownloadContent.mockImplementation(async (...args: unknown[]) => {
+      const options = args[6] as { managedLinks?: string[] } | undefined;
+      options?.managedLinks?.push('lib/publicdata');
+      return { 'lib/helper.py': Buffer.from('h') };
+    });
+    const assignment = {
+      assignment_id: 'A1', name: 'Elite lab', path: 'asn1',
+      parts: [{ part_id: 'P1', name: 'Part 1', path: '.', directories: ['lib'] }],
+    } as unknown as Assignment;
+    const skipped: { assignmentName: string; reason: string }[] = [];
+    const warnings: string[] = [];
+    const result = await detectContentDrift(
+      { assignments: [assignment], vocareum: { course_id: 'C1', architecture: 'elite' } },
+      {} as never, new Set<string>(), workspaceRoot, (m) => warnings.push(m), undefined, skipped,
+    );
+    return { result, skipped, warnings };
+  }
+
+  it('local files under lib/publicdata are never planned as deletions; the check is reported incomplete', async () => {
+    const { result, skipped } = await drift({ 'lib/helper.py': 'h', 'lib/publicdata/notes.txt': 'mine' });
+    const diffs = result.flatMap(d => d.partsDrift.flatMap(p => p.fileDiffs));
+    expect(diffs.find(d => d.filePath.includes('publicdata'))).toBeUndefined();
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0].reason).toContain('lib/publicdata/');
+  });
+
+  it('the user is told which path was not compared and what to do (round 4: the reason was never printed)', async () => {
+    const { warnings } = await drift({ 'lib/helper.py': 'h', 'lib/publicdata/notes.txt': 'mine' });
+    expect(warnings.join('\n')).toMatch(/lib\/publicdata\/.*Move them elsewhere/);
+  });
+
+  it('Windows paths are compared in the remote "/" form, so the guard and every lookup still match (round 4)', () => {
+    expect(toRemoteKey('lib\\publicdata\\notes.txt', '\\')).toBe('lib/publicdata/notes.txt');
+    expect(toRemoteKey('lib\\helper.py', '\\')).toBe('lib/helper.py');
+    expect(toRemoteKey('lib/helper.py', '/')).toBe('lib/helper.py');
+    const links = ['lib/publicdata'];
+    expect(managedLinkCovering(toRemoteKey('lib\\publicdata', '\\'), links)).toBe('lib/publicdata');
+    expect(managedLinkCovering(toRemoteKey('lib\\publicdata\\notes.txt', '\\'), links)).toBe('lib/publicdata');
+    expect(managedLinkCovering(toRemoteKey('lib\\publicdata2\\x', '\\'), links)).toBeUndefined();
+  });
+
+  it('with nothing local at that path, the skipped link costs nothing (clean, not incomplete)', async () => {
+    const { result, skipped } = await drift({ 'lib/helper.py': 'h' });
+    expect(result).toEqual([]);
+    expect(skipped).toEqual([]);
   });
 });

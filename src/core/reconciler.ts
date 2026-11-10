@@ -306,7 +306,7 @@ export async function reconcile(
           const effectiveDirs = directoriesForPart(config, configPart);
 
           const excludePatterns = publishExcludePatterns(config);
-          const { changedDirs, hashes: dirHashes } = await detectChangedDirectories(
+          const { changedDirs, hashes: dirHashes, blockedDirs } = await detectChangedDirectories(
             configAssignment.path,
             configPart.path,
             effectiveDirs,
@@ -318,10 +318,15 @@ export async function reconcile(
 
           const rubricsChanged = rubricPlan !== undefined;
 
-          if (changedDirs.length > 0 || metadataChanged || rubricsChanged || rubricReadFailed !== undefined) {
+          // A blocked directory alone still promotes the part: push must report
+          // it as failed, not finish green having silently skipped it.
+          if (changedDirs.length > 0 || metadataChanged || rubricsChanged || rubricReadFailed !== undefined || blockedDirs.length > 0) {
             const reasons: string[] = [];
             if (changedDirs.length > 0) {
               reasons.push(`Content: ${changedDirs.join(', ')}`);
+            }
+            if (blockedDirs.length > 0) {
+              reasons.push(`Content blocked (incomplete pull): ${blockedDirs.join(', ')}`);
             }
             if (metadataChanged) {
               reasons.push('Settings changed');
@@ -361,6 +366,7 @@ export async function reconcile(
               rubricPlan,
               remoteRubrics,
               rubricReadFailed,
+              blockedDirectories: blockedDirs.length > 0 ? blockedDirs : undefined,
               reason: reasons.join('; ')
             });
           } else {

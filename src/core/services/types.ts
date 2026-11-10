@@ -41,6 +41,9 @@ export interface PartIntent {
    *  points; included in the fingerprint so a newly-failing/newly-recovering read
    *  shifts it. */
   rubricReadFailed?: string;
+  /** Directories refused because their last pull was incomplete. executePush
+   *  reports each as failed; included in the fingerprint (AGENTS.md #15). */
+  blockedDirectories?: string[];
 }
 export interface AssignmentIntent {
   path: string;

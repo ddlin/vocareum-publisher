@@ -5,6 +5,83 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`VOCAREUM_MAX_DOWNLOAD_FILES`** raises the per-part file-count cap for pull
+  downloads (default 5,000, range 1 to 1,000,000). Courses that ship Python
+  environments under `data/` list tens of thousands of files.
+
+### Changed
+- **Download safety limits keep what arrived.** When a pull hits the file-count
+  or total-size cap, the download now stops and keeps the files already
+  fetched. The import is saved, marked `INCOMPLETE` and exits 1, with the
+  directory where the cap tripped and every directory not reached named as not
+  downloaded. Before, the whole import was discarded. A single file over the
+  per-file cap is skipped and reported, and the rest of the walk continues.
+  Content drift (`--content`) still stops at any limit.
+- **Vocareum's `publicdata` link no longer makes a pull incomplete.** The
+  course-wide tree (`lib/` on Elite) holds a root-owned link, `publicdata`, to
+  the course data mount. The API lists it but cannot fetch it, and a
+  clear-and-replace upload of `lib/` leaves it in place (tested on an Elite
+  course). Pull now skips that one entry instead of marking `lib/`
+  incomplete and blocking every push of it. Any other unreadable entry still
+  counts.
+- **An upload target the course does not have is explained.** Vocareum rejects
+  `lib` as a target in a Container course, which happens when a Vocareum
+  Standard part sits in one. Push now says to remove `lib` (and `asnlib`) from
+  that part's `directories` in `vocareum.yaml`, instead of passing the raw API
+  error through.
+
+### Fixed
+- **`pull` now downloads subdirectories.** For a path that is a directory, the
+  v2 files API returns HTTP 400 `specified file does not exist <path>`, not the
+  `status:"error"` body vocgit checked for. Each subdirectory was therefore
+  logged as "Failed to download" and skipped, so its files were never fetched.
+  On one course a pull lost 1,386 of 1,393 files and still printed
+  `✓ Imported`. That 400 (and the `specified source does not exist` form) now
+  means "not a file", so vocgit lists the path as a directory and walks into it.
+- **A pull that loses files says so, and exits 1.** An import that cannot
+  download some files still writes what arrived and saves the assignment, but
+  is reported `INCOMPLETE` instead of imported. The summary gains a
+  `Not downloaded` count. An entry that is neither a downloadable file nor a
+  listable directory (for example a dangling link), a subdirectory that cannot
+  be listed, and anything past the 10-level nesting limit are each recorded as
+  a failure. Before, they were dropped silently or ended the download early.
+  An import that fails outright is counted under `Import failed` instead of
+  `Skipped`, and also exits 1.
+- **`push` no longer deletes files that a pull missed.** An incomplete pull used
+  to be recorded in `publish_history` as a successful sync, with the hash of
+  the partial directory. The next push then uploaded that directory, and since
+  an upload first clears the directory on Vocareum (`reset: 1`), it deleted
+  every remote file the pull had not downloaded. This happened on 1.5.0 and
+  earlier: pulling a course whose subdirectories failed, then pushing any edit,
+  removed those subdirectories from the course. An incomplete pull is now
+  recorded as `failed`, with the missed paths listed. Its directories carry an
+  `incomplete-pull` marker instead of a hash. `push`, including `--force-all`,
+  refuses those directories and reports them as failed. A complete
+  `vocgit pull --batch --content --assignment <name>` replaces the marker with
+  a real hash, even when no file differs. The marker stays if a remote file in
+  that directory still cannot be written locally, such as when the local path
+  is a symlink. `vocgit status` lists marked directories, and `status --json`
+  reports them as `error`, not `synced`.
+- **Failed imports are recorded in `publish_history`.** An import that failed
+  outright left no record. A run in which one import failed and another
+  succeeded was recorded as `success`. Both are now recorded as `failed`, naming
+  the assignment and the reason, and the earlier `content_state` is kept.
+- **Directory walking no longer drops real folders or keeps placeholders as
+  files.** A path whose last three names repeat (such as `data/a/a/a`) used to
+  be skipped as a symlink cycle by name alone. It is now skipped only when it
+  lists exactly the same entries as its parent. A zero-byte directory
+  placeholder deeper than the nesting limit used to be saved as an empty file.
+  It is now recorded as a failure. Placeholder folders are also listed once,
+  not twice.
+- **`pull --content` no longer reports a skipped drift check as clean.** The
+  first subdirectory used to abort the drift check for the whole assignment,
+  and the run still printed `✓ No sync issues found.` Subdirectories are now
+  walked. Any assignment whose check still cannot finish is named, and the pull
+  exits 1.
+
 ## [1.5.0] — 2026-11-09
 
 ### Added

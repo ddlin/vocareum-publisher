@@ -158,6 +158,9 @@ export interface RenderStatusHumanOptions {
   templateCount: number;
   /** Number of excluded assignment IDs. Required for human rendering. */
   excludedCount: number;
+  /** content_state keys an incomplete pull marked (push refuses them). Read
+   *  from config, so the human path stays scan-free (AGENTS.md #16). */
+  incompleteDirectories?: string[];
   /**
    * Config-derived assignment/part counts. Callers MUST compute these from
    * the persisted config (not from `report.assignments`) so that human status
@@ -238,6 +241,14 @@ export function renderStatusHuman(
 
   events.emit({ level: 'plain', message: `- Templates configured: ${options.templateCount}` });
   events.emit({ level: 'plain', message: `- Excluded assignment IDs: ${options.excludedCount}` });
+  const incomplete = options.incompleteDirectories ?? [];
+  if (incomplete.length > 0) {
+    events.emit({
+      level: 'warn',
+      message: `Incomplete pull: push refuses ${incomplete.length} director${incomplete.length === 1 ? 'y' : 'ies'} ` +
+        `until a complete pull (\`vocgit pull --batch --content --assignment <name>\`): ${incomplete.join(', ')}`,
+    });
+  }
 
   if (options.verbose === true && options.assignmentDetails.length > 0) {
     events.emit({ level: 'newline' });

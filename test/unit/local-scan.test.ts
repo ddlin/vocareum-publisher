@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { scanLocalContent, detectChangedDirectories, assertConfinedToWorkspace } from '../../src/core/local-scan';
+import { scanLocalContent, detectChangedDirectories, assertConfinedToWorkspace, INCOMPLETE_PULL_MARKER } from '../../src/core/local-scan';
 import { calculateDirectoryHash } from '../../src/utils/files';
 import type { Config } from '../../src/types/config';
 
@@ -411,6 +411,61 @@ describe('scanLocalContent', () => {
       [],
       tempDir
     )).rejects.toThrow(/escapes/);
+  });
+
+  // An incomplete pull leaves INCOMPLETE_PULL_MARKER instead of a hash. Push
+  // uploads with reset:1, so uploading that directory would delete the remote
+  // files the pull missed — it must be blocked, including under --force-all.
+  for (const forceAll of [false, true]) {
+    it(`blocks a directory marked incomplete by a pull${forceAll ? ' (even with --force-all)' : ''}`, async () => {
+      const key = path.join('lab1', 'part1', 'startercode');
+      const { changedDirs, blockedDirs, hashes } = await detectChangedDirectories(
+        'lab1', 'part1', ['startercode'],
+        {
+          timestamp: '2026-06-01T00:00:00Z', commit_sha: 'abc', published_by: 'test', status: 'failed',
+          content_state: { [key]: INCOMPLETE_PULL_MARKER },
+        },
+        forceAll, [], tempDir
+      );
+      expect(changedDirs).toEqual([]);
+      expect(blockedDirs).toEqual(['startercode']);
+      expect(hashes).not.toHaveProperty('startercode');
+    });
+  }
+
+  it('a real hash (a later complete pull) unblocks the directory', async () => {
+    const key = path.join('lab1', 'part1', 'startercode');
+    const hash = await calculateDirectoryHash(path.join(tempDir, key), []);
+    const { changedDirs, blockedDirs } = await detectChangedDirectories(
+      'lab1', 'part1', ['startercode'],
+      { timestamp: '2026-06-02T00:00:00Z', commit_sha: 'abc', published_by: 'test', status: 'success', content_state: { [key]: hash } },
+      false, [], tempDir
+    );
+    expect(blockedDirs).toEqual([]);
+    expect(changedDirs).toEqual([]);
+  });
+
+  it('status reports a directory an incomplete pull left behind as error, never synced', async () => {
+    const key = path.join('lab1', 'part1', 'startercode');
+    const config = {
+      version: '1.0',
+      vocareum: { org_id: '1', course_id: 'c1', excluded_assignments: [] },
+      assignments: [{
+        assignment_id: 'a1', name: 'Lab 1', path: 'lab1', create_from_template: false, settings: {},
+        parts: [{ part_id: 'p1', path: 'part1', directories: ['startercode'], settings: {} }],
+      }],
+      publish_history: [{
+        timestamp: '2026-11-09T00:00:00Z', commit_sha: 'x', published_by: 'pull-command', status: 'failed',
+        content_state: { [key]: INCOMPLETE_PULL_MARKER },
+      }],
+    } as unknown as Config;
+
+    const result = await scanLocalContent(config, tempDir);
+
+    expect(result.assignments[0].status).toBe('error');
+    expect(result.assignments[0].parts[0].directories[0]).toEqual({ directory: 'startercode', status: 'error' });
+    expect(result.summary.synced).toBe(0);
+    expect(result.summary.error).toBe(1);
   });
 
   it('reads content_state from the newest history entry even when it is failed', async () => {

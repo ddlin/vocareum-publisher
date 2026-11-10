@@ -75,6 +75,10 @@ export interface PartAction {
   dirHashes?: Record<string, string>;
   /** True when part metadata (name) differs from remote and needs updating */
   metadataChanged?: boolean;
+  /** Directories push must not upload because the last pull of them was
+   *  incomplete (INCOMPLETE_PULL_MARKER in content_state). Uploading them
+   *  with reset:1 would delete the remote files the pull missed. */
+  blockedDirectories?: DirectoryType[];
   /** Rubric work this part needs, when rubric sync is enabled and the part has
    *  `rubrics` in config. Present only when non-empty — a part whose rubrics already
    *  match carries no plan and stays a `skip`. */
