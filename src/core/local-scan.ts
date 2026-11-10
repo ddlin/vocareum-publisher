@@ -105,10 +105,23 @@ export function directoriesForPart(config: Config, part: Part): DirectoryType[] 
  * per-directory hash computed during the scan. planPush reads these hashes
  * directly instead of recomputing them (see reconciler.ts — Stage 1a Fix 3).
  */
+/**
+ * Stored in `content_state` (in place of a hash) for a directory that a pull
+ * could not download completely. Push uploads a changed directory with
+ * `reset: 1`, which clears it on Vocareum first, so uploading such a directory
+ * would DELETE every remote file the pull missed. Push refuses these
+ * directories (even under --force-all) until a later complete pull records a
+ * real hash. It can never collide with a hash (those are hex digests).
+ */
+export const INCOMPLETE_PULL_MARKER = 'incomplete-pull';
+
 export interface ChangedDirectoriesResult {
   changedDirs: DirectoryType[];
   /** Hash computed for every directory in the input set (changed or not). */
   hashes: Record<string, string>;
+  /** Directories whose last pull was incomplete (INCOMPLETE_PULL_MARKER).
+   *  Never in `changedDirs`: push must not upload them. */
+  blockedDirs: DirectoryType[];
 }
 
 /**
@@ -137,16 +150,22 @@ export async function detectChangedDirectories(
   await assertConfinedToWorkspace(baseDir, path.join(assignmentPath, partPath));
 
   const hashes: Record<string, string> = {};
+  // Checked before forceAll: --force-all re-uploads everything, which is
+  // exactly the reset:1 upload that would delete the files the pull missed.
+  const blockedDirs = directories.filter(
+    dir => lastPublishHistory?.content_state?.[path.join(assignmentPath, partPath, dir)] === INCOMPLETE_PULL_MARKER
+  );
+  const uploadable = directories.filter(dir => !blockedDirs.includes(dir));
 
   if (forceAll) {
     // Under forceAll every directory is considered changed.  Still compute
     // hashes so planPush can carry them forward without a second traversal.
-    for (const dir of directories) {
+    for (const dir of uploadable) {
       const key = path.join(assignmentPath, partPath, dir);
       await assertConfinedToWorkspace(baseDir, key);
       hashes[dir] = await calculateDirectoryHash(path.resolve(baseDir, key), excludePatterns);
     }
-    return { changedDirs: directories, hashes };
+    return { changedDirs: uploadable, hashes, blockedDirs };
   }
 
   if (!lastPublishHistory?.content_state) {
@@ -156,12 +175,12 @@ export async function detectChangedDirectories(
       await assertConfinedToWorkspace(baseDir, key);
       hashes[dir] = await calculateDirectoryHash(path.resolve(baseDir, key), excludePatterns);
     }
-    return { changedDirs: directories, hashes };
+    return { changedDirs: directories, hashes, blockedDirs };
   }
 
   const changedDirs: DirectoryType[] = [];
 
-  for (const dir of directories) {
+  for (const dir of uploadable) {
     const key = path.join(assignmentPath, partPath, dir);
     await assertConfinedToWorkspace(baseDir, key);
 
@@ -175,7 +194,7 @@ export async function detectChangedDirectories(
     }
   }
 
-  return { changedDirs, hashes };
+  return { changedDirs, hashes, blockedDirs };
 }
 
 /**

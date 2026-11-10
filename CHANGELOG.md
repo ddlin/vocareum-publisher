@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`VOCAREUM_MAX_DOWNLOAD_FILES`** raises the per-part file-count cap for pull
+  downloads (default 5,000, range 1 to 1,000,000). Courses that ship Python
+  environments under `data/` list tens of thousands of files.
+
+### Changed
+- **Download safety limits keep what arrived.** When a pull hits the file-count
+  or total-size cap, the download now stops and keeps the files already
+  fetched. The import is saved, marked `INCOMPLETE` and exits 1, with the
+  directory where the cap tripped and every directory not reached named as not
+  downloaded. Before, the whole import was discarded. A single file over the
+  per-file cap is skipped and reported, and the rest of the walk continues.
+  Content drift (`--content`) still stops at any limit.
+
 ### Fixed
 - **`pull` now downloads subdirectories.** For a path that is a directory, the
   v2 files API returns HTTP 400 `specified file does not exist <path>`, not the
@@ -22,10 +36,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   listable directory (for example a dangling link), a subdirectory that cannot
   be listed, and anything past the 10-level nesting limit are each recorded as
   a failure. Before, they were dropped silently or ended the download early.
-  An import that fails outright (for example on a download safety limit) is
-  counted under `Import failed` instead of `Skipped`, and also exits 1.
-  To fetch missing files later, run
-  `vocgit pull --batch --content --assignment <name>`.
+  An import that fails outright is counted under `Import failed` instead of
+  `Skipped`, and also exits 1.
+- **`push` no longer deletes files that a pull missed.** An incomplete pull used
+  to be recorded in `publish_history` as a successful sync, with the hash of
+  the partial directory. The next push then uploaded that directory, and since
+  an upload first clears the directory on Vocareum (`reset: 1`), it deleted
+  every remote file the pull had not downloaded. This happened on 1.5.0 and
+  earlier: pulling a course whose subdirectories failed, then pushing any edit,
+  removed those subdirectories from the course. An incomplete pull is now
+  recorded as `failed`, with the missed paths listed. Its directories carry an
+  `incomplete-pull` marker instead of a hash. `push`, including `--force-all`,
+  refuses those directories and reports them as failed. A complete
+  `vocgit pull --batch --content --assignment <name>` replaces the marker with
+  a real hash, even when no file differs.
 - **Directory walking no longer drops real folders or keeps placeholders as
   files.** A path whose last three names repeat (such as `data/a/a/a`) used to
   be skipped as a symlink cycle by name alone. It is now skipped only when it

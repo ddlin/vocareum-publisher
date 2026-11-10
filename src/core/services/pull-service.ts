@@ -8,7 +8,7 @@
  */
 
 import * as path from 'path';
-import { assertConfinedToWorkspace } from '../local-scan';
+import { assertConfinedToWorkspace, INCOMPLETE_PULL_MARKER } from '../local-scan';
 import { reconcile } from '../reconciler';
 import { getAssignment } from '../../api/assignments';
 import { listParts, getPart } from '../../api/parts';
@@ -16,7 +16,7 @@ import { downloadContent, type DownloadFailure } from '../../api/content';
 import { pathExists, ensureDirectory, writeFile, writeFileUnderBase, calculateDirectoryHash, validatePath, readDirectory } from '../../utils/files';
 import { isPathConfinedToBase } from '../../utils/path-security';
 import { getCommitSha, getGitUserName } from '../../utils/git';
-import type { PublishHistory } from '../../types/config';
+import type { PublishHistory, HistoryFailedEntity } from '../../types/config';
 import { mapAssignmentSettings, mapPartSettings } from '../../utils/settings';
 import { UnknownFieldReporter } from '../../utils/unknown-field-reporter';
 import {
@@ -216,8 +216,10 @@ export function scopeAssignmentsForContent(
 export interface ImportResult {
   assignment: Assignment;
   contentState: Record<string, string>;
-  /** Remote entries that could not be downloaded. Non-empty means the import
-   *  is INCOMPLETE and must not be reported as a success. */
+  /** Remote entries that could not be downloaded, as workspace-relative paths.
+   *  Non-empty means the import is INCOMPLETE and must not be reported as a
+   *  success; each directory containing one is recorded with
+   *  INCOMPLETE_PULL_MARKER instead of a hash, so push refuses it. */
   missingFiles: DownloadFailure[];
 }
 
@@ -282,6 +284,10 @@ export interface PartContentDrift {
   remoteFiles: FileMap;
   /** Configured directories for the part; scaffolded (with .gitkeep when empty) on apply. */
   directories: DirectoryType[];
+  /** Directories an earlier pull left incomplete (INCOMPLETE_PULL_MARKER). This
+   *  complete check covered them, so pulling records a real hash and lifts
+   *  push's block — even when no file differs. */
+  incompleteDirectories?: DirectoryType[];
 }
 
 /** Represents content drift for an assignment */
@@ -364,6 +370,24 @@ export interface PullResult {
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
+
+/** Cap on misses listed in one history entry; the rest are summarized. A
+ *  limit-tripped pull can miss thousands, and the YAML must stay readable. */
+const MAX_HISTORY_MISSES = 50;
+
+function historyFailuresFor(misses: DownloadFailure[]): HistoryFailedEntity[] {
+  const listed: HistoryFailedEntity[] = misses
+    .slice(0, MAX_HISTORY_MISSES)
+    .map(m => ({ type: 'file', id: m.path, error: `not downloaded: ${m.reason}` }));
+  if (misses.length > MAX_HISTORY_MISSES) {
+    listed.push({
+      type: 'file',
+      id: `(${misses.length - MAX_HISTORY_MISSES} more)`,
+      error: 'not downloaded; see the pull output for the full list',
+    });
+  }
+  return listed;
+}
 
 function formatValue(value: unknown): string {
   if (value === undefined) { return '(not set)'; }
@@ -635,7 +659,10 @@ async function importAssignment(
         downloadPlan.architecture,
         { failures: partFailures }
       );
-      missingFiles.push(...partFailures);
+      missingFiles.push(...partFailures.map(f => ({
+        path: partPath === '.' ? path.join(localPath, f.path) : path.join(localPath, partPath, f.path),
+        reason: f.reason,
+      })));
     }
     const fileCount = Object.keys(files).length;
 
@@ -704,6 +731,14 @@ async function importAssignment(
         : path.join(localPath, partPath, dir);
 
       const dirPath = path.resolve(workspaceRoot, stateKey);
+
+      // Never record the hash of a directory the download could not finish:
+      // push would treat it as the true remote state, and its reset:1 upload
+      // would delete the files that are missing here.
+      if (missingFiles.some(f => f.path === stateKey || f.path.startsWith(stateKey + path.sep))) {
+        contentState[stateKey] = INCOMPLETE_PULL_MARKER;
+        continue;
+      }
 
       try {
         const hash = await calculateDirectoryHash(dirPath, excludePatterns);
@@ -869,7 +904,11 @@ async function detectSettingsDrift(
 }
 
 export async function detectContentDrift(
-  config: { assignments: Assignment[]; vocareum: { course_id: string; excluded_assignments?: string[]; architecture?: 'elite' | 'container' } },
+  config: {
+    assignments: Assignment[];
+    vocareum: { course_id: string; excluded_assignments?: string[]; architecture?: 'elite' | 'container' };
+    publish_history?: PublishHistory[];
+  },
   client: VocareumClient,
   skipAssignmentIds: Set<string>,
   workspaceRoot: string,
@@ -1013,7 +1052,11 @@ export async function detectContentDrift(
           }
         }
 
-        if (fileDiffs.length > 0) {
+        const contentState = config.publish_history?.[0]?.content_state ?? {};
+        const incompleteDirectories = downloadPlan.directories.filter(
+          dir => contentState[path.join(localBasePath, dir)] === INCOMPLETE_PULL_MARKER
+        );
+        if (fileDiffs.length > 0 || incompleteDirectories.length > 0) {
           partsDrift.push({
             partId: configPart.part_id,
             partName: configPart.name ?? 'Part',
@@ -1021,6 +1064,7 @@ export async function detectContentDrift(
             fileDiffs,
             remoteFiles: safeRemoteFiles,
             directories: downloadPlan.directories,
+            ...(incompleteDirectories.length > 0 ? { incompleteDirectories } : {}),
           });
         }
       }
@@ -1142,6 +1186,8 @@ export async function applyPull(
     partRubrics?: Map<string, Rubric[]>;
   }> = new Map();
   const importedContentState: Record<string, string> = {};
+  /** Misses from incomplete imports, recorded in publish_history (AGENTS.md #9). */
+  const importMisses: DownloadFailure[] = [];
 
   // ── Process orphaned assignments ──────────────────────────────────────────
   if (inspection.orphans.length > 0) {
@@ -1190,6 +1236,7 @@ export async function applyPull(
             // Saved so the user keeps what did arrive, but never shown as a
             // clean success: this is the line a 1,386-file loss hid behind.
             result.filesNotDownloaded += missingFiles.length;
+            importMisses.push(...missingFiles);
             events.emit({
               level: 'warn',
               message: `Imported "${orphan.name}" to ${finalDirName}/ INCOMPLETE: ` +
@@ -1396,6 +1443,9 @@ export async function applyPull(
         for (const file of deleted) {
           events.emit({ level: 'plain', message: `    - ${file.filePath} (deleted on remote)` });
         }
+        for (const dir of partDrift.incompleteDirectories ?? []) {
+          events.emit({ level: 'plain', message: `    ! ${dir}/ (an earlier pull was incomplete; pulling completes it and unblocks push)` });
+        }
       }
 
       const action = await resolver.resolveContentDriftAction(issue);
@@ -1450,6 +1500,9 @@ export async function applyPull(
             const dir = fileDiff.filePath.split('/')[0] as DirectoryType;
             directories.add(dir);
           }
+          for (const dir of partDrift.incompleteDirectories ?? []) {
+            directories.add(dir);
+          }
 
           for (const dir of directories) {
             const stateKey = path.join(localBasePath, dir);
@@ -1499,8 +1552,11 @@ export async function applyPull(
       timestamp: new Date().toISOString(),
       commit_sha: commitSha,
       published_by: publishedBy,
-      status: 'success',
+      // An import that missed files is a failed run, recorded as one (AGENTS.md
+      // #9). Its directories carry INCOMPLETE_PULL_MARKER, not a hash.
+      status: importMisses.length > 0 ? 'failed' : 'success',
       content_state: mergedContentState,
+      ...(importMisses.length > 0 ? { failed: historyFailuresFor(importMisses) } : {}),
     };
 
     newPublishHistory = [historyEntry];

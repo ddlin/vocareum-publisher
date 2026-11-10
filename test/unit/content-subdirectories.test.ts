@@ -10,7 +10,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
-import { downloadContent, type DownloadFailure } from '../../src/api/content';
+import { downloadContent, resolveMaxDownloadFiles, type DownloadFailure } from '../../src/api/content';
 import { APIError, type VocareumClient } from '../../src/api/client';
 import type { ServiceEvent } from '../../src/core/services/event-sink';
 
@@ -171,7 +171,12 @@ describe('entries that cannot be retrieved are reported, never silently dropped'
   it('strict mode throws on that entry instead of returning a map that is missing it', async () => {
     const tree = nestedTree();
     tree.dirs['/voc/startercode'].push('dangling-link');
-    await expect(pull(tree, true)).rejects.toThrow(/startercode\/dangling-link/);
+    const { client, calls } = fakeClient(tree);
+    // The specific classification, not just any error naming the path: master
+    // also threw (the raw HTTP 400) without ever trying to list the entry.
+    await expect(downloadContent(client, 'c', 'a', 'p', ['startercode', 'data'], 'container', { strict: true }))
+      .rejects.toThrow('Could not download startercode/dangling-link: not downloadable as a file and not listable as a directory');
+    expect(calls).toContain('list /voc/startercode/dangling-link');
   });
 
   it('a 400 with a different message is not mistaken for a directory', async () => {
@@ -290,6 +295,85 @@ describe('every way a walk can stop short is accounted for (review round 1)', ()
     const lists = calls.filter(c => c.startsWith('list '));
     expect(lists.length).toBe(new Set(lists).size);
     expect(lists).toContain('list /voc/data/d0/d1/d2/d3');
+  });
+});
+
+describe('download safety limits keep what arrived (non-strict); strict still throws', () => {
+  function wide(): FakeTree {
+    // startercode: 3 files; data: 2 files. Walk order is startercode, then data.
+    return {
+      dirs: { '/voc/startercode': ['a.txt', 'b.txt', 'c.txt'], '/voc/data': ['d.txt', 'e.txt'] },
+      files: { 'startercode/a.txt': 'a', 'startercode/b.txt': 'b', 'startercode/c.txt': 'c', 'data/d.txt': 'd', 'data/e.txt': 'e' },
+    };
+  }
+
+  async function pullWith(tree: FakeTree, limits: { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number }, strict = false) {
+    const { client, events } = fakeClient(tree);
+    const failures: DownloadFailure[] = [];
+    const files = await downloadContent(client, 'c', 'a', 'p', ['startercode', 'data'], 'container', { strict, failures, limits });
+    return { files, failures, warnings: events.filter(e => e.level === 'warn').map(e => e.message) };
+  }
+
+  it('the file-count cap stops the walk but keeps the files already downloaded', async () => {
+    const { files, failures } = await pullWith(wide(), { maxFiles: 2 });
+    expect(Object.keys(files).sort()).toEqual(['startercode/a.txt', 'startercode/b.txt']);
+    // The directory where the cap tripped, and every directory not reached, are named.
+    expect(failures.map(f => f.path)).toEqual(['startercode', 'data']);
+    expect(failures[0].reason).toMatch(/more than 2 files.*VOCAREUM_MAX_DOWNLOAD_FILES.*rest of this directory was NOT downloaded/);
+    expect(failures[1].reason).toMatch(/download limit was reached earlier/);
+  });
+
+  it('the total-bytes cap behaves the same way', async () => {
+    const { files, failures } = await pullWith(wide(), { maxTotalBytes: 2 });
+    expect(Object.keys(files).sort()).toEqual(['startercode/a.txt', 'startercode/b.txt']);
+    expect(failures.map(f => f.path)).toEqual(['startercode', 'data']);
+  });
+
+  it('one oversized file is recorded and skipped; the walk continues', async () => {
+    const tree = wide();
+    tree.files['startercode/b.txt'] = 'too large';
+    const { files, failures } = await pullWith(tree, { maxFileBytes: 3 });
+    expect(Object.keys(files).sort()).toEqual(['data/d.txt', 'data/e.txt', 'startercode/a.txt', 'startercode/c.txt']);
+    expect(failures).toHaveLength(1);
+    expect(failures[0].path).toBe('startercode/b.txt');
+  });
+
+  it('strict mode (drift) still throws on any limit', async () => {
+    await expect(pullWith(wide(), { maxFiles: 2 }, true)).rejects.toThrow(/Download limit exceeded/);
+    const tree = wide();
+    tree.files['startercode/b.txt'] = 'too large';
+    await expect(pullWith(tree, { maxFileBytes: 3 }, true)).rejects.toThrow(/Download limit exceeded/);
+  });
+});
+
+describe('VOCAREUM_MAX_DOWNLOAD_FILES', () => {
+  it('defaults to 5,000', () => {
+    expect(resolveMaxDownloadFiles({})).toBe(5000);
+    expect(resolveMaxDownloadFiles({ VOCAREUM_MAX_DOWNLOAD_FILES: '  ' })).toBe(5000);
+  });
+
+  it('raises the cap', () => {
+    expect(resolveMaxDownloadFiles({ VOCAREUM_MAX_DOWNLOAD_FILES: '50000' })).toBe(50000);
+  });
+
+  it('rejects junk, zero, and absurd values', () => {
+    expect(() => resolveMaxDownloadFiles({ VOCAREUM_MAX_DOWNLOAD_FILES: 'lots' })).toThrow(/positive integer/);
+    expect(() => resolveMaxDownloadFiles({ VOCAREUM_MAX_DOWNLOAD_FILES: '-5' })).toThrow(/positive integer/);
+    expect(() => resolveMaxDownloadFiles({ VOCAREUM_MAX_DOWNLOAD_FILES: '0' })).toThrow(/between 1 and/);
+    expect(() => resolveMaxDownloadFiles({ VOCAREUM_MAX_DOWNLOAD_FILES: '99999999' })).toThrow(/between 1 and/);
+  });
+
+  it('is what downloadContent uses when no explicit limit is passed', async () => {
+    const saved = process.env.VOCAREUM_MAX_DOWNLOAD_FILES;
+    process.env.VOCAREUM_MAX_DOWNLOAD_FILES = '1';
+    try {
+      const tree: FakeTree = { dirs: { '/voc/startercode': ['a.txt', 'b.txt'], '/voc/data': [] }, files: { 'startercode/a.txt': 'a', 'startercode/b.txt': 'b' } };
+      const { files, failures } = await pull(tree);
+      expect(Object.keys(files)).toEqual(['startercode/a.txt']);
+      expect(failures[0].reason).toMatch(/more than 1 files/);
+    } finally {
+      if (saved === undefined) { delete process.env.VOCAREUM_MAX_DOWNLOAD_FILES; } else { process.env.VOCAREUM_MAX_DOWNLOAD_FILES = saved; }
+    }
   });
 });
 

@@ -42,6 +42,7 @@ const {
 // ── mock local-scan (assertConfinedToWorkspace) ────────────────────────────────
 vi.mock('../../src/core/local-scan', () => ({
   assertConfinedToWorkspace: vi.fn().mockResolvedValue(undefined),
+  INCOMPLETE_PULL_MARKER: 'incomplete-pull',
 }));
 
 // ── mock reconciler (used by inspectPull) ──────────────────────────────────────
@@ -1170,6 +1171,44 @@ describe('applyPull — import that could not download every file', () => {
     expect(imported[0].message).toMatch(/INCOMPLETE: 2 files could not be downloaded/);
     expect(emitted.some(e => e.level === 'warn' && /Part 1\/1: downloaded 0 files, 2 could NOT be downloaded/.test(e.message))).toBe(true);
     expect((applyConfigUpdate.mock.calls[0][0] as ConfigUpdates).assignments).toHaveLength(1);
+  });
+
+  it('records the run as failed and marks only the incomplete directories, never hashing them', async () => {
+    const { applyConfigUpdate } = await importWithFailures([
+      { path: 'startercode/py3.10-exercises', reason: 'r1' },
+      { path: 'data/ec2-setup', reason: 'r2' },
+    ]);
+    const update = applyConfigUpdate.mock.calls[0][0] as ConfigUpdates;
+    const entry = update.publish_history![0];
+    expect(entry.status).toBe('failed');
+    const state = entry.content_state;
+    const keyFor = (dir: string) => Object.keys(state).find(k => k.endsWith(`/${dir}`) || k === dir);
+    expect(state[keyFor('startercode')!]).toBe('incomplete-pull');
+    expect(state[keyFor('data')!]).toBe('incomplete-pull');
+    // A directory with no misses still gets its real hash.
+    const others = Object.entries(state).filter(([k]) => !/(startercode|data)$/.test(k));
+    expect(others.length).toBeGreaterThan(0);
+    expect(others.every(([, v]) => v === 'hash-abc123')).toBe(true);
+    expect(entry.failed).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'file', id: expect.stringMatching(/startercode\/py3\.10-exercises$/), error: 'not downloaded: r1' }),
+      expect.objectContaining({ type: 'file', id: expect.stringMatching(/data\/ec2-setup$/), error: 'not downloaded: r2' }),
+    ]));
+  });
+
+  it('caps the misses listed in history and summarizes the rest', async () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({ path: `data/f${i}`, reason: 'r' }));
+    const { applyConfigUpdate } = await importWithFailures(many);
+    const failed = (applyConfigUpdate.mock.calls[0][0] as ConfigUpdates).publish_history![0].failed!;
+    expect(failed).toHaveLength(51);
+    expect(failed[50].id).toBe('(10 more)');
+  });
+
+  it('a complete import still records success with real hashes', async () => {
+    const { applyConfigUpdate } = await importWithFailures([]);
+    const entry = (applyConfigUpdate.mock.calls[0][0] as ConfigUpdates).publish_history![0];
+    expect(entry.status).toBe('success');
+    expect(Object.values(entry.content_state)).not.toContain('incomplete-pull');
+    expect(entry.failed).toBeUndefined();
   });
 
   it('a complete import is still a plain success with nothing counted', async () => {

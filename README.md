@@ -337,28 +337,42 @@ vocgit pull --content --assignment lab1 --part <part_id>  # scope to one part by
 
 `--skip-content` is a separate flag that controls orphan-import behavior only — it tells vocgit to skip downloading files for newly imported orphan assignments (useful to retry after a failed pull). It has no effect on content drift detection.
 
-Remote content downloads fail closed if a pull would exceed built-in safety
-limits: 5,000 files, 100 MiB for any single file, or 500 MiB total for one
-`downloadContent` pass. These limits protect local machines and CI runners from
-unexpectedly large or malformed remote file listings.
+Remote content downloads are capped to protect local machines and CI runners
+from unexpectedly large or malformed listings: 5,000 files (raise it with
+`VOCAREUM_MAX_DOWNLOAD_FILES`), 100 MiB for any single file, and 500 MiB in
+total per part. A file over the per-file cap is skipped and reported. When the
+file-count or total cap is reached, the download stops, keeps what already
+arrived, and reports the rest as not downloaded. Courses that ship Python
+environments under `data/` can list tens of thousands of files; raise the cap
+for those, for example `VOCAREUM_MAX_DOWNLOAD_FILES=50000 vocgit pull --batch`.
 
 **An incomplete pull exits 1.** If an import cannot download some remote files,
 vocgit still writes the files that did arrive and saves the assignment to
 `vocareum.yaml`, but it marks the import `INCOMPLETE`, adds a `Not downloaded`
-count to the summary, and exits 1. An import that fails outright (for example
-one that hits a download safety limit) is not saved, is counted under
-`Import failed`, and also exits 1. If `--content` cannot finish the drift check
-for an assignment, vocgit names it and exits 1; it never reports "No sync
-issues found" for a check it skipped. The warnings above the summary name each
-file and the reason.
+count to the summary, records the run in `publish_history` as `failed` (listing
+the missed paths), and exits 1. An import that fails outright is not saved, is
+counted under `Import failed`, and also exits 1. If `--content` cannot finish
+the drift check for an assignment, vocgit names it and exits 1; it never
+reports "No sync issues found" for a check it skipped. The warnings above the
+summary name each file and the reason.
 
-To fetch the missing files once the cause is fixed, use content drift. The
-assignment is already imported, so a plain `vocgit pull --batch` will not retry
-it:
+**Push refuses a directory an incomplete pull left behind.** Push uploads a
+changed directory by first clearing it on Vocareum, so uploading a partial copy
+would delete every remote file the pull missed. vocgit marks such a directory
+`incomplete-pull` in `publish_history.content_state` instead of recording a
+hash, and `vocgit push` (even with `--force-all`) reports it as failed and
+leaves it untouched until a complete pull replaces the marker.
+
+To complete an incomplete import once the cause is fixed (for example after
+raising `VOCAREUM_MAX_DOWNLOAD_FILES`), use content drift. The assignment is
+already imported, so a plain `vocgit pull --batch` will not retry it:
 
 ```bash
 vocgit pull --batch --content --assignment <name>
 ```
+
+An import that failed outright was not saved, so it is still an orphan: re-run
+`vocgit pull --batch`.
 
 **For orphaned assignments** (in Vocareum, not in config):
 - **Import**: Download content and add to your local repository
@@ -782,6 +796,7 @@ Store credentials as repository secrets (`VOCAREUM_OAUTH_CLIENT_ID`, `VOCAREUM_O
 | `VOCAREUM_MAX_CONCURRENCY` | Override `vocareum.throttle.max_concurrency` (1–5) |
 | `VOCAREUM_MIN_REQUEST_INTERVAL_MS` | Override `vocareum.throttle.min_interval_ms` (0–60000 ms) |
 | `VOCAREUM_THROTTLE_JITTER` | Override `vocareum.throttle.jitter` (`true` / `false`) |
+| `VOCAREUM_MAX_DOWNLOAD_FILES` | Per-part file-count cap for pull downloads (default: 5000, range: 1–1000000) |
 | `VOCAREUM_MAX_UPLOAD_CHUNK_BYTES` | Upload chunk size in bytes (default: 33554432, range: 1024–67108864) |
 | `VOCAREUM_LOG_LEVEL` | Log level: ERROR, WARN, INFO, DEBUG, TRACE |
 

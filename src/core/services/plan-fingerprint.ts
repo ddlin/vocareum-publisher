@@ -33,7 +33,7 @@ function canonicalizeValue(value: unknown): unknown {
  * The fingerprint includes:
  * - assignment paths, assignmentIds, templateAssignmentIds, actions, settingsPayloads
  * - part paths, partIds, contentHashes, settingsPayloads, deletePaths,
- *   reconcileDeleteDirectories, rubricPlan, rubricReadFailed
+ *   reconcileDeleteDirectories, rubricPlan, rubricReadFailed, blockedDirectories
  *
  * Canonicalization:
  * 1. Sort assignments by path
@@ -75,6 +75,9 @@ export function semanticFingerprint(intent: PushIntent): string {
           // A newly-failing (or newly-recovering) rubric read must shift the plan's
           // identity too — otherwise a stale fingerprint could mask the failure.
           rubricReadFailed: part.rubricReadFailed,
+          // A directory becoming blocked (or unblocked by a complete pull)
+          // changes what executePush does, so it must shift the fingerprint.
+          blockedDirectories: part.blockedDirectories ? [...part.blockedDirectories].sort() : undefined,
         })),
     })),
   };

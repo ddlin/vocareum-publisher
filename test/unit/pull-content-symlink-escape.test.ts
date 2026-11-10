@@ -364,3 +364,82 @@ describe('applyPull — scaffolds configured empty directories with .gitkeep on 
     }
   });
 });
+
+// Recovery for an incomplete pull: the directory carries INCOMPLETE_PULL_MARKER
+// (push refuses it). Once the files are actually present, a complete
+// `pull --content` must replace the marker with a real hash — even when no
+// file differs — or push stays blocked forever.
+describe('content drift completes a directory an earlier pull left incomplete', () => {
+  let workspaceRoot: string;
+
+  beforeEach(async () => {
+    workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'vocgit-incomplete-'));
+    await fs.mkdir(path.join(workspaceRoot, 'asn1', 'data'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'asn1', 'data', 'a.txt'), 'same');
+  });
+  afterEach(async () => {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    vi.clearAllMocks();
+  });
+
+  const assignment = {
+    assignment_id: 'A1', name: 'CD15315 v2', path: 'asn1', create_from_template: false, settings: {},
+    parts: [{ part_id: 'P1', name: 'Part 1', path: '.', directories: ['data'] }],
+  } as unknown as Assignment;
+  const history = [{
+    timestamp: '2026-11-09T00:00:00Z', commit_sha: 'x', published_by: 'pull-command', status: 'failed' as const,
+    content_state: { [path.join('asn1', 'data')]: 'incomplete-pull' },
+  }];
+
+  it('flags the marked directory with no file differences, and pulling records a real hash', async () => {
+    mockDownloadContent.mockResolvedValue({ 'data/a.txt': Buffer.from('same') });
+
+    const drift = await detectContentDrift(
+      { assignments: [assignment], vocareum: { course_id: 'C1', architecture: 'container' }, publish_history: history },
+      {} as never, new Set<string>(), workspaceRoot, () => {},
+    );
+    expect(drift).toHaveLength(1);
+    expect(drift[0].partsDrift[0].fileDiffs).toEqual([]);
+    expect(drift[0].partsDrift[0].incompleteDirectories).toEqual(['data']);
+
+    const config = {
+      version: '1.0',
+      vocareum: { org_id: '1', course_id: 'C1', excluded_assignments: [] },
+      assignments: [assignment],
+      publish_history: history,
+    } as unknown as Config;
+    const ctx: PullContext = {
+      persistedConfig: config, effectiveConfig: config, configPath: `${workspaceRoot}/vocareum.yaml`,
+      workspaceRoot, events: new CollectingEventSink(), prompter: new NonInteractivePrompter(), client: {} as never,
+    };
+    const applyConfigUpdate = vi.fn().mockResolvedValue(undefined);
+    const resolver = {
+      resolveOrphanAction: vi.fn().mockResolvedValue('skip'),
+      resolveStaleAction: vi.fn().mockResolvedValue('skip'),
+      resolveSettingsDriftAction: vi.fn().mockResolvedValue('skip'),
+      resolveContentDriftAction: vi.fn().mockResolvedValue('pull'),
+      resolveImportPath: vi.fn(),
+    } as unknown as PullResolver;
+    const inspection: PullInspection = { orphans: [], stale: [], settingsDrift: [], contentDrift: drift };
+
+    await applyPull({ applyConfigUpdate } as LockedSession, ctx, { batch: true, verbose: false, skipContent: false }, inspection, resolver);
+
+    const entry = applyConfigUpdate.mock.calls[0][0].publish_history[0];
+    expect(entry.status).toBe('success');
+    const value = entry.content_state[path.join('asn1', 'data')];
+    expect(value).not.toBe('incomplete-pull');
+    expect(value).toMatch(/^[0-9a-f]{16,}$/);
+  });
+
+  it('a drift check that still cannot finish leaves the marker (push stays blocked)', async () => {
+    mockDownloadContent.mockRejectedValue(new Error('Download limit exceeded: more than 5000 files'));
+    const skipped: Array<{ assignmentName: string; reason: string }> = [];
+    const drift = await detectContentDrift(
+      { assignments: [assignment], vocareum: { course_id: 'C1', architecture: 'container' }, publish_history: history },
+      {} as never, new Set<string>(), workspaceRoot, () => {}, undefined, skipped,
+    );
+    expect(drift).toEqual([]);
+    expect(skipped).toHaveLength(1);
+  });
+});
+

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { scanLocalContent, detectChangedDirectories, assertConfinedToWorkspace } from '../../src/core/local-scan';
+import { scanLocalContent, detectChangedDirectories, assertConfinedToWorkspace, INCOMPLETE_PULL_MARKER } from '../../src/core/local-scan';
 import { calculateDirectoryHash } from '../../src/utils/files';
 import type { Config } from '../../src/types/config';
 
@@ -411,6 +411,38 @@ describe('scanLocalContent', () => {
       [],
       tempDir
     )).rejects.toThrow(/escapes/);
+  });
+
+  // An incomplete pull leaves INCOMPLETE_PULL_MARKER instead of a hash. Push
+  // uploads with reset:1, so uploading that directory would delete the remote
+  // files the pull missed — it must be blocked, including under --force-all.
+  for (const forceAll of [false, true]) {
+    it(`blocks a directory marked incomplete by a pull${forceAll ? ' (even with --force-all)' : ''}`, async () => {
+      const key = path.join('lab1', 'part1', 'startercode');
+      const { changedDirs, blockedDirs, hashes } = await detectChangedDirectories(
+        'lab1', 'part1', ['startercode'],
+        {
+          timestamp: '2026-06-01T00:00:00Z', commit_sha: 'abc', published_by: 'test', status: 'failed',
+          content_state: { [key]: INCOMPLETE_PULL_MARKER },
+        },
+        forceAll, [], tempDir
+      );
+      expect(changedDirs).toEqual([]);
+      expect(blockedDirs).toEqual(['startercode']);
+      expect(hashes).not.toHaveProperty('startercode');
+    });
+  }
+
+  it('a real hash (a later complete pull) unblocks the directory', async () => {
+    const key = path.join('lab1', 'part1', 'startercode');
+    const hash = await calculateDirectoryHash(path.join(tempDir, key), []);
+    const { changedDirs, blockedDirs } = await detectChangedDirectories(
+      'lab1', 'part1', ['startercode'],
+      { timestamp: '2026-06-02T00:00:00Z', commit_sha: 'abc', published_by: 'test', status: 'success', content_state: { [key]: hash } },
+      false, [], tempDir
+    );
+    expect(blockedDirs).toEqual([]);
+    expect(changedDirs).toEqual([]);
   });
 
   it('reads content_state from the newest history entry even when it is failed', async () => {

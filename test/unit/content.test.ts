@@ -835,18 +835,18 @@ describe('downloadContent', () => {
     });
   });
 
-  it('should reject files whose listed size exceeds the per-file limit before S3 fetch', async () => {
+  it('should reject files whose listed size exceeds the per-file limit before S3 fetch (strict mode throws)', async () => {
     requestMock.mockResolvedValueOnce({ files: [{ path: 'huge.bin', size: 6 }] });
 
     await expect(
       downloadContent(mockClient, 'c1', 'a1', 'p1', ['startercode'], undefined, {
-        limits: { maxFileBytes: 5 },
+        strict: true, limits: { maxFileBytes: 5 },
       })
     ).rejects.toThrow(DownloadLimitError);
     expect(mockedAxios.get).not.toHaveBeenCalled();
   });
 
-  it('should reject files whose actual fetched size exceeds the per-file limit', async () => {
+  it('should reject files whose actual fetched size exceeds the per-file limit (strict mode throws)', async () => {
     requestMock.mockResolvedValueOnce({ files: [{ path: 'huge.bin', size: 1 }] });
     requestMock.mockResolvedValueOnce({
       status: 'success',
@@ -856,12 +856,12 @@ describe('downloadContent', () => {
 
     await expect(
       downloadContent(mockClient, 'c1', 'a1', 'p1', ['startercode'], undefined, {
-        limits: { maxFileBytes: 5 },
+        strict: true, limits: { maxFileBytes: 5 },
       })
     ).rejects.toThrow(DownloadLimitError);
   });
 
-  it('should convert axios maxContentLength failures into DownloadLimitError', async () => {
+  it('should convert axios maxContentLength failures into DownloadLimitError (strict mode throws)', async () => {
     requestMock.mockResolvedValueOnce({ files: ['huge.bin'] });
     requestMock.mockResolvedValueOnce({
       status: 'success',
@@ -874,12 +874,12 @@ describe('downloadContent', () => {
 
     await expect(
       downloadContent(mockClient, 'c1', 'a1', 'p1', ['startercode'], undefined, {
-        limits: { maxFileBytes: 5 },
+        strict: true, limits: { maxFileBytes: 5 },
       })
     ).rejects.toThrow(DownloadLimitError);
   });
 
-  it('should reject downloads that exceed the file count limit', async () => {
+  it('should reject downloads that exceed the file count limit (strict mode throws)', async () => {
     requestMock.mockResolvedValueOnce({
       files: [
         { path: 'one.txt', size: 1 },
@@ -894,12 +894,12 @@ describe('downloadContent', () => {
 
     await expect(
       downloadContent(mockClient, 'c1', 'a1', 'p1', ['startercode'], undefined, {
-        limits: { maxFiles: 1 },
+        strict: true, limits: { maxFiles: 1 },
       })
     ).rejects.toThrow(DownloadLimitError);
   });
 
-  it('should reject downloads that exceed the cumulative byte limit', async () => {
+  it('should reject downloads that exceed the cumulative byte limit (strict mode throws)', async () => {
     requestMock.mockResolvedValueOnce({
       files: [
         { path: 'one.txt', size: 4 },
@@ -919,7 +919,7 @@ describe('downloadContent', () => {
 
     await expect(
       downloadContent(mockClient, 'c1', 'a1', 'p1', ['startercode'], undefined, {
-        limits: { maxTotalBytes: 5 },
+        strict: true, limits: { maxTotalBytes: 5 },
       })
     ).rejects.toThrow(DownloadLimitError);
   });
@@ -1042,7 +1042,7 @@ describe('downloadContent recursive directory handling', () => {
     expect(requestMock).toHaveBeenCalledTimes(4);
   });
 
-  it('should count zero-byte placeholder fetches against maxFiles', async () => {
+  it('should count zero-byte placeholder fetches against maxFiles (strict mode throws)', async () => {
     requestMock.mockResolvedValueOnce({ files: [{ path: 'python', size: 0 }] });
     requestMock.mockResolvedValueOnce({
       status: 'success',
@@ -1053,7 +1053,7 @@ describe('downloadContent recursive directory handling', () => {
 
     await expect(
       downloadContent(mockClient, 'c1', 'a1', 'p1', ['scripts'], undefined, {
-        limits: { maxFiles: 1 },
+        strict: true, limits: { maxFiles: 1 },
       })
     ).rejects.toThrow(DownloadLimitError);
   });

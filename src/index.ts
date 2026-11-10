@@ -257,8 +257,14 @@ Description:
     1 when the pull is incomplete: an import could not download some files
     (it is still saved, marked INCOMPLETE, and counted under "Not downloaded"),
     an import failed outright ("Import failed"), or --content could not finish
-    the drift check for an assignment. To fetch missing files later, run
-    vocgit pull --batch --content --assignment <name>.
+    the drift check for an assignment.
+
+  Incomplete imports:
+    Push refuses directories an incomplete pull left behind (uploading them
+    would delete the missing files on Vocareum). Complete them with
+      vocgit pull --batch --content --assignment <name>
+    Raise the 5,000-file download cap with VOCAREUM_MAX_DOWNLOAD_FILES.
+    A failed import was not saved: re-run vocgit pull --batch.
 
   This is useful when:
     - Onboarding an existing course to Git-based management
@@ -377,6 +383,11 @@ Options explained:
   --force-all       Bypass change detection, re-upload everything
   --sync-deletes    Remove files from Vocareum that aren't in Git (careful!)
   --auto-commit     Commit vocareum.yaml after push (local dev only)
+
+  Push never uploads a directory that a pull left incomplete (marked
+  incomplete-pull in publish_history): uploading clears the directory on
+  Vocareum first, which would delete the files the pull missed. It is reported
+  as failed until \`vocgit pull --batch --content --assignment <name>\` completes it.
   --api-base-url    v2 API host for this run, e.g. https://api.eu.vocareum.com
                     (precedence: flag > VOCAREUM_API_BASE_URL > vocareum.yaml
                     api_base_url > NA default). Run "vocgit status" to see

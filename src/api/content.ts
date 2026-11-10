@@ -89,11 +89,39 @@ export const DEFAULT_DOWNLOAD_CONTENT_LIMITS: DownloadContentLimits = {
   maxTotalBytes: 500 * 1024 * 1024,
 };
 
+/**
+ * A download safety limit was hit.
+ * - `file`: one file is too large. Only that file is lost; the walk continues.
+ * - `walk`: the file-count or total-byte cap for the whole download was
+ *   reached. The walk stops; what already arrived is kept (non-strict).
+ */
 export class DownloadLimitError extends APIError {
-  constructor(message: string) {
+  constructor(message: string, public readonly scope: 'file' | 'walk' = 'walk') {
     super(message);
     this.name = 'DownloadLimitError';
   }
+}
+
+const MAX_DOWNLOAD_FILES_CEILING = 1_000_000;
+
+/**
+ * File-count cap for one download, from VOCAREUM_MAX_DOWNLOAD_FILES when set.
+ * Courses that ship Python environments under data/ list tens of thousands of
+ * entries, far past the 5,000 default.
+ */
+export function resolveMaxDownloadFiles(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.VOCAREUM_MAX_DOWNLOAD_FILES;
+  if (raw === undefined || raw.trim() === '') { return DEFAULT_DOWNLOAD_CONTENT_LIMITS.maxFiles; }
+  if (!/^\d+$/.test(raw.trim())) {
+    throw new Error(`VOCAREUM_MAX_DOWNLOAD_FILES must be a positive integer (got "${raw}").`);
+  }
+  const n = Number(raw.trim());
+  if (n < 1 || n > MAX_DOWNLOAD_FILES_CEILING) {
+    throw new Error(
+      `VOCAREUM_MAX_DOWNLOAD_FILES must be between 1 and ${MAX_DOWNLOAD_FILES_CEILING} (got "${raw}").`
+    );
+  }
+  return n;
 }
 
 interface DownloadBudget {
@@ -106,7 +134,7 @@ interface DownloadBudget {
 
 function resolveDownloadLimits(limits?: Partial<DownloadContentLimits>): DownloadContentLimits {
   return {
-    maxFiles: limits?.maxFiles ?? DEFAULT_DOWNLOAD_CONTENT_LIMITS.maxFiles,
+    maxFiles: limits?.maxFiles ?? resolveMaxDownloadFiles(),
     maxFileBytes: limits?.maxFileBytes ?? DEFAULT_DOWNLOAD_CONTENT_LIMITS.maxFileBytes,
     maxTotalBytes: limits?.maxTotalBytes ?? DEFAULT_DOWNLOAD_CONTENT_LIMITS.maxTotalBytes,
   };
@@ -318,7 +346,7 @@ async function fetchFileContent(
     }
     if (isAxiosBodyLimitError(error)) {
       throw new DownloadLimitError(
-        `Download limit exceeded: ${fullPath} exceeds ${limits.maxFileBytes} bytes`
+        `Download limit exceeded: ${fullPath} exceeds ${limits.maxFileBytes} bytes`, 'file'
       );
     }
     throw error;
@@ -735,15 +763,19 @@ export async function uploadContent(
 const MAX_DOWNLOAD_DEPTH = 10;
 
 /**
- * Number of consecutive identical path segments that marks a walk as cyclic.
+ * Consecutive identical path segments that make a path a CYCLE CANDIDATE.
  *
  * Vocareum workspaces carry escaping symlinks such as
- * `publicdata -> /mnt/worktest/<course>/data` (see docs/vocareum-api-feedback.md).
- * The files API lists the same child under every level of one, so the walk sees
- * `lib/publicdata/publicdata/publicdata/...` without end and only stops when it
- * runs out of depth budget. Real content never nests a directory inside two more
- * of the same name, so three consecutive repeats identifies the cycle with room
- * to spare.
+ * `publicdata -> /mnt/worktest/<course>/data`. The files API lists the same
+ * child under every level of one, so the walk sees
+ * `lib/publicdata/publicdata/publicdata/...` without end.
+ *
+ * A repeated name alone is NOT treated as a cycle — `data/a/a/a` can be real.
+ * The walk (see `descend`) skips a candidate only when its listing names exactly
+ * the entries its parent lists; anything else is walked, and the depth limit
+ * (a recorded failure) still bounds it. The listing API returns names only, so
+ * a same-names-different-bytes tree is not distinguished — accepted as out of
+ * proportion (review triage, 2026-11-09).
  */
 const CYCLE_REPEAT_THRESHOLD = 3;
 
@@ -807,21 +839,34 @@ export function downloadContent(
       failures: options?.failures,
     };
 
-    for (const directory of dirs) {
+    const strict = options?.strict === true;
+    for (let i = 0; i < dirs.length; i++) {
+      const directory = dirs[i];
       const baseApiPath = toApiDirPath(directory, architecture);
-      await downloadDirectoryTree(
-        client,
-        courseId,
-        assignmentId,
-        partId,
-        directory,
-        baseApiPath,
-        '',
-        0,
-        downloaded,
-        options?.strict === true,
-        budget
-      );
+      try {
+        await downloadDirectoryTree(
+          client, courseId, assignmentId, partId, directory, baseApiPath, '', 0, downloaded, strict, budget
+        );
+      } catch (error) {
+        if (!(error instanceof DownloadLimitError) || strict) {
+          throw error;
+        }
+        // The cap stops the walk; it must not also throw away what arrived.
+        // Record this directory and every one not reached, so callers know
+        // exactly which directories are incomplete (push refuses to upload
+        // them — see INCOMPLETE_PULL_MARKER).
+        recordDownloadFailure(
+          client, budget, strict, directory,
+          `${error.message}; the rest of this directory was NOT downloaded`
+        );
+        for (const notReached of dirs.slice(i + 1)) {
+          recordDownloadFailure(
+            client, budget, strict, notReached,
+            'NOT downloaded: the download limit was reached earlier in this part'
+          );
+        }
+        break;
+      }
     }
 
     return downloaded;
@@ -920,6 +965,10 @@ async function downloadDirectoryTree(
       downloaded[filemapKey] = content;
     } catch (error) {
       if (error instanceof DownloadLimitError) {
+        if (error.scope === 'file' && !strict) {
+          recordDownloadFailure(client, budget, strict, filemapKey, error.message);
+          continue;
+        }
         throw error;
       }
       if (error instanceof NotAFileError) {
@@ -987,7 +1036,8 @@ function assertListedFileWithinBudget(
   budget.files += 1;
   if (budget.files > budget.limits.maxFiles) {
     throw new DownloadLimitError(
-      `Download limit exceeded: more than ${budget.limits.maxFiles} files while downloading ${filemapKey}`
+      `Download limit exceeded: more than ${budget.limits.maxFiles} files while downloading ${filemapKey} ` +
+      `(raise it with VOCAREUM_MAX_DOWNLOAD_FILES)`
     );
   }
   // Many Vocareum listings are string-only and report size=0; this check is
@@ -996,7 +1046,7 @@ function assertListedFileWithinBudget(
   if (entry.size > budget.limits.maxFileBytes) {
     throw new DownloadLimitError(
       `Download limit exceeded: ${filemapKey} is listed as ${entry.size} bytes ` +
-      `(max ${budget.limits.maxFileBytes})`
+      `(max ${budget.limits.maxFileBytes})`, 'file'
     );
   }
 }
@@ -1009,7 +1059,7 @@ function accountDownloadedFile(
   const bytes = Buffer.isBuffer(content) ? content.length : Buffer.byteLength(content);
   if (bytes > budget.limits.maxFileBytes) {
     throw new DownloadLimitError(
-      `Download limit exceeded: ${filemapKey} is ${bytes} bytes (max ${budget.limits.maxFileBytes})`
+      `Download limit exceeded: ${filemapKey} is ${bytes} bytes (max ${budget.limits.maxFileBytes})`, 'file'
     );
   }
   if (budget.bytes + bytes > budget.limits.maxTotalBytes) {

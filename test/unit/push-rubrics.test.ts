@@ -814,6 +814,66 @@ describe('executePush — rubric writes', () => {
   });
 });
 
+describe('executePush — directories left incomplete by a pull', () => {
+  // Field report (1.3.7): an incomplete pull was recorded as a successful sync,
+  // so the next push uploaded the partial directory with reset:1 and would have
+  // deleted every remote file the pull missed. Push must refuse those
+  // directories and fail the run.
+  it('refuses to upload a blocked directory and reports it as a failed file', async () => {
+    vi.clearAllMocks();
+    getCommitShaMock.mockResolvedValue('abc123');
+    getGitUserNameMock.mockResolvedValue('tester');
+    readDirectoryMock.mockResolvedValue({});
+    syncDirectoryMock.mockResolvedValue({ succeeded: [], failed: [], directoryHash: 'hash' });
+
+    const rubricPlan: RubricSyncPlan = { creates: [], updates: [], orphans: [], duplicateNames: [] };
+    const { plan, config } = buildPlan(rubricPlan, {});
+    const reconciledPart = plan.execution.reconciliation.assignments[0].parts[0] as unknown as {
+      rubricPlan?: RubricSyncPlan; blockedDirectories?: string[]; changedDirectories?: string[]; contentChanged?: boolean;
+    };
+    reconciledPart.rubricPlan = undefined;
+    reconciledPart.blockedDirectories = ['startercode'];
+    reconciledPart.changedDirectories = undefined;
+    reconciledPart.contentChanged = false;
+    const intentPart = plan.intent.assignments[0].parts[0] as unknown as {
+      rubricPlan?: RubricSyncPlan; blockedDirectories?: string[]; contentHashes: Record<string, string>;
+    };
+    intentPart.rubricPlan = undefined;
+    intentPart.blockedDirectories = ['startercode'];
+    intentPart.contentHashes = {};
+    (plan as unknown as { semanticFingerprint: string }).semanticFingerprint = semanticFingerprint(plan.intent);
+
+    const applyConfigUpdate = vi.fn().mockResolvedValue(undefined);
+    getAssignmentMock.mockResolvedValue({ id: 'a1', name: 'Lab 1', deleted: '0', courseid: 'c1' });
+    getPartMock.mockResolvedValue({ id: 'p1', name: 'Part 1', seqnum: '0', deleted: '0', courseid: 'c1', assignmentid: 'a1' });
+    const events: ServiceEvent[] = [];
+
+    const result = await executePush(
+      { applyConfigUpdate } as unknown as LockedSession,
+      {
+        persistedConfig: config,
+        effectiveConfig: config,
+        configPath: 'vocareum.yaml',
+        workspaceRoot: process.cwd(),
+        events: { emit: (e: ServiceEvent) => { events.push(e); } },
+        prompter: new NonInteractivePrompter(),
+        client: {} as VocareumClient,
+      },
+      { nonInteractive: false },
+      plan,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.failed).toContainEqual(expect.objectContaining({
+      type: 'file',
+      id: 'lab1/part1/startercode',
+      error: expect.stringMatching(/would DELETE those files on Vocareum.*vocgit pull --batch --content --assignment/),
+    }));
+    expect(syncDirectoryMock).not.toHaveBeenCalled();
+    expect(events.some(e => e.level === 'error' && /Not pushing lab1\/part1\/startercode/.test(e.message ?? ''))).toBe(true);
+  });
+});
+
 describe('emitRubricPlanSummary (plan-confirmation display)', () => {
   /** Render one part's rubric plan the way both planPush display branches do, and
    *  return the joined message text for substring/regex assertions. */
