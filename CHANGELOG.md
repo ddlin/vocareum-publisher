@@ -22,8 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Content drift (`--content`) still stops at any limit.
 - **Vocareum's `publicdata` link no longer makes a pull incomplete.** The
   course-wide tree (`lib/` on Elite) holds a root-owned link, `publicdata`, to
-  the course data mount. The API lists it but cannot fetch it, and an upload
-  cannot remove it. Pull now skips that one entry instead of marking `lib/`
+  the course data mount. The API lists it but cannot fetch it, and a
+  clear-and-replace upload of `lib/` leaves it in place (tested on an Elite
+  course). Pull now skips that one entry instead of marking `lib/`
   incomplete and blocking every push of it. Any other unreadable entry still
   counts.
 - **An upload target the course does not have is explained.** Vocareum rejects

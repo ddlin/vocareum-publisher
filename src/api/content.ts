@@ -1058,10 +1058,12 @@ export function invalidTargetMessage(error: unknown, directory: DirectoryType): 
  * `publicdata` at the top of the course-wide tree (`lib/` on Elite, `course/`
  * on Container) is a root-owned link Vocareum creates to the course data mount
  * (`/voc/course/publicdata -> /mnt/.../course<id>/data`, seen 2026-11-10). The
- * API lists it but can neither fetch nor list it, and an upload cannot remove
- * it (a reset upload of `course` on test course 215500 left it in place). It is
- * not assignment content, so it is skipped rather than marking the pull
- * incomplete and blocking every push of `lib/`.
+ * API lists it but can neither fetch nor list it, and a `reset: 1` upload does
+ * not remove it: on Elite course 240788 a reset upload of `lib/` deleted a
+ * marker file added just before and left `publicdata` in place (2026-11-10).
+ * (On Container course 215500 `lib` is not an upload target at all.) It is not
+ * assignment content, so it is skipped rather than marking the pull incomplete
+ * and blocking every push of `lib/`.
  */
 function isVocareumManagedLink(directory: DirectoryType, relativePath: string, name: string): boolean {
   return relativePath === '' && (directory === 'lib' || directory === 'course') && name === 'publicdata';
