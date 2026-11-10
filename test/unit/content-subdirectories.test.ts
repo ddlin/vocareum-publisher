@@ -24,6 +24,8 @@ interface FakeTree {
   fetchErrors?: Record<string, Error>;
   /** API dir path → error the list endpoint throws. */
   listErrors?: Record<string, Error>;
+  /** Serve directories as downloadable zero-byte objects (some workspaces do). */
+  placeholders?: boolean;
 }
 
 const SIGNED = 'https://signed.example.com/';
@@ -47,7 +49,7 @@ function fakeClient(tree: FakeTree): { client: VocareumClient; events: ServiceEv
     calls.push(`fetch ${filename}`);
     const fetchError = tree.fetchErrors?.[filename!];
     if (fetchError) { throw fetchError; }
-    if (tree.files[filename!] !== undefined) {
+    if (tree.files[filename!] !== undefined || (tree.placeholders === true && tree.dirs[`/voc/${filename}`] !== undefined)) {
       return { status: 'success', files: [{ filename, download_url: `${SIGNED}${filename}` }] };
     }
     // Anything that is not a file — a directory, or nothing at all — is the
@@ -56,7 +58,7 @@ function fakeClient(tree: FakeTree): { client: VocareumClient; events: ServiceEv
   });
   vi.mocked(axios.get).mockImplementation(async (url: string) => {
     const key = url.slice(SIGNED.length);
-    return { data: Buffer.from(tree.files[key]) };
+    return { data: Buffer.from(tree.files[key] ?? '') };
   });
   const client = { request, events: { emit: (e: ServiceEvent) => events.push(e) } } as unknown as VocareumClient;
   return { client, events, calls };
@@ -215,3 +217,79 @@ describe('entries that cannot be retrieved are reported, never silently dropped'
     await expect(pull(tree, true)).rejects.toThrow(/download limit/);
   });
 });
+
+describe('every way a walk can stop short is accounted for (review round 1)', () => {
+  /** A chain of distinct directories `levels` deep under data/, ending in deep.txt. */
+  function chain(levels: number, placeholders: boolean): FakeTree {
+    const tree: FakeTree = { dirs: { '/voc/startercode': [] }, files: {}, placeholders };
+    let dir = '/voc/data';
+    let rel = 'data';
+    for (let i = 0; i < levels; i++) {
+      tree.dirs[dir] = [`d${i}`];
+      dir = `${dir}/d${i}`;
+      rel = `${rel}/d${i}`;
+    }
+    tree.dirs[dir] = ['deep.txt'];
+    tree.files[`${rel}/deep.txt`] = 'deep';
+    return tree;
+  }
+
+  it('a real folder whose name repeats (data/a/a/a) is walked, not skipped as a cycle', async () => {
+    const tree: FakeTree = {
+      dirs: {
+        '/voc/startercode': [],
+        '/voc/data': ['a'],
+        '/voc/data/a': ['a'],
+        '/voc/data/a/a': ['a', 'mid.txt'],
+        '/voc/data/a/a/a': ['lost.txt'],
+      },
+      files: { 'data/a/a/mid.txt': 'mid', 'data/a/a/a/lost.txt': 'found' },
+    };
+    for (const strict of [false, true]) {
+      const { files, failures } = await pull(tree, strict);
+      expect(files['data/a/a/a/lost.txt'].toString()).toBe('found');
+      expect(failures).toEqual([]);
+    }
+  });
+
+  it('a genuine link cycle (lists the same entries as its parent) is skipped quietly', async () => {
+    // data/x/self -> data/x: every level lists ['self', 'f.txt'].
+    const tree: FakeTree = {
+      dirs: {
+        '/voc/startercode': [],
+        '/voc/data': ['x'],
+        '/voc/data/x': ['self', 'f.txt'],
+        '/voc/data/x/self': ['self', 'f.txt'],
+        '/voc/data/x/self/self': ['self', 'f.txt'],
+        '/voc/data/x/self/self/self': ['self', 'f.txt'],
+      },
+      files: { 'data/x/f.txt': 'f', 'data/x/self/f.txt': 'f', 'data/x/self/self/f.txt': 'f' },
+    };
+    for (const strict of [false, true]) {
+      const { files, failures, warnings } = await pull(tree, strict);
+      expect(files['data/x/f.txt'].toString()).toBe('f');
+      expect(Object.keys(files).some(k => k.startsWith('data/x/self/self/self/'))).toBe(false);
+      expect(failures).toEqual([]);
+      expect(warnings).toEqual([]);
+    }
+  });
+
+  it('a zero-byte placeholder folder past the depth limit is a recorded failure, not an empty file', async () => {
+    const tree = chain(12, true);
+    const { files, failures } = await pull(tree);
+    expect(Object.values(files).every(c => c.length > 0)).toBe(true); // no placeholder kept as a file
+    expect(failures).toHaveLength(1);
+    expect(failures[0].reason).toMatch(/download limit/);
+    await expect(pull(tree, true)).rejects.toThrow(/download limit/);
+  });
+
+  it('a zero-byte placeholder tree within the limit is fully walked, each folder listed once', async () => {
+    const { files, failures, calls } = await pull(chain(4, true));
+    expect(files['data/d0/d1/d2/d3/deep.txt'].toString()).toBe('deep');
+    expect(failures).toEqual([]);
+    const lists = calls.filter(c => c.startsWith('list '));
+    expect(lists.length).toBe(new Set(lists).size);
+    expect(lists).toContain('list /voc/data/d0/d1/d2/d3');
+  });
+});
+

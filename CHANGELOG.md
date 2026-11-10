@@ -22,6 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   listable directory (for example a dangling link), a subdirectory that cannot
   be listed, and anything past the 10-level nesting limit are each recorded as
   a failure. Before, they were dropped silently or ended the download early.
+  An import that fails outright (for example on a download safety limit) is
+  counted under `Import failed` instead of `Skipped`, and also exits 1.
+  To fetch missing files later, run
+  `vocgit pull --batch --content --assignment <name>`.
+- **Directory walking no longer drops real folders or keeps placeholders as
+  files.** A path whose last three names repeat (such as `data/a/a/a`) used to
+  be skipped as a symlink cycle by name alone. It is now skipped only when it
+  lists exactly the same entries as its parent. A zero-byte directory
+  placeholder deeper than the nesting limit used to be saved as an empty file.
+  It is now recorded as a failure. Placeholder folders are also listed once,
+  not twice.
 - **`pull --content` no longer reports a skipped drift check as clean.** The
   first subdirectory used to abort the drift check for the whole assignment,
   and the run still printed `✓ No sync issues found.` Subdirectories are now

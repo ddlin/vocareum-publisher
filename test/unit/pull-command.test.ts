@@ -677,3 +677,41 @@ describe('pullCommand --batch — import that could not download every file', ()
   });
 });
 
+describe('pullCommand --batch — import that fails outright', () => {
+  it('prints "Import failed" and exits 1 instead of 0', async () => {
+    vi.clearAllMocks();
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-pull-failed-'));
+    try {
+      const config: Config = {
+        version: '1.0',
+        vocareum: { org_id: '1', course_id: 'c1', api_base_url: 'https://api.vocareum.com', excluded_assignments: [] },
+        assignments: [],
+        publish_options: { on_missing_id: 'skip', auto_commit: false, abort_on_error: false, sync_deletes: false, exclude_patterns: [] },
+        publish_history: [],
+      };
+      process.env.VOCAREUM_API_KEY = 'token';
+      isCIMock.mockReturnValue(false);
+      loadConfigMock.mockResolvedValue(config);
+      reconcileMock.mockResolvedValue({
+        config, course: { type: 'skip' }, assignments: [],
+        summary: { coursesToUpdate: 0, assignmentsToCreate: 0, assignmentsToUpdate: 0, assignmentsWithDiscoveredIds: 0, assignmentsToSkip: 0, partsToCreate: 0, partsToUpdate: 0, estimatedApiCalls: 0 },
+        orphanedInVocareum: [{ type: 'assignment', id: 'a-1', name: 'Big Course', message: 'orphan' }],
+        staleInConfig: [],
+      });
+      getAssignmentMock.mockResolvedValue({ assignments: [{ id: 'a-1', name: 'Big Course' }] });
+      mapAssignmentSettingsMock.mockReturnValue({});
+      mapPartSettingsMock.mockReturnValue({});
+      listPartsMock.mockResolvedValue([{ id: 'p-1', name: 'Part 1', seqnum: '0', deleted: '0' }]);
+      getPartMock.mockResolvedValue({ parts: [{ id: 'p-1', name: 'Part 1' }] });
+      vi.mocked(downloadContent).mockRejectedValue(new Error('Download limit exceeded: listed 5001 files'));
+      const { logger } = await import('../../src/utils/logger');
+
+      await expect(pullCommand({ batch: true, root: workspace, config: path.join(workspace, 'vocareum.yaml') }))
+        .rejects.toMatchObject({ exitCode: 1, message: expect.stringMatching(/1 import\(s\) failed/) });
+      expect(vi.mocked(logger.plain)).toHaveBeenCalledWith('  Import failed:   1');
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+

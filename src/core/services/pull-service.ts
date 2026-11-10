@@ -357,6 +357,10 @@ export interface PullResult {
   contentPulled: number;
   /** Files that imports could not download (see ImportResult.missingFiles). */
   filesNotDownloaded: number;
+  /** Imports that threw (e.g. a download safety limit, an unlistable root
+   *  directory) and were not saved. Distinct from `skipped`, which counts
+   *  orphans the user chose not to import. */
+  importsFailed: number;
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
@@ -1125,6 +1129,7 @@ export async function applyPull(
     settingsPulled: 0,
     contentPulled: 0,
     filesNotDownloaded: 0,
+    importsFailed: 0,
   };
 
   const newAssignments: Partial<Assignment>[] = [];
@@ -1194,8 +1199,10 @@ export async function applyPull(
             events.emit({ level: 'success', message: `Imported "${orphan.name}" to ${finalDirName}/` });
           }
         } catch (error) {
-          events.emit({ level: 'error', message: `Failed to import: ${error instanceof Error ? error.message : 'Unknown'}` });
-          result.skipped++;
+          // A failed import is not a skip the user asked for: counting it as one
+          // let a pull that imported nothing exit 0.
+          events.emit({ level: 'error', message: `Failed to import "${orphan.name}": ${error instanceof Error ? error.message : 'Unknown'}` });
+          result.importsFailed++;
         }
       } else if (action === 'exclude') {
         newExclusions.push(orphan.id);

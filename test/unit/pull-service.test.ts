@@ -1179,3 +1179,34 @@ describe('applyPull — import that could not download every file', () => {
     expect(imported[0].level).toBe('success');
   });
 });
+
+describe('applyPull — import that fails outright', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('is counted as importsFailed, not as a user skip, and nothing is saved', async () => {
+    const { ctx } = makeCtx();
+    const { session, applyConfigUpdate } = makeSession();
+    mockGetAssignment.mockResolvedValueOnce({
+      assignments: [{ id: ORPHAN_1.id, name: ORPHAN_1.name, nosubmit: false }],
+    });
+    mockListParts.mockResolvedValueOnce([{ id: 'part-alpha-1', name: 'Part 1', seqnum: '1', deleted: '0' }]);
+    mockGetPart.mockResolvedValueOnce({
+      parts: [{ id: 'part-alpha-1', name: 'Part 1', seqnum: '1', deleted: '0', submission_filters: {} }],
+    });
+    mockDownloadContent.mockRejectedValueOnce(new Error('Download limit exceeded: listed 5001 files'));
+    const resolver = makeStubResolver({
+      resolveOrphanAction: vi.fn<[PullIssueOrphan], Promise<OrphanAction>>().mockResolvedValue('import'),
+    });
+    const inspection: PullInspection = { orphans: [ORPHAN_1], stale: [], settingsDrift: [], contentDrift: [] };
+
+    const result = await applyPull(session, ctx, { batch: true, verbose: false, skipContent: false }, inspection, resolver);
+
+    expect(result.importsFailed).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(result.imported).toBe(0);
+    expect(applyConfigUpdate).not.toHaveBeenCalled();
+  });
+});
+

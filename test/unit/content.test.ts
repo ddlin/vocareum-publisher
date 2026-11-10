@@ -1024,9 +1024,8 @@ describe('downloadContent recursive directory handling', () => {
     });
     // The placeholder object is real but empty.
     mockedAxios.get.mockResolvedValueOnce({ data: Buffer.alloc(0) });
-    // Probe scripts/python as a directory → has children.
-    requestMock.mockResolvedValueOnce({ files: [{ path: 'dbacademy.py', size: 10 }] });
-    // Recursion lists scripts/python again.
+    // Probe scripts/python as a directory → has children. The recursion reuses
+    // this listing: the directory is not listed a second time.
     requestMock.mockResolvedValueOnce({ files: [{ path: 'dbacademy.py', size: 10 }] });
     // fetch scripts/python/dbacademy.py → real file
     requestMock.mockResolvedValueOnce({
@@ -1039,6 +1038,8 @@ describe('downloadContent recursive directory handling', () => {
 
     expect(result).not.toHaveProperty('scripts/python');
     expect(result['scripts/python/dbacademy.py'].toString()).toBe('nested py');
+    // list scripts, fetch python, list python (once), fetch dbacademy.py
+    expect(requestMock).toHaveBeenCalledTimes(4);
   });
 
   it('should count zero-byte placeholder fetches against maxFiles', async () => {
@@ -1048,7 +1049,6 @@ describe('downloadContent recursive directory handling', () => {
       files: [{ filename: 'scripts/python', download_url: 'https://s3.example.com/python-placeholder' }],
     });
     mockedAxios.get.mockResolvedValueOnce({ data: Buffer.alloc(0) });
-    requestMock.mockResolvedValueOnce({ files: [{ path: 'dbacademy.py', size: 10 }] });
     requestMock.mockResolvedValueOnce({ files: [{ path: 'dbacademy.py', size: 10 }] });
 
     await expect(
@@ -1101,11 +1101,15 @@ describe('downloadContent recursive directory handling', () => {
       });
     }
 
-    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1', ['asnlib']);
+    const failures: Array<{ path: string; reason: string }> = [];
+    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1', ['asnlib'], undefined, { failures });
 
     expect(result).toEqual({});
-    // Levels 0..MAX_DEPTH are listed and probed; the descent from MAX_DEPTH is
-    // refused. One list + one fetch-as-file per level.
-    expect(requestMock).toHaveBeenCalledTimes((MAX_DEPTH + 1) * 2);
+    // Levels 0..MAX_DEPTH are listed and probed (one list + one fetch-as-file
+    // each). The entry at MAX_DEPTH is listed once more — to tell a directory
+    // from a missing entry — and then the descent is refused and RECORDED.
+    expect(requestMock).toHaveBeenCalledTimes((MAX_DEPTH + 1) * 2 + 1);
+    expect(failures).toHaveLength(1);
+    expect(failures[0].reason).toMatch(/download limit/);
   });
 });

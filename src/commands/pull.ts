@@ -262,6 +262,10 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
       logger.plain(`  Removed:         ${pullResult.removed}`);
       logger.plain(`  Reset:           ${pullResult.reset}`);
       logger.plain(`  Skipped:         ${pullResult.skipped}`);
+      if (pullResult.importsFailed > 0) {
+        logger.plain(`  Import failed:   ${pullResult.importsFailed}`);
+        incomplete.push(`${pullResult.importsFailed} import(s) failed`);
+      }
       if (pullResult.filesNotDownloaded > 0) {
         logger.plain(`  Not downloaded:  ${pullResult.filesNotDownloaded}`);
         incomplete.push(`${pullResult.filesNotDownloaded} file(s) could not be downloaded`);

@@ -345,10 +345,20 @@ unexpectedly large or malformed remote file listings.
 **An incomplete pull exits 1.** If an import cannot download some remote files,
 vocgit still writes the files that did arrive and saves the assignment to
 `vocareum.yaml`, but it marks the import `INCOMPLETE`, adds a `Not downloaded`
-count to the summary, and exits 1. Likewise, if `--content` cannot finish the
-drift check for an assignment, vocgit names it and exits 1; it never reports
-"No sync issues found" for a check it skipped. Re-run the pull once the cause is
-fixed: the warnings above the summary name each file and the reason.
+count to the summary, and exits 1. An import that fails outright (for example
+one that hits a download safety limit) is not saved, is counted under
+`Import failed`, and also exits 1. If `--content` cannot finish the drift check
+for an assignment, vocgit names it and exits 1; it never reports "No sync
+issues found" for a check it skipped. The warnings above the summary name each
+file and the reason.
+
+To fetch the missing files once the cause is fixed, use content drift. The
+assignment is already imported, so a plain `vocgit pull --batch` will not retry
+it:
+
+```bash
+vocgit pull --batch --content --assignment <name>
+```
 
 **For orphaned assignments** (in Vocareum, not in config):
 - **Import**: Download content and add to your local repository

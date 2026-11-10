@@ -751,6 +751,15 @@ const CYCLE_REPEAT_THRESHOLD = 3;
  * True when a relative path ends in CYCLE_REPEAT_THRESHOLD identical segments,
  * i.e. the walk is going in circles rather than descending real content.
  */
+/** True when two listings name exactly the same entries (order-insensitive). */
+function sameEntryNames(a: FileInfo[], b: FileInfo[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  const names = new Set(a.map(e => e.path));
+  return b.every(e => names.has(e.path));
+}
+
 function isCyclicPath(relativePath: string): boolean {
   const segments = relativePath.split('/');
   if (segments.length < CYCLE_REPEAT_THRESHOLD) {
@@ -853,6 +862,40 @@ async function downloadDirectoryTree(
     const entryRelPath = relativePath ? `${relativePath}/${entry.path}` : entry.path;
     const filemapKey = `${directory}/${entryRelPath}`;
 
+    /**
+     * Walk into a confirmed directory. Every way a walk can stop short is
+     * either a recorded failure (strict: a throw) or a proven link cycle —
+     * never a silent drop, and never a placeholder stored as an empty file.
+     */
+    const descend = async (childEntries: FileInfo[]): Promise<void> => {
+      if (isCyclicPath(entryRelPath) && sameEntryNames(childEntries, entries)) {
+        // A repeated name alone does not prove a cycle — data/a/a/a can be
+        // real. A link back to an ancestor lists exactly what its parent
+        // lists; only then is there nothing below it to lose.
+        client.events.emit({
+          level: 'debug',
+          message: `Skipping cyclic path ${filemapKey} (lists the same entries as its parent)`,
+        });
+        return;
+      }
+      if (depth >= MAX_DOWNLOAD_DEPTH) {
+        // Truncating the walk drops files — the caller must not see a clean
+        // pull. Warn without --verbose (a debug line here once hid an entire
+        // course's nested assets) and record it as a failure.
+        recordDownloadFailure(
+          client, budget, strict, filemapKey,
+          `directory nesting exceeds the ${MAX_DOWNLOAD_DEPTH}-level download limit; ` +
+          `it and anything below it were NOT downloaded`
+        );
+        return;
+      }
+      await downloadDirectoryTree(
+        client, courseId, assignmentId, partId,
+        directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict, budget,
+        childEntries
+      );
+    };
+
     try {
       assertListedFileWithinBudget(filemapKey, entry, budget);
       const content = await fetchFileContent(
@@ -861,18 +904,14 @@ async function downloadDirectoryTree(
 
       // Some Vocareum workspaces expose directory placeholders as zero-byte
       // downloadable objects while also allowing the same path to be listed.
-      // Prefer the directory contents in that case so paths like scripts/python
-      // are imported recursively instead of as empty files.
-      if (isEmptyContent(content) && depth < MAX_DOWNLOAD_DEPTH && !isCyclicPath(entryRelPath)) {
-        const childApiDirPath = `${baseApiPath}/${entryRelPath}`;
+      // Probe every zero-byte entry: one that lists children is a directory,
+      // and must be walked (or recorded as cut off), never kept as an empty file.
+      if (isEmptyContent(content)) {
         const childEntries = await listFilesByApiPath(
-          client, courseId, assignmentId, partId, childApiDirPath
+          client, courseId, assignmentId, partId, `${baseApiPath}/${entryRelPath}`
         );
         if (childEntries.length > 0) {
-          await downloadDirectoryTree(
-            client, courseId, assignmentId, partId,
-            directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict, budget
-          );
+          await descend(childEntries);
           continue;
         }
       }
@@ -884,27 +923,6 @@ async function downloadDirectoryTree(
         throw error;
       }
       if (error instanceof NotAFileError) {
-        if (isCyclicPath(entryRelPath)) {
-          // A symlink cycle, not truncated content — there is nothing below it
-          // to lose, so this stays at debug. Reserve the warning below for a
-          // real subtree the limit cut off, or it gets tuned out.
-          client.events.emit({
-            level: 'debug',
-            message: `Skipping cyclic path ${filemapKey} (repeating directory name)`,
-          });
-          continue;
-        }
-        if (depth >= MAX_DOWNLOAD_DEPTH) {
-          // Truncating the walk drops files — the caller must not see a clean
-          // pull. Warn without --verbose (a debug line here once hid an entire
-          // course's nested assets) and record it as a failure.
-          recordDownloadFailure(
-            client, budget, strict, filemapKey,
-            `directory nesting exceeds the ${MAX_DOWNLOAD_DEPTH}-level download limit; ` +
-            `it and anything below it were NOT downloaded`
-          );
-          continue;
-        }
         // Not a file: list it as a directory. "Absent" here means the entry is
         // neither — e.g. a dangling link, or a file deleted mid-walk. That must
         // be reported, not silently treated as an empty directory.
@@ -928,11 +946,7 @@ async function downloadDirectoryTree(
           );
           continue;
         }
-        await downloadDirectoryTree(
-          client, courseId, assignmentId, partId,
-          directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict, budget,
-          childListing.entries
-        );
+        await descend(childListing.entries);
         continue;
       }
       if (strict) {

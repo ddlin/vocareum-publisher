@@ -256,7 +256,9 @@ Description:
   Exit status:
     1 when the pull is incomplete: an import could not download some files
     (it is still saved, marked INCOMPLETE, and counted under "Not downloaded"),
-    or --content could not finish the drift check for an assignment.
+    an import failed outright ("Import failed"), or --content could not finish
+    the drift check for an assignment. To fetch missing files later, run
+    vocgit pull --batch --content --assignment <name>.
 
   This is useful when:
     - Onboarding an existing course to Git-based management
