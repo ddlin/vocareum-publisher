@@ -17,7 +17,6 @@ import { normalizeSubmissionFilters, nullToUndefined,
 } from '../../types/config';
 import type {
   AssignmentSettingsPayload,
-  VocareumAssignmentResponse,
   VocareumPartResponse,
   RubricSyncPlan,
   RemoteRubric,
@@ -32,6 +31,7 @@ import { updateCourse } from '../../api/courses';
 import { getPart, updatePart } from '../../api/parts';
 import { createRubrics, updateRubrics } from '../../api/rubrics';
 import { projectedPoints } from '../../utils/rubrics';
+import { PEER_REVIEW_DATE_KEYS } from '../../utils/known-settings';
 import { ForbiddenError } from '../../api/client';
 import { mapParts } from '../mapper';
 import { readDirectory as readLocalDirectory, syncDirectory } from '../uploader';
@@ -197,6 +197,7 @@ import {
   pushSettingChange,
   buildPartSettingsPayload,
   omitPlatformKeysForUpdate,
+  peerReviewPayload,
   findPlatformFieldDrift,
   collectSettingsState,
   withoutUndefined,
@@ -367,6 +368,9 @@ export async function planPush(
           const v = asnSettings[key];
           if (v !== undefined && v !== null) { knownPayload[key] = v; }
         }
+        // Same builder as executePush, so the fingerprint covers exactly what is sent.
+        const peerOptions = { remoteToggle: action.remotePeerReviewToggle };
+        Object.assign(knownPayload, peerReviewPayload(asnSettings, peerOptions));
         const filteredUnknowns = filterUnknownSettingsForPayload(
           asnSettings._unknown_settings,
           RESERVED_ASSIGNMENT_KEYS,
@@ -428,6 +432,11 @@ export async function planPush(
             'full',
           ),
         );
+        // The reconciler found this part does not store cleanup_time; a PUT made
+        // for another setting must not carry it (and the warning says so).
+        if (partAction.cleanupTimeIgnored === true) {
+          delete partSettingsPayload.cleanup_time;
+        }
       }
 
       // Existing parts get an exact approved deletion set. New assignments have
@@ -839,6 +848,8 @@ export async function executePush(
             'noworkarea', 'exam_mode', 'exam_duration', 'num_attempts', 'show_end_exam_button',
             'lti_on', 'anonymous_grading', 'grading_visibility', 'live_code_comments',
           ];
+          // History records the peer-review values as sent (see peerReviewPayload).
+          const peerPayload = peerReviewPayload(asnSettings, { remoteToggle: action.remotePeerReviewToggle });
 
           pushSettingChange(settingChanges, {
             scope: 'assignment',
@@ -848,10 +859,15 @@ export async function executePush(
             from: remoteAssignment.name,
             to: action.assignment.name,
           });
-          for (const key of assignmentKeys) {
-            const toValue = asnSettings?.[key];
-            if (!hasSettingValue(toValue)) { continue; }
-            const fromValue = remoteAssignment[key as keyof VocareumAssignmentResponse];
+          const historyEntries: [string, unknown][] = [
+            ...assignmentKeys.map((key): [string, unknown] => [key, asnSettings?.[key]]),
+            ...Object.entries(peerPayload),
+          ];
+          for (const [key, toValue] of historyEntries) {
+            // A null peer-review date is a real write (it clears the date).
+            const isDateClear = toValue === null && (PEER_REVIEW_DATE_KEYS as readonly string[]).includes(key);
+            if (!hasSettingValue(toValue) && !isDateClear) { continue; }
+            const fromValue = (remoteAssignment as unknown as Record<string, unknown>)[key];
             pushSettingChange(settingChanges, {
               scope: 'assignment',
               assignment_id: updateId,
@@ -878,6 +894,7 @@ export async function executePush(
             anonymous_grading: nullToUndefined(asnSettings?.anonymous_grading),
             grading_visibility: nullToUndefined(asnSettings?.grading_visibility),
             live_code_comments: nullToUndefined(asnSettings?.live_code_comments),
+            ...peerPayload,
           });
 
           const filteredAsnUnknowns = filterUnknownSettingsForPayload(
@@ -988,7 +1005,7 @@ export async function executePush(
               'monthly_time', 'total_time', 'total_dollar', 'late_penalty_percent',
               'late_penalty_percent_rule', 'deadlinedate', 'endlab', 'labtype',
               'container_image', 'number_of_submissions', 'lab_interface',
-              'databricks_maxusers', 'tags',
+              'databricks_maxusers', 'tags', 'cleanup_time',
             ];
             const normalizedToFilters = sanitizeSubmissionFilters(normalizeSubmissionFilters(toPartSettings.submission_filters));
             const normalizedFromFilters = sanitizeSubmissionFilters(normalizeSubmissionFilters(remotePart.submission_filters));

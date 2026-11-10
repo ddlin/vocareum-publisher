@@ -6,6 +6,7 @@
  */
 
 import type { AssignmentSettings, PartSettings, SubmissionFilters } from '../types/config';
+import { isCalendarDate } from '../types/config';
 import type { VocareumAssignmentResponse, VocareumPartResponse } from '../types/api';
 import {
   KNOWN_ASSIGNMENT_SETTING_KEYS,
@@ -14,7 +15,9 @@ import {
   NON_SETTING_FIELDS_PART,
   OBSERVED_ASSIGNMENT_SETTING_KEYS,
   OBSERVED_PART_SETTING_KEYS,
+  PEER_REVIEW_SETTING_KEYS,
   partitionApiResponse,
+  type PeerReviewSettingKey,
 } from './known-settings';
 import type { UnknownFieldReporter } from './unknown-field-reporter';
 
@@ -39,8 +42,60 @@ function normalizeUpperEnum<T extends string>(
   allowed: readonly T[]
 ): T | undefined {
   if (typeof value !== 'string') { return undefined; }
-  const normalized = value.toUpperCase() as T;
+  const normalized = value.trim().toUpperCase() as T;
   return allowed.includes(normalized) ? normalized : undefined;
+}
+
+/**
+ * A whole number in [min, max] from a number-or-numeric-string API field, else
+ * undefined. The same rule as the config schema (wholeNumber), so a mapped
+ * value always loads; anything else ("1e1", "0x10", 1.5, out of range) is left
+ * for the caller to preserve in _unknown_settings rather than written typed.
+ */
+function toWholeNumber(value: unknown, min: number, max?: number): number | undefined {
+  let n: number | undefined;
+  if (typeof value === 'number') { n = value; }
+  else if (typeof value === 'string' && /^\s*-?\d+(\.\d+)?\s*$/.test(value)) { n = Number(value); }
+  if (n === undefined || !Number.isInteger(n) || n < min || (max !== undefined && n > max)) { return undefined; }
+  return n;
+}
+
+/**
+ * Peer-review settings (field report #5). Enums are normalized to the API's
+ * spelling; a value outside the known set is dropped here rather than written
+ * into a config the schema would then reject.
+ */
+/**
+ * Map the peer-review fields of an assignment response into settings, in the
+ * normalized form the config holds (booleans, upper-case enums, numbers,
+ * YYYY-MM-DD or null dates). A field whose value cannot be normalized is left
+ * out; mapAssignmentSettings preserves it in _unknown_settings instead.
+ * Also used by push drift detection, so local and remote compare like for like.
+ */
+export function mapPeerReviewSettings(
+  api: Partial<Record<PeerReviewSettingKey, unknown>>,
+  settings: Partial<Record<PeerReviewSettingKey, unknown>>
+): void {
+  for (const key of ['peer_review_toggle', 'peer_hide_code', 'peer_gallery', 'peer_grading_toggle'] as const) {
+    const coerced = coerceBooleanFlag(api[key]);
+    if (coerced !== undefined) { settings[key] = coerced; }
+  }
+  const mode = normalizeUpperEnum(api.peer_schedule_mode, ['SCHEDULED', 'MANUAL', 'AUTO'] as const);
+  if (mode !== undefined) { settings.peer_schedule_mode = mode; }
+  const calc = normalizeUpperEnum(api.reviewcalc, ['AVERAGE', 'MEDIAN', 'MAXIMUM'] as const);
+  if (calc !== undefined) { settings.reviewcalc = calc; }
+  const rule = normalizeUpperEnum(api.reviewpenalty_percentrule, ['STUDENT_SCORE', 'MAX_SCORE'] as const);
+  if (rule !== undefined) { settings.reviewpenalty_percentrule = rule; }
+  for (const key of ['peer_review_start_date', 'peer_review_end_date'] as const) {
+    const v = api[key];
+    if (v === null) { settings[key] = null; }
+    else if (typeof v === 'string' && isCalendarDate(v)) { settings[key] = v; }
+  }
+  const reviews = toWholeNumber(api.reviews_number, 1, 10);
+  if (reviews !== undefined) { settings.reviews_number = reviews; }
+  const penalty = toWholeNumber(api.reviewpenalty, 0, 100);
+  if (penalty !== undefined) { settings.reviewpenalty = penalty; }
+  if (typeof api.reviewguide === 'string' || api.reviewguide === null) { settings.reviewguide = api.reviewguide; }
 }
 
 function addObservedSetting(
@@ -108,6 +163,7 @@ export function mapAssignmentSettings(
   }
   addObservedSetting(observedSettings, 'send_webhook', apiResponse.send_webhook);
   if (apiResponse.live_code_comments !== undefined) { settings.live_code_comments = apiResponse.live_code_comments; }
+  mapPeerReviewSettings(apiResponse, settings);
   if (Object.keys(observedSettings).length > 0) {
     settings._observed_settings = observedSettings;
   }
@@ -121,6 +177,16 @@ export function mapAssignmentSettings(
     unionKeys(KNOWN_ASSIGNMENT_SETTING_KEYS, OBSERVED_ASSIGNMENT_SETTING_KEYS),
     NON_SETTING_FIELDS_ASSIGNMENT
   );
+  // A peer-review value the mapper could not normalize (an enum value newer
+  // than this release, a datetime where a date belongs) is kept and reported
+  // like any unknown field rather than silently dropped. It is never pushed:
+  // known keys are reserved in the outgoing payload.
+  const apiRecord = apiResponse as unknown as Record<string, unknown>;
+  for (const key of PEER_REVIEW_SETTING_KEYS) {
+    if (apiRecord[key] !== undefined && settings[key] === undefined) {
+      unknownFields[key] = apiRecord[key];
+    }
+  }
   if (Object.keys(unknownFields).length > 0) {
     settings._unknown_settings = unknownFields;
     if (reporter && resourceId !== undefined) {
@@ -201,6 +267,9 @@ export function mapPartSettings(
 
   addObservedSetting(observedSettings, 'description', apiResponse.description);
   addObservedSetting(observedSettings, 'max_points', apiResponse.max_points);
+  // Tenant-scoped image identity (field report #3): kept for reference, never pushed.
+  addObservedSetting(observedSettings, 'container_image_id', apiResponse.container_image_id);
+  addObservedSetting(observedSettings, 'container_image_label', apiResponse.container_image_label);
   if (apiResponse.late_penalty_percent !== undefined) { settings.late_penalty_percent = apiResponse.late_penalty_percent; }
   if (apiResponse.late_penalty_percent_rule !== undefined) { settings.late_penalty_percent_rule = apiResponse.late_penalty_percent_rule; }
   if (apiResponse.deadlinedate !== undefined) { settings.deadlinedate = apiResponse.deadlinedate; }
@@ -229,6 +298,8 @@ export function mapPartSettings(
     if (!isNaN(parsed)) { settings.databricks_maxusers = parsed; }
   }
   if (apiResponse.tags !== undefined) { settings.tags = apiResponse.tags; }
+  const cleanupTime = toWholeNumber(apiResponse.cleanup_time, 0);
+  if (cleanupTime !== undefined) { settings.cleanup_time = cleanupTime; }
   if (Object.keys(observedSettings).length > 0) {
     settings._observed_settings = observedSettings;
   }
@@ -242,6 +313,11 @@ export function mapPartSettings(
     unionKeys(KNOWN_PART_SETTING_KEYS, OBSERVED_PART_SETTING_KEYS),
     NON_SETTING_FIELDS_PART
   );
+  // An unreadable cleanup_time is kept and reported, like an unreadable
+  // peer-review value (see mapAssignmentSettings); it is never pushed.
+  if (apiResponse.cleanup_time !== undefined && settings.cleanup_time === undefined) {
+    unknownFields.cleanup_time = apiResponse.cleanup_time;
+  }
   if (Object.keys(unknownFields).length > 0) {
     settings._unknown_settings = unknownFields;
     if (reporter && resourceId !== undefined) {

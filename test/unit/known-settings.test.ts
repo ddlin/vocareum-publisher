@@ -141,6 +141,10 @@ describe('initial set contents', () => {
       'live_code_comments', 'noworkarea', 'nosubmit', 'num_attempts',
       'publish', 'publish_grades', 'show_end_exam_button',
       'lti_on',
+      // peer review (field report #5)
+      'peer_review_toggle', 'peer_schedule_mode', 'peer_review_start_date',
+      'peer_review_end_date', 'peer_hide_code', 'peer_gallery', 'peer_grading_toggle',
+      'reviews_number', 'reviewguide', 'reviewpenalty', 'reviewpenalty_percentrule', 'reviewcalc',
     ].sort());
   });
 
@@ -151,6 +155,7 @@ describe('initial set contents', () => {
       'late_penalty_percent', 'late_penalty_percent_rule', 'monthly_dollar',
       'monthly_time', 'number_of_submissions', 'session_length',
       'submission_filters', 'tags', 'total_dollar', 'total_time',
+      'cleanup_time',
     ].sort());
   });
 });

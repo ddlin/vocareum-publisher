@@ -20,6 +20,9 @@ import {
   NON_SETTING_FIELDS_PART,
   OBSERVED_ASSIGNMENT_SETTING_KEYS,
   OBSERVED_PART_SETTING_KEYS,
+  PEER_REVIEW_DATE_KEYS,
+  PEER_REVIEW_DEPENDENT_KEYS,
+  PEER_REVIEW_SETTING_KEYS,
 } from '../utils/known-settings';
 import {
   shouldSyncAssignmentSettings,
@@ -30,6 +33,55 @@ import type { EventSink } from './services/event-sink';
 // ---------------------------------------------------------------------------
 // Reserved-key sets
 // ---------------------------------------------------------------------------
+
+/**
+ * Peer-review fields for an assignment UPDATE payload (field report #5), as
+ * Vocareum will actually store them. Probed 2026-11-10:
+ *
+ * - Absent/null means "not managed by this config" and is not sent, like every
+ *   other setting, EXCEPT the two dates, where null is sent because the API
+ *   uses null to clear a date (pull writes null for an unset date).
+ * - With `peer_review_toggle: false` the three dependent options go out as
+ *   false: the API rejects them as true in that payload and resets them to
+ *   false whenever the toggle is turned off. Sending what the server would
+ *   store keeps an off-toggle config pushable and drift-free.
+ * - A dependent option without the toggle in the payload is checked against
+ *   the STORED toggle: accepted while it is on, rejected while it is off. So
+ *   the effective toggle is the config's when set, else `remoteToggle` (what
+ *   the reconciler read from Vocareum).
+ */
+export function peerReviewPayload(
+  settings: { [K in (typeof PEER_REVIEW_SETTING_KEYS)[number]]?: unknown } | null | undefined,
+  options: { remoteToggle?: boolean } = {}
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const dates: ReadonlySet<string> = new Set(PEER_REVIEW_DATE_KEYS);
+  for (const key of PEER_REVIEW_SETTING_KEYS) {
+    const v = settings?.[key];
+    if (v === undefined) { continue; }
+    if (v === null) {
+      if (dates.has(key)) { out[key] = null; }
+      continue;
+    }
+    out[key] = v;
+  }
+  const effectiveToggle = typeof out.peer_review_toggle === 'boolean' ? out.peer_review_toggle : options.remoteToggle;
+  if (effectiveToggle === false) {
+    for (const key of PEER_REVIEW_DEPENDENT_KEYS) {
+      if (out[key] === true) { out[key] = false; }
+    }
+  }
+  return out;
+}
+
+/** Dependent options the config sets true that peerReviewPayload sends as false. */
+export function coercedPeerDependents(
+  settings: { [K in (typeof PEER_REVIEW_SETTING_KEYS)[number]]?: unknown } | null | undefined,
+  options: { remoteToggle?: boolean } = {}
+): string[] {
+  const sent = peerReviewPayload(settings, options);
+  return PEER_REVIEW_DEPENDENT_KEYS.filter(k => settings?.[k] === true && sent[k] === false);
+}
 
 /** All keys that must not be overridden by _unknown_settings for assignment payloads. */
 export const RESERVED_ASSIGNMENT_KEYS: ReadonlySet<string> = new Set([
@@ -245,6 +297,7 @@ export function buildPartSettingsPayload(
     number_of_submissions: nullToUndefined(partSettings?.number_of_submissions),
     lab_interface: labInterfaceToWriteObject(partSettings?.lab_interface),
     databricks_maxusers: nullToUndefined(partSettings?.databricks_maxusers),
+    cleanup_time: nullToUndefined(partSettings?.cleanup_time),
     tags: normalizeTags(partSettings?.tags),
   });
 
@@ -339,9 +392,17 @@ export function collectSettingsState(config: Config): Record<string, unknown> {
   for (const assignment of config.assignments) {
     const asnSettings = assignment.settings;
     if (asnSettings && shouldSyncAssignmentSettings(config, assignment)) {
+      const peerSent = peerReviewPayload(asnSettings);
       for (const [key, value] of Object.entries(asnSettings)) {
         if (value === undefined || value === null || key.startsWith('_')) { continue; }
         if (!KNOWN_ASSIGNMENT_SETTING_KEYS.has(key)) { continue; }
+        state[`assignments/${assignment.path}/settings/${key}`] = value;
+      }
+      // Peer-review values are recorded as push sends them (an off-toggle
+      // option as false, a null date as null), not as the file spells them.
+      // The stored toggle is not known here, so a config that leaves the toggle
+      // unset records its options as written.
+      for (const [key, value] of Object.entries(peerSent)) {
         state[`assignments/${assignment.path}/settings/${key}`] = value;
       }
     }

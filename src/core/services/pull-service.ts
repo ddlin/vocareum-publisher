@@ -37,6 +37,7 @@ import type { PullRequest } from './types';
 import {
   OBSERVED_ASSIGNMENT_SETTING_KEYS,
   OBSERVED_PART_SETTING_KEYS,
+  PEER_REVIEW_SETTING_KEYS,
 } from '../../utils/known-settings';
 import {
   shouldSyncAssignmentSettings,
@@ -425,7 +426,27 @@ function clearObservedTopLevelSettings(
   }
 }
 
-function compareAssignmentSettings(
+/**
+ * Pull just mapped a remote value it cannot read for a KNOWN setting into
+ * `_unknown_settings` (e.g. a newer reviewcalc enum). The remote value
+ * supersedes the local typed copy, so drop that copy from the merge. Left in,
+ * the next load's top-level-wins migration would delete the remote value and
+ * keep the stale local one, and every pull would report the same drift again.
+ *
+ * @internal Exported for testing
+ */
+export function dropTypedCopiesOfUnreadableRemote(
+  merged: Record<string, unknown>,
+  remoteUnknown: Record<string, unknown> | undefined
+): void {
+  if (!remoteUnknown) { return; }
+  for (const key of Object.keys(remoteUnknown)) {
+    if (!key.startsWith('_')) { delete merged[key]; }
+  }
+}
+
+/** @internal Exported for testing */
+export function compareAssignmentSettings(
   localSettings: NonNullable<AssignmentSettings> | undefined,
   remoteSettings: NonNullable<AssignmentSettings>
 ): SettingDiff[] {
@@ -440,6 +461,7 @@ function compareAssignmentSettings(
     'show_end_exam_button',
     'lti_on', 'anonymous_grading', 'grading_visibility',
     'live_code_comments',
+    ...PEER_REVIEW_SETTING_KEYS,
   ];
 
   for (const key of keys) {
@@ -453,7 +475,8 @@ function compareAssignmentSettings(
   return diffs;
 }
 
-function comparePartSettings(
+/** @internal Exported for testing */
+export function comparePartSettings(
   localSettings: NonNullable<PartSettings> | undefined,
   remoteSettings: NonNullable<PartSettings>
 ): SettingDiff[] {
@@ -465,7 +488,7 @@ function comparePartSettings(
     'submission_filters', 'cloud_labs', 'instant_aws_access',
     'session_length', 'monthly_dollar', 'monthly_time', 'total_time', 'total_dollar',
     'endlab', 'labtype', 'container_image', 'lab_interface',
-    'databricks_maxusers', 'tags',
+    'databricks_maxusers', 'tags', 'cleanup_time',
   ];
 
   for (const key of keys) {
@@ -1687,6 +1710,7 @@ export async function applyPull(
           ...updates.assignmentSettings,
         };
         clearObservedTopLevelSettings(mergedSettings, OBSERVED_ASSIGNMENT_SETTING_KEYS);
+        dropTypedCopiesOfUnreadableRemote(mergedSettings, updates.assignmentSettings._unknown_settings);
         if (updates.assignmentSettings._unknown_settings === undefined) {
           delete mergedSettings._unknown_settings;
         }
@@ -1710,6 +1734,7 @@ export async function applyPull(
               ...newPartSettings,
             };
             clearObservedTopLevelSettings(mergedPartSettings, OBSERVED_PART_SETTING_KEYS);
+            dropTypedCopiesOfUnreadableRemote(mergedPartSettings, newPartSettings._unknown_settings);
             if (newPartSettings._unknown_settings === undefined) {
               delete mergedPartSettings._unknown_settings;
             }

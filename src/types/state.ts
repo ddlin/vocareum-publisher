@@ -75,6 +75,12 @@ export interface PartAction {
   dirHashes?: Record<string, string>;
   /** True when part metadata (name) differs from remote and needs updating */
   metadataChanged?: boolean;
+  /**
+   * cleanup_time is set locally but this part does not store it (Elite
+   * architecture reading back 0). The part payload must then omit it, so a
+   * push sent for another setting does not carry it either.
+   */
+  cleanupTimeIgnored?: boolean;
   /** Directories push must not upload because the last pull of them was
    *  incomplete (INCOMPLETE_PULL_MARKER in content_state). Uploading them
    *  with reset:1 would delete the remote files the pull missed. */
@@ -113,6 +119,12 @@ export interface AssignmentAction {
   partIdsDiscovered?: boolean;
   /** True when assignment metadata differs from remote and needs updating */
   assignmentMetadataChanged?: boolean;
+  /**
+   * Vocareum's stored peer_review_toggle, when the reconciler read it. A config
+   * that sets peer options without the toggle is checked against this: the
+   * API rejects a true option while the stored toggle is off.
+   */
+  remotePeerReviewToggle?: boolean;
 }
 
 /**

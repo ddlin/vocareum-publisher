@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Peer review settings are supported.** The twelve peer-review assignment fields
+  (`peer_review_toggle`, `peer_schedule_mode`, `peer_review_start_date`,
+  `peer_review_end_date`, `peer_hide_code`, `peer_gallery`, `peer_grading_toggle`,
+  `reviews_number`, `reviewguide`, `reviewpenalty`, `reviewpenalty_percentrule`,
+  `reviewcalc`) are now typed settings. Before, they were passed through untyped in
+  `_unknown_settings`. Each was checked against the live API before being promoted: all
+  twelve are stored. The config is checked against the API's own limits when it loads:
+  - dates must be real `YYYY-MM-DD` dates, and `null` clears a date on push. YAML dates
+    are no longer parsed as timestamps, so an unquoted `2026-02-30` is an error instead of
+    silently becoming 2 March;
+  - `reviews_number` is a whole number 1–10 and `reviewpenalty` a whole number 0–100;
+  - the three enums accept only the values the API lists, in any case.
+  While peer review is off (in the config, or in Vocareum when the config does not set the
+  toggle), push sends the three peer options as `false` and warns: Vocareum rejects them as
+  `true` then. Changes to these fields are detected by both pull and push. (Field report #5.)
+- **Part `cleanup_time`** is a known setting: a whole number, 0 or more. Vocareum stores it
+  on container labs only; on a Vocareum Standard (Elite) part, which reads it back as 0, push
+  warns and does not send it.
 - **`VOCAREUM_MAX_DOWNLOAD_FILES`** raises the per-part file-count cap for pull
   downloads (default 5,000, range 1 to 1,000,000). Courses that ship Python
   environments under `data/` list tens of thousands of files.
@@ -34,6 +52,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error through.
 
 ### Fixed
+- **A pulled container image ID is no longer pushed back.** `container_image_id` and
+  `container_image_label` used to ride in `_unknown_settings` and were sent on every part
+  update. That included a push to a different tenant, where an NA image ID means nothing.
+  They are now observed only: kept for reference and never sent. Probing showed the
+  part-update API ignores both fields anyway, and that image IDs are tenant-scoped. No push
+  actually changed an image this way. (Field report #3.)
+- **Fields an older pull left in `_unknown_settings` keep working.** When a newer vocgit
+  recognizes such a field, loading the config moves it where it now belongs. Known fields
+  become top-level settings, observed fields move to `_observed_settings`, and server-only
+  fields are dropped. This replaces a warning-and-drop on every push. A top-level value
+  always wins over a leftover copy, and raw API spellings such as `"1"` or `median` are
+  normalized first. A leftover value that is still invalid stays where it is, so it cannot
+  stop the config from loading. It is not pushed, and vocgit warns about it. The file is
+  written in the new layout the next time any command saves `vocareum.yaml`.
+- **A peer-review value that vocgit does not recognize is kept.** If Vocareum returns a
+  value this release cannot read (a newer enum value, an out-of-range number, a date in
+  another format), pull keeps it in `_unknown_settings` in place of the local typed value,
+  and reports it. It is not pushed.
 - **`pull` now downloads subdirectories.** For a path that is a directory, the
   v2 files API returns HTTP 400 `specified file does not exist <path>`, not the
   `status:"error"` body vocgit checked for. Each subdirectory was therefore

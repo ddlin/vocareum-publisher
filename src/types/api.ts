@@ -65,6 +65,19 @@ export interface VocareumAssignmentResponse {
   grading_visibility?: 'ALL' | 'ASSIGNED' | 'all' | 'assigned';
   send_webhook?: boolean;
   live_code_comments?: boolean;
+  // Peer review (field report #5)
+  peer_review_toggle?: boolean;
+  peer_schedule_mode?: string;
+  peer_review_start_date?: string | null;
+  peer_review_end_date?: string | null;
+  peer_hide_code?: boolean;
+  peer_gallery?: boolean;
+  peer_grading_toggle?: boolean;
+  reviews_number?: number | string;
+  reviewguide?: string;
+  reviewpenalty?: number | string;
+  reviewpenalty_percentrule?: string;
+  reviewcalc?: string;
 }
 
 /**
@@ -121,6 +134,11 @@ export interface VocareumPartResponse {
   // Other settings
   databricks_maxusers?: number;
   tags?: Record<string, string | number | boolean>;  // API returns object like {"average_lab_time": 300}
+  /** Container labs; returned as a numeric string */
+  cleanup_time?: string | number;
+  /** Observed only: tenant-scoped image id / label (field report #3) */
+  container_image_id?: string;
+  container_image_label?: string;
 }
 
 /**
@@ -251,6 +269,18 @@ export interface ApiAssignmentSettings {
   anonymous_grading?: boolean;
   grading_visibility?: 'ALL' | 'ASSIGNED';
   live_code_comments?: boolean;
+  peer_review_toggle?: boolean;
+  peer_schedule_mode?: 'SCHEDULED' | 'MANUAL' | 'AUTO';
+  peer_review_start_date?: string | null;
+  peer_review_end_date?: string | null;
+  peer_hide_code?: boolean;
+  peer_gallery?: boolean;
+  peer_grading_toggle?: boolean;
+  reviews_number?: number;
+  reviewguide?: string;
+  reviewpenalty?: number;
+  reviewpenalty_percentrule?: 'STUDENT_SCORE' | 'MAX_SCORE';
+  reviewcalc?: 'AVERAGE' | 'MEDIAN' | 'MAXIMUM';
 }
 
 /**
@@ -303,6 +333,7 @@ export interface ApiPartSettings {
   // Optional/advanced settings
   databricks_maxusers?: number;  // Max users for Databricks
   tags?: Record<string, string | number | boolean>;  // Tags object like {"average_lab_time": 300}
+  cleanup_time?: number;  // Container labs only
 }
 
 /**

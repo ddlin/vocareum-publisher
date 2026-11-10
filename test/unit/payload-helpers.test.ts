@@ -289,10 +289,10 @@ describe('derived point fields never reach an outgoing payload', () => {
   it('still passes through a genuinely unknown part field', () => {
     const payload = buildPartSettingsPayload(
       'Part 1',
-      { session_length: '120', _unknown_settings: { cleanup_time: '0' } } as never,
+      { session_length: '120', _unknown_settings: { future_unknown_flag: '0' } } as never,
       'full',
     );
 
-    expect(payload).toMatchObject({ cleanup_time: '0' });
+    expect(payload).toMatchObject({ future_unknown_flag: '0' });
   });
 });

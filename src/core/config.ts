@@ -13,6 +13,34 @@ import { z } from 'zod';
 import { ConfigSchema, type Config, type ConfigUpdates, type Assignment } from '../types/config';
 import type { ValidationResult, ValidationError } from '../types/state';
 import { logger } from '../utils/logger';
+import { promoteRecognizedUnknownSettings } from './settings-migration';
+
+/**
+ * js-yaml's default schema minus implicit timestamps. With timestamps on, an
+ * unquoted `2026-02-30` is silently built as 2 March and `2026-12-01T23:30-08:00`
+ * as 2 December, before any validation sees the text. Every date-like field in
+ * vocareum.yaml is a string, so keeping the scalar as written lets the schema
+ * reject what Vocareum would reject. Merge keys and the explicit tags stay.
+ */
+const CONFIG_YAML_SCHEMA = ((): yaml.Schema => {
+  // js-yaml keeps a schema's types on `implicit` / `explicit` (not in @types).
+  type Tagged = yaml.Type & { tag: string };
+  const def = yaml.DEFAULT_SCHEMA as unknown as { implicit: Tagged[]; explicit: Tagged[] };
+  const core = yaml.CORE_SCHEMA as unknown as { implicit: Tagged[]; explicit: Tagged[] };
+  const inCore = (t: Tagged, list: Tagged[]): boolean => list.some(c => c.tag === t.tag);
+  return yaml.CORE_SCHEMA.extend({
+    implicit: def.implicit.filter(t => t.tag !== 'tag:yaml.org,2002:timestamp' && !inCore(t, core.implicit)),
+    explicit: def.explicit.filter(t => !inCore(t, core.explicit)),
+  });
+})();
+
+/** loadConfig runs several times per command (updateConfig re-loads); warn once per value. */
+const warnedUnpromoted = new Set<string>();
+function warnUnpromotedOnce(id: string, message: string): void {
+  if (warnedUnpromoted.has(id)) { return; }
+  warnedUnpromoted.add(id);
+  logger.warn(message);
+}
 
 /**
  * Custom error for configuration issues
@@ -38,8 +66,8 @@ export async function loadConfig(configPath: string): Promise<Config> {
   const explorer = cosmiconfig('vocareum', {
     searchPlaces: ['vocareum.yaml', 'vocareum.yml'],
     loaders: {
-      '.yaml': (_filepath, content) => yaml.load(content),
-      '.yml': (_filepath, content) => yaml.load(content),
+      '.yaml': (_filepath, content) => yaml.load(content, { schema: CONFIG_YAML_SCHEMA }),
+      '.yml': (_filepath, content) => yaml.load(content, { schema: CONFIG_YAML_SCHEMA }),
     },
   });
 
@@ -58,6 +86,13 @@ export async function loadConfig(configPath: string): Promise<Config> {
       );
     }
 
+    // Settings a newer vocgit recognizes may still sit in `_unknown_settings`
+    // from an older pull; move them where they belong before validation.
+    for (const u of promoteRecognizedUnknownSettings(result.config)) {
+      warnUnpromotedOnce(`${configPath}:${u.location}:${u.key}:${JSON.stringify(u.value)}`,
+        `${u.location}: _unknown_settings.${u.key} = ${JSON.stringify(u.value)} is not a valid ${u.key} value, ` +
+        `so it is not pushed. Set ${u.key} in settings (or remove it), or run \`vocgit pull\` to refresh it from Vocareum.`);
+    }
     const parsed = ConfigSchema.safeParse(result.config);
 
     if (!parsed.success) {

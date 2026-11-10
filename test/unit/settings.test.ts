@@ -206,6 +206,18 @@ describe('mapPartSettings — observed settings preservation', () => {
   });
 });
 
+/** Realistic API values for the peer-review keys (lower-case enums prove normalization). */
+const PEER_SAMPLE: Record<string, unknown> = {
+  peer_schedule_mode: 'manual',
+  reviewcalc: 'average',
+  reviewpenalty_percentrule: 'student_score',
+  peer_review_start_date: '2026-12-01',
+  peer_review_end_date: '2026-12-15',
+  reviews_number: 1,
+  reviewpenalty: 0,
+  reviewguide: 'x',
+};
+
 describe('source-of-truth: every key in KNOWN_*_SETTING_KEYS is actually read by its mapper', () => {
   it('mapAssignmentSettings reads every KNOWN_ASSIGNMENT_SETTING_KEYS entry', () => {
     const inputs: Record<string, unknown> = {};
@@ -215,6 +227,7 @@ describe('source-of-truth: every key in KNOWN_*_SETTING_KEYS is actually read by
       else if (k === 'exam_duration' || k === 'num_attempts') { inputs[k] = 1; }
       else if (k === 'publish_grades') { inputs[k] = true; }
       else if (k === 'lti_on') { inputs[k] = '1'; }
+      else if (k in PEER_SAMPLE) { inputs[k] = PEER_SAMPLE[k]; }
       else { inputs[k] = true; }
     }
     const result = mapAssignmentSettings(baseResponse(inputs as never)) as Record<string, unknown>;
@@ -248,6 +261,7 @@ describe('source-of-truth: every key in KNOWN_*_SETTING_KEYS is actually read by
       else if (k === 'publish_grades') { inputs[k] = true; }
       else if (k === 'description') { inputs[k] = 'x'; }
       else if (k === 'lti_on') { inputs[k] = '1'; }
+      else if (k in PEER_SAMPLE) { inputs[k] = PEER_SAMPLE[k]; }
       else { inputs[k] = true; }
     }
     const result = mapAssignmentSettings(baseResponse(inputs as never));
@@ -265,6 +279,7 @@ describe('source-of-truth: every key in KNOWN_*_SETTING_KEYS is actually read by
       else if (k === 'labtype' || k === 'container_image') { inputs[k] = 'x'; }
       else if (k === 'session_length' || k === 'monthly_dollar' || k === 'monthly_time' || k === 'total_time' || k === 'total_dollar' || k === 'deadlinedate') { inputs[k] = '60'; }
       else if (k === 'late_penalty_percent' || k === 'number_of_submissions' || k === 'databricks_maxusers') { inputs[k] = 1; }
+      else if (k === 'cleanup_time') { inputs[k] = '30'; }
       else { inputs[k] = true; }
     }
     const result = mapPartSettings(basePart(inputs as never)) as Record<string, unknown>;
@@ -296,6 +311,7 @@ describe('source-of-truth: every key in KNOWN_*_SETTING_KEYS is actually read by
       else if (k === 'labtype' || k === 'container_image') { inputs[k] = 'x'; }
       else if (k === 'session_length' || k === 'monthly_dollar' || k === 'monthly_time' || k === 'total_time' || k === 'total_dollar' || k === 'deadlinedate') { inputs[k] = '60'; }
       else if (k === 'late_penalty_percent' || k === 'number_of_submissions' || k === 'databricks_maxusers') { inputs[k] = 1; }
+      else if (k === 'cleanup_time') { inputs[k] = '30'; }
       else { inputs[k] = true; }
     }
     const result = mapPartSettings(basePart(inputs as never));

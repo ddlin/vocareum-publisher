@@ -977,3 +977,63 @@ describe('reconcile — rubric drift', () => {
     expect(partAction.reason).not.toMatch(/0 to update/);
   });
 });
+
+describe('peer review and cleanup_time through reconcile (PR #9 round-3 review)', () => {
+  const client = {} as VocareumClient;
+  const messages: string[] = [];
+  const sink = { emit: (e: { message?: string }) => { if (e.message) { messages.push(e.message); } } };
+
+  function config(asnSettings: Record<string, unknown>, partSettings: Record<string, unknown>): Config {
+    return {
+      version: '1.0',
+      vocareum: { org_id: '1', course_id: '201303', api_base_url: 'https://api.vocareum.com' },
+      assignments: [{
+        assignment_id: 'asn-1', name: 'Lab 1', path: 'lab1', create_from_template: false,
+        settings: asnSettings,
+        parts: [{ part_id: 'part-1', path: 'part1', name: 'Part 1', directories: ['scripts'], settings: partSettings }],
+      }],
+      publish_history: [],
+    } as unknown as Config;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    messages.length = 0;
+    getCourseMock.mockResolvedValue({ id: '201303', name: 'Course 1', org_id: '1' });
+    listAssignmentsMock.mockResolvedValue([{ id: 'asn-1', name: 'Lab 1', deleted: '0' }]);
+    getAssignmentMock.mockResolvedValue({
+      id: 'asn-1', name: 'Lab 1', courseid: '201303', deleted: '0',
+      peer_review_toggle: false, peer_gallery: false, peer_hide_code: false, peer_grading_toggle: false,
+    });
+    listPartsMock.mockResolvedValue([{ id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0' }]);
+    getPartMock.mockResolvedValue({
+      id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0', assignmentid: 'asn-1', courseid: '201303',
+      labtype: 'Vocareum Standard', cleanup_time: '0', endlab: false,
+    });
+    calculateDirectoryHashMock.mockResolvedValue('same-hash');
+  });
+
+  it('warns about a configured-true option that peer review being off will send as false, even with nothing to PUT', async () => {
+    const plan = await reconcile(config({ peer_gallery: true }, {}), client, undefined, { events: sink });
+    expect(plan.assignments[0].assignmentMetadataChanged).toBe(false);
+    expect(plan.assignments[0].remotePeerReviewToggle).toBe(false);
+    expect(messages.join('\n')).toMatch(/peer_gallery is true in vocareum\.yaml but peer review is off/);
+  });
+
+  it('marks cleanup_time as not stored on a Standard part, so a PUT for another setting can omit it', async () => {
+    const plan = await reconcile(config({}, { cleanup_time: 30, endlab: true }), client, undefined, { events: sink });
+    const part = plan.assignments[0].parts[0];
+    expect(part.metadataChanged).toBe(true); // endlab differs
+    expect(part.cleanupTimeIgnored).toBe(true);
+    expect(messages.join('\n')).toMatch(/cleanup_time 30 is not sent/);
+  });
+
+  it('a null or empty cleanup_time readback is not treated as "reads back 0"', async () => {
+    getPartMock.mockResolvedValue({
+      id: 'part-1', seqnum: '0', name: 'Part 1', deleted: '0', assignmentid: 'asn-1', courseid: '201303',
+      labtype: 'Vocareum Standard', cleanup_time: '',
+    });
+    const plan = await reconcile(config({}, { cleanup_time: 30 }), client, undefined, { events: sink });
+    expect(plan.assignments[0].parts[0].cleanupTimeIgnored).toBeUndefined();
+  });
+});
