@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`vocgit init --region <na|eu>` and `--api-base-url <url>`.** `init` writes the
   chosen tenant's host to `vocareum.api_base_url`. When neither flag is given,
   `init` prompts for the region before the org ID, with NA as the default.
+  `VOCAREUM_API_BASE_URL` also skips the prompt, whether it comes from the
+  shell or from `.env` (which `init` now loads, as pull and push already do).
   `--api-base-url` goes through the same HTTPS + allowlist check that pull and
   push apply, so `init` never writes a host they would refuse.
 - **`VOCAREUM_API_BASE_URL` and `--api-base-url` on `pull`/`push`.** These

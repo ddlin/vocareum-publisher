@@ -11,7 +11,7 @@ import * as yaml from 'js-yaml';
 import { pathExists, writeFile } from '../utils/files';
 import { logger } from '../utils/logger';
 import { prompt, promptChoice, promptConfirm } from '../utils/prompts';
-import { getApiBaseUrlEnv } from '../utils/env';
+import { getApiBaseUrlEnv, loadDotEnvIfPresent } from '../utils/env';
 import { assertBaseUrlForVersion } from '../api/client';
 import {
   DEFAULT_REGION, REGION_HOSTS, VOCAREUM_REGIONS, displayHost, normalizeApiBaseUrl,
@@ -75,6 +75,10 @@ async function promptRegionApiBaseUrl(): Promise<string> {
  */
 export async function initCommand(options: InitOptions): Promise<void> {
   const configPath = 'vocareum.yaml';
+  // Same .env pickup as status/pull/push (shell values still win), so a tenant
+  // set only in .env is the one init writes — not NA, which later runs would
+  // silently diverge from once that .env is gone.
+  loadDotEnvIfPresent('.env');
   const presetApiBaseUrl = resolveInitApiBaseUrl(options);
 
   if (await pathExists(configPath) && options.force !== true) {

@@ -208,7 +208,8 @@ export function renderStatusHuman(
   if (report.api !== null) {
     const api = report.api;
     const region = api.region === null ? 'custom host' : api.region.toUpperCase();
-    const from = api.source === 'env' ? 'VOCAREUM_API_BASE_URL'
+    const envVar = report.auth.mode === 'oauth' ? 'VOCAREUM_API_V3_BASE_URL' : 'VOCAREUM_API_BASE_URL';
+    const from = api.source === 'env' ? envVar
       : api.source === 'config' ? 'vocareum.yaml'
       : api.source === 'flag' ? '--api-base-url'
       : 'default';

@@ -233,6 +233,40 @@ describe('statusCommand — API host / region', () => {
     expect(stdoutWrites.join('')).toMatch(/API host: staging\.example\.com \(custom host, from vocareum\.yaml\) — NOT allowlisted/);
   });
 
+  it('never prints credentials pasted into the URL (userinfo, query, fragment)', async () => {
+    const secret = 'secret-token-123';
+    loadConfigMock.mockResolvedValue(configWithHost(`https://${secret}@api.eu.vocareum.com/api/v2?k=${secret}#${secret}`));
+    await statusCommand({ json: true });
+    await statusCommand({});
+    expect(stdoutWrites.join('')).not.toContain(secret);
+    const doc = JSON.parse(stdoutWrites[0]) as { api: ApiField };
+    expect(doc.api.base_url).toBe('https://api.eu.vocareum.com/api/v2');
+  });
+
+  it('never echoes an unparsable host value', async () => {
+    loadConfigMock.mockResolvedValue(configWithHost('not a url secret-token-456'));
+    await statusCommand({ json: true });
+    await statusCommand({});
+    expect(stdoutWrites.join('')).not.toContain('secret-token-456');
+    const doc = JSON.parse(stdoutWrites[0]) as { api: ApiField };
+    expect(doc.api).toMatchObject({ base_url: '<invalid URL>', host: '<invalid URL>', allowlisted: false });
+  });
+
+  it('OAuth human output names VOCAREUM_API_V3_BASE_URL, not the v2 variable', async () => {
+    loadConfigMock.mockResolvedValue(makeConfig());
+    vi.mocked(getAuthModeEnv).mockReturnValue('oauth');
+    const saved = process.env.VOCAREUM_API_V3_BASE_URL;
+    process.env.VOCAREUM_API_V3_BASE_URL = 'https://labs.vocareum.com/api/v3';
+    try {
+      await statusCommand({});
+    } finally {
+      if (saved === undefined) { delete process.env.VOCAREUM_API_V3_BASE_URL; } else { process.env.VOCAREUM_API_V3_BASE_URL = saved; }
+    }
+    const out = stdoutWrites.join('');
+    expect(out).toContain('- API host: labs.vocareum.com (NA, from VOCAREUM_API_V3_BASE_URL)');
+    expect(out).not.toContain('from VOCAREUM_API_BASE_URL');
+  });
+
   it('--json in OAuth mode reports the v3 host', async () => {
     loadConfigMock.mockResolvedValue(configWithHost('https://api.eu.vocareum.com'));
     vi.mocked(getAuthModeEnv).mockReturnValue('oauth');

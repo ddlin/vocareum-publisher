@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as yaml from 'js-yaml';
+import { mkdtempSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { initCommand } from '../../src/commands/init';
+import { loadDotEnvIfPresent } from '../../src/utils/env';
 
 const {
   pathExistsMock,
@@ -26,6 +30,19 @@ vi.mock('../../src/utils/prompts', () => ({
   promptConfirm: promptConfirmMock,
   promptChoice: promptChoiceMock,
 }));
+
+// The real .env parser, redirected from init's relative '.env' to a temp file a
+// test opts into — so no .env in the developer's cwd can leak into these tests.
+const { dotEnv } = vi.hoisted(() => ({ dotEnv: { path: undefined as string | undefined } }));
+vi.mock('../../src/utils/env', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/utils/env')>();
+  return {
+    ...real,
+    loadDotEnvIfPresent: vi.fn(() => {
+      if (dotEnv.path !== undefined) { real.loadDotEnvIfPresent(dotEnv.path); }
+    }),
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), success: vi.fn(), debug: vi.fn() },
@@ -62,6 +79,7 @@ describe('initCommand — region / API host', () => {
     vi.clearAllMocks();
     delete process.env.VOCAREUM_API_BASE_URL;
     delete process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL;
+    dotEnv.path = undefined;
     pathExistsMock.mockResolvedValue(false);
     writeFileMock.mockResolvedValue(undefined);
     // org, course; no templates
@@ -178,5 +196,24 @@ describe('initCommand — region / API host', () => {
     promptConfirmMock.mockResolvedValueOnce(false);
     await initCommand({ region: 'eu' });
     expect(writeFileMock).not.toHaveBeenCalled();
+  });
+
+  it('VOCAREUM_API_BASE_URL set only in .env is honoured (as status/pull/push do)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vocgit-init-env-'));
+    writeFileSync(join(dir, '.env'), `VOCAREUM_API_BASE_URL=${EU}\n`);
+    dotEnv.path = join(dir, '.env');
+    await initCommand({});
+    expect(vi.mocked(loadDotEnvIfPresent)).toHaveBeenCalledWith('.env');
+    expect(writtenApiBaseUrl()).toBe(EU);
+    expect(promptChoiceMock).not.toHaveBeenCalled();
+  });
+
+  it('a shell export still beats .env', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vocgit-init-env-'));
+    writeFileSync(join(dir, '.env'), `VOCAREUM_API_BASE_URL=${EU}\n`);
+    dotEnv.path = join(dir, '.env');
+    process.env.VOCAREUM_API_BASE_URL = NA;
+    await initCommand({});
+    expect(writtenApiBaseUrl()).toBe(NA);
   });
 });

@@ -70,13 +70,17 @@ export function canonicalBaseUrl(baseUrl: string): string | undefined {
   }
 }
 
-/** Hostname of a base URL for display (never includes credentials), or the raw
- *  value when it does not parse. */
+/** Placeholder shown instead of a value that does not parse as a URL — the raw
+ *  string could be anything, including a pasted token, so it is never echoed. */
+export const INVALID_URL_LABEL = '<invalid URL>';
+
+/** Hostname of a base URL for display. Never includes userinfo, so a token
+ *  pasted into `https://<token>@host` is not printed. */
 export function displayHost(baseUrl: string): string {
   try {
     return new URL(baseUrl).host;
   } catch {
-    return baseUrl;
+    return INVALID_URL_LABEL;
   }
 }
 

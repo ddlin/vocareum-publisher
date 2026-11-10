@@ -9,7 +9,7 @@ import { loadConfig } from '../core/config';
 import { resolveWorkspaceContext } from '../core/workspace';
 import { loadDotEnvIfPresent, isCI, getCIProvider, getAuthModeEnv, getOAuthClientId, getOAuthClientSecret, getV3ApiBaseUrl } from '../utils/env';
 import { isAllowlistedBaseUrl } from '../api/client';
-import { displayHost, normalizeApiBaseUrl, regionForBaseUrl, resolveV2ApiBaseUrl } from '../api/regions';
+import { INVALID_URL_LABEL, canonicalBaseUrl, displayHost, normalizeApiBaseUrl, regionForBaseUrl, resolveV2ApiBaseUrl } from '../api/regions';
 import { CommandFailureError } from '../utils/command-failure';
 import { LoggerEventSink } from '../utils/logger-event-sink';
 import { InteractivePrompter } from '../core/services/context';
@@ -29,12 +29,15 @@ export interface StatusCommandOptions {
  * The host pull/push would send credentials to, resolved with the same
  * precedence they use (minus the per-run --api-base-url flag). Never throws:
  * an unallowlisted host is reported, not rejected — status is diagnostic.
+ *
+ * `base_url` is the canonical scheme://host/path: userinfo, query and fragment
+ * are dropped so a credential pasted into the URL never reaches stdout.
  */
 function resolveApiTarget(authMode: 'token' | 'oauth', configBaseUrl: string | undefined): ApiTargetFacts {
   if (authMode === 'oauth') {
     const baseUrl = getV3ApiBaseUrl();
     return {
-      base_url: baseUrl,
+      base_url: canonicalBaseUrl(baseUrl) ?? INVALID_URL_LABEL,
       host: displayHost(baseUrl),
       region: regionForBaseUrl(baseUrl) ?? null,
       source: process.env.VOCAREUM_API_V3_BASE_URL !== undefined ? 'env' : 'default',
@@ -44,7 +47,7 @@ function resolveApiTarget(authMode: 'token' | 'oauth', configBaseUrl: string | u
   const resolved = resolveV2ApiBaseUrl({ config: configBaseUrl });
   const baseUrl = normalizeApiBaseUrl(resolved.baseUrl);
   return {
-    base_url: baseUrl,
+    base_url: canonicalBaseUrl(baseUrl) ?? INVALID_URL_LABEL,
     host: displayHost(baseUrl),
     region: regionForBaseUrl(baseUrl) ?? null,
     source: resolved.source,
