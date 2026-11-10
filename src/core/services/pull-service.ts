@@ -288,6 +288,9 @@ export interface PartContentDrift {
    *  complete check covered them, so pulling records a real hash and lifts
    *  push's block — even when no file differs. */
   incompleteDirectories?: DirectoryType[];
+  /** Marked directories this check could NOT complete (a remote file could not
+   *  be written locally). Their marker is kept: never hashed on apply. */
+  stillIncompleteDirectories?: DirectoryType[];
 }
 
 /** Represents content drift for an assignment */
@@ -972,6 +975,10 @@ export async function detectContentDrift(
         // escape), so escaping entries are excluded here — otherwise apply would
         // abort before restoring the confined files.
         const safeRemoteFiles: FileMap = {};
+        // Directories with a remote file this check could NOT materialize
+        // locally (escaping or symlinked local path). Such a directory is not
+        // complete, so its incomplete-pull marker must survive recovery.
+        const omittedDirs = new Set<string>();
 
         for (const [remotePath, remoteContent] of Object.entries(remoteFiles)) {
           validatePath(localBaseAbs, remotePath);
@@ -984,6 +991,7 @@ export async function detectContentDrift(
               // still compared. The write side keeps its own confinement, so
               // nothing is ever materialized through the escaping symlink.
               warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`);
+              omittedDirs.add(remotePath.split('/')[0]);
               continue;
             }
             // apply writes this file through writeFileUnderBase, which refuses to
@@ -998,6 +1006,7 @@ export async function detectContentDrift(
             } catch { /* ENOENT (e.g. locally-deleted path) → not a symlink */ }
             if (localIsSymlink) {
               warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": local path is a symlink and cannot be safely overwritten`);
+              omittedDirs.add(remotePath.split('/')[0]);
               continue;
             }
           }
@@ -1053,9 +1062,21 @@ export async function detectContentDrift(
         }
 
         const contentState = config.publish_history?.[0]?.content_state ?? {};
-        const incompleteDirectories = downloadPlan.directories.filter(
+        const markedDirs = downloadPlan.directories.filter(
           dir => contentState[path.join(localBasePath, dir)] === INCOMPLETE_PULL_MARKER
         );
+        const incompleteDirectories = markedDirs.filter(dir => !omittedDirs.has(dir));
+        const stillIncomplete = markedDirs.filter(dir => omittedDirs.has(dir));
+        if (stillIncomplete.length > 0) {
+          // Recovery cannot finish these: report the check as incomplete (the
+          // pull exits 1) and keep their markers, or push would reset:1-delete
+          // the remote files that could not be written here.
+          skipped?.push({
+            assignmentName: assignment.name,
+            reason: `${stillIncomplete.map(d => `${d}/`).join(', ')} still incomplete: ` +
+              `some remote files could not be written locally (see the warnings above)`,
+          });
+        }
         if (fileDiffs.length > 0 || incompleteDirectories.length > 0) {
           partsDrift.push({
             partId: configPart.part_id,
@@ -1065,6 +1086,7 @@ export async function detectContentDrift(
             remoteFiles: safeRemoteFiles,
             directories: downloadPlan.directories,
             ...(incompleteDirectories.length > 0 ? { incompleteDirectories } : {}),
+            ...(stillIncomplete.length > 0 ? { stillIncompleteDirectories: stillIncomplete } : {}),
           });
         }
       }
@@ -1188,6 +1210,10 @@ export async function applyPull(
   const importedContentState: Record<string, string> = {};
   /** Misses from incomplete imports, recorded in publish_history (AGENTS.md #9). */
   const importMisses: DownloadFailure[] = [];
+  /** Imports that failed outright: not saved, but recorded in history (AGENTS.md #9). */
+  const importFailures: HistoryFailedEntity[] = [];
+  /** Marked directories a content-drift pull could not complete (marker kept). */
+  const driftStillIncomplete: HistoryFailedEntity[] = [];
 
   // ── Process orphaned assignments ──────────────────────────────────────────
   if (inspection.orphans.length > 0) {
@@ -1248,8 +1274,10 @@ export async function applyPull(
         } catch (error) {
           // A failed import is not a skip the user asked for: counting it as one
           // let a pull that imported nothing exit 0.
-          events.emit({ level: 'error', message: `Failed to import "${orphan.name}": ${error instanceof Error ? error.message : 'Unknown'}` });
+          const reason = error instanceof Error ? error.message : 'Unknown';
+          events.emit({ level: 'error', message: `Failed to import "${orphan.name}": ${reason}` });
           result.importsFailed++;
+          importFailures.push({ type: 'assignment', id: orphan.id, error: `import of "${orphan.name}" failed: ${reason}` });
         }
       } else if (action === 'exclude') {
         newExclusions.push(orphan.id);
@@ -1503,6 +1531,14 @@ export async function applyPull(
           for (const dir of partDrift.incompleteDirectories ?? []) {
             directories.add(dir);
           }
+          for (const dir of partDrift.stillIncompleteDirectories ?? []) {
+            directories.delete(dir);
+            driftStillIncomplete.push({
+              type: 'file',
+              id: path.join(localBasePath, dir),
+              error: 'still incomplete: some remote files could not be written locally; push still refuses it',
+            });
+          }
 
           for (const dir of directories) {
             const stateKey = path.join(localBasePath, dir);
@@ -1537,7 +1573,7 @@ export async function applyPull(
     settingsUpdates.size > 0;
 
   let newPublishHistory: PublishHistory[] | undefined;
-  if (Object.keys(importedContentState).length > 0) {
+  if (Object.keys(importedContentState).length > 0 || importFailures.length > 0 || driftStillIncomplete.length > 0) {
     const commitSha = await getCommitSha(workspaceRoot).catch(() => 'unknown');
     const gitUserName = await getGitUserName(workspaceRoot).catch(() => null);
     const publishedBy = gitUserName ?? 'pull-command';
@@ -1554,9 +1590,12 @@ export async function applyPull(
       published_by: publishedBy,
       // An import that missed files is a failed run, recorded as one (AGENTS.md
       // #9). Its directories carry INCOMPLETE_PULL_MARKER, not a hash.
-      status: importMisses.length > 0 ? 'failed' : 'success',
+      // A run with any miss or failed import is failed, even if others succeeded.
+      status: importMisses.length > 0 || importFailures.length > 0 || driftStillIncomplete.length > 0 ? 'failed' : 'success',
       content_state: mergedContentState,
-      ...(importMisses.length > 0 ? { failed: historyFailuresFor(importMisses) } : {}),
+      ...(importMisses.length > 0 || importFailures.length > 0 || driftStillIncomplete.length > 0
+        ? { failed: [...importFailures, ...driftStillIncomplete, ...historyFailuresFor(importMisses)] }
+        : {}),
     };
 
     newPublishHistory = [historyEntry];

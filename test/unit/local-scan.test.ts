@@ -445,6 +445,29 @@ describe('scanLocalContent', () => {
     expect(changedDirs).toEqual([]);
   });
 
+  it('status reports a directory an incomplete pull left behind as error, never synced', async () => {
+    const key = path.join('lab1', 'part1', 'startercode');
+    const config = {
+      version: '1.0',
+      vocareum: { org_id: '1', course_id: 'c1', excluded_assignments: [] },
+      assignments: [{
+        assignment_id: 'a1', name: 'Lab 1', path: 'lab1', create_from_template: false, settings: {},
+        parts: [{ part_id: 'p1', path: 'part1', directories: ['startercode'], settings: {} }],
+      }],
+      publish_history: [{
+        timestamp: '2026-11-09T00:00:00Z', commit_sha: 'x', published_by: 'pull-command', status: 'failed',
+        content_state: { [key]: INCOMPLETE_PULL_MARKER },
+      }],
+    } as unknown as Config;
+
+    const result = await scanLocalContent(config, tempDir);
+
+    expect(result.assignments[0].status).toBe('error');
+    expect(result.assignments[0].parts[0].directories[0]).toEqual({ directory: 'startercode', status: 'error' });
+    expect(result.summary.synced).toBe(0);
+    expect(result.summary.error).toBe(1);
+  });
+
   it('reads content_state from the newest history entry even when it is failed', async () => {
     const key = path.join('lab1', 'part1', 'startercode');
     const hash = await calculateDirectoryHash(

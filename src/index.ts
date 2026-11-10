@@ -311,6 +311,7 @@ Description:
     - Last push timestamp, status, and commit
     - Git branch/commit/dirty state
     - Environment details (CI/local, API key presence)
+    - Directories an incomplete pull left blocked from push, if any
     - API host and region (NA/EU) that pull/push will target, and where
       it came from (VOCAREUM_API_BASE_URL or vocareum.yaml)
 

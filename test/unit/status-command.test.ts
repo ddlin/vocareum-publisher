@@ -271,6 +271,25 @@ describe('statusCommand — API host / region', () => {
     expect(out).not.toContain('from VOCAREUM_API_BASE_URL');
   });
 
+  it('human output names directories an incomplete pull left blocked from push', async () => {
+    const config = makeConfig();
+    config.publish_history = [{
+      timestamp: '2026-11-09T00:00:00Z', commit_sha: 'x', published_by: 'pull-command', status: 'failed',
+      content_state: { 'lab1/part1/startercode': 'incomplete-pull', 'lab1/part1/docs': 'abc123' },
+    }] as unknown as Config['publish_history'];
+    loadConfigMock.mockResolvedValue(config);
+    const stderrWrites: string[] = [];
+    const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => { stderrWrites.push(String(chunk)); return true; });
+    try {
+      await statusCommand({});
+    } finally {
+      errSpy.mockRestore();
+    }
+    const out = stdoutWrites.join('') + stderrWrites.join('');
+    expect(out).toMatch(/Incomplete pull: push refuses 1 directory until a complete pull .*: lab1\/part1\/startercode/);
+    expect(out).not.toMatch(/lab1\/part1\/docs/);
+  });
+
   it('--json in OAuth mode reports the v3 host', async () => {
     loadConfigMock.mockResolvedValue(configWithHost('https://api.eu.vocareum.com'));
     vi.mocked(getAuthModeEnv).mockReturnValue('oauth');

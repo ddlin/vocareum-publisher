@@ -49,7 +49,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `incomplete-pull` marker instead of a hash. `push`, including `--force-all`,
   refuses those directories and reports them as failed. A complete
   `vocgit pull --batch --content --assignment <name>` replaces the marker with
-  a real hash, even when no file differs.
+  a real hash, even when no file differs. The marker stays if a remote file in
+  that directory still cannot be written locally, such as when the local path
+  is a symlink. `vocgit status` lists marked directories, and `status --json`
+  reports them as `error`, not `synced`.
+- **Failed imports are recorded in `publish_history`.** An import that failed
+  outright left no record. A run in which one import failed and another
+  succeeded was recorded as `success`. Both are now recorded as `failed`, naming
+  the assignment and the reason, and the earlier `content_state` is kept.
 - **Directory walking no longer drops real folders or keeps placeholders as
   files.** A path whose last three names repeat (such as `data/a/a/a`) used to
   be skipped as a symlink cycle by name alone. It is now skipped only when it

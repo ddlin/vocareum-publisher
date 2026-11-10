@@ -379,9 +379,14 @@ async function scanDirectory(
   }
 
   try {
-    const { changedDirs } = await detectChangedDirectories(
+    const { changedDirs, blockedDirs } = await detectChangedDirectories(
       assignmentPath, partPath, [directory], lastHistory, false, excludePatterns, baseDir
     );
+    // A directory an incomplete pull left behind is neither synced nor
+    // publishable — push refuses it. 'error' is never masked by roll-up.
+    if (blockedDirs.length > 0) {
+      return { directory, status: 'error' };
+    }
     return { directory, status: changedDirs.length > 0 ? 'needs_publish' : 'synced' };
   } catch {
     return { directory, status: 'error' };

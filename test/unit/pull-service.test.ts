@@ -1245,7 +1245,34 @@ describe('applyPull — import that fails outright', () => {
     expect(result.importsFailed).toBe(1);
     expect(result.skipped).toBe(0);
     expect(result.imported).toBe(0);
-    expect(applyConfigUpdate).not.toHaveBeenCalled();
+    // The assignment is NOT saved — but the failed run IS recorded (AGENTS.md #9).
+    expect(applyConfigUpdate).toHaveBeenCalledTimes(1);
+    const update = applyConfigUpdate.mock.calls[0][0] as ConfigUpdates;
+    expect(update.assignments ?? []).toEqual([]);
+    expect(update.publish_history![0].status).toBe('failed');
+    expect(update.publish_history![0].failed).toEqual([
+      { type: 'assignment', id: ORPHAN_1.id, error: expect.stringMatching(/import of "Orphan Alpha" failed: Download limit exceeded/) },
+    ]);
+  });
+
+  it('a failed import alongside a complete one records the run as failed, not success', async () => {
+    const { ctx } = makeCtx();
+    const { session, applyConfigUpdate } = makeSession();
+    // Orphan 1 fails before any download; orphan 2 imports completely.
+    mockGetAssignment.mockRejectedValueOnce(new Error('HTTP 500'));
+    enqueueImportResponses({ request: vi.fn() });
+    mockListRubrics.mockResolvedValue([]);
+    const resolver = makeStubResolver({
+      resolveOrphanAction: vi.fn<[PullIssueOrphan], Promise<OrphanAction>>().mockResolvedValue('import'),
+    });
+
+    const result = await applyPull(session, ctx, { batch: true, verbose: false, skipContent: false }, INSPECTION_TWO_ORPHANS, resolver);
+
+    expect(result.imported).toBe(1);
+    expect(result.importsFailed).toBe(1);
+    const entry = (applyConfigUpdate.mock.calls[0][0] as ConfigUpdates).publish_history![0];
+    expect(entry.status).toBe('failed');
+    expect(entry.failed).toEqual([expect.objectContaining({ type: 'assignment', id: ORPHAN_1.id })]);
   });
 });
 

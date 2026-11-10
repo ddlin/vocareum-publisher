@@ -361,7 +361,10 @@ changed directory by first clearing it on Vocareum, so uploading a partial copy
 would delete every remote file the pull missed. vocgit marks such a directory
 `incomplete-pull` in `publish_history.content_state` instead of recording a
 hash, and `vocgit push` (even with `--force-all`) reports it as failed and
-leaves it untouched until a complete pull replaces the marker.
+leaves it untouched until a complete pull replaces the marker. `vocgit status`
+lists such directories, and `status --json` reports them as `error`. If a
+remote file still cannot be written locally (for example because the local path
+is a symlink), the marker stays and the pull exits 1 until that is resolved.
 
 To complete an incomplete import once the cause is fixed (for example after
 raising `VOCAREUM_MAX_DOWNLOAD_FILES`), use content drift. The assignment is
@@ -372,7 +375,8 @@ vocgit pull --batch --content --assignment <name>
 ```
 
 An import that failed outright was not saved, so it is still an orphan: re-run
-`vocgit pull --batch`.
+`vocgit pull --batch`. Either way the run is recorded in `publish_history` as
+`failed`, with what was missed or why the import failed.
 
 **For orphaned assignments** (in Vocareum, not in config):
 - **Import**: Download content and add to your local repository

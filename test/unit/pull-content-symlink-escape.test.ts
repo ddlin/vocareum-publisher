@@ -441,5 +441,59 @@ describe('content drift completes a directory an earlier pull left incomplete', 
     expect(drift).toEqual([]);
     expect(skipped).toHaveLength(1);
   });
+
+  // Codex round 2 (P0): a remote file that cannot be written locally (the local
+  // path is a symlink) must keep the marker — otherwise push unblocks and its
+  // reset:1 upload deletes that remote file.
+  it('keeps the marker when a remote file in the directory cannot be written locally; clears it once fixed', async () => {
+    const dataDir = path.join(workspaceRoot, 'asn1', 'data');
+    await fs.writeFile(path.join(workspaceRoot, 'asn1', 'target.txt'), 'local target');
+    await fs.symlink('../target.txt', path.join(dataDir, 'missed.txt'));
+    mockDownloadContent.mockResolvedValue({
+      'data/a.txt': Buffer.from('changed on remote'),
+      'data/missed.txt': Buffer.from('remote only'),
+    });
+
+    const run = async () => {
+      const skipped: Array<{ assignmentName: string; reason: string }> = [];
+      const drift = await detectContentDrift(
+        { assignments: [assignment], vocareum: { course_id: 'C1', architecture: 'container' }, publish_history: history },
+        {} as never, new Set<string>(), workspaceRoot, () => {}, undefined, skipped,
+      );
+      const config = {
+        version: '1.0', vocareum: { org_id: '1', course_id: 'C1', excluded_assignments: [] },
+        assignments: [assignment], publish_history: history,
+      } as unknown as Config;
+      const ctx: PullContext = {
+        persistedConfig: config, effectiveConfig: config, configPath: `${workspaceRoot}/vocareum.yaml`,
+        workspaceRoot, events: new CollectingEventSink(), prompter: new NonInteractivePrompter(), client: {} as never,
+      };
+      const applyConfigUpdate = vi.fn().mockResolvedValue(undefined);
+      const resolver = {
+        resolveOrphanAction: vi.fn(), resolveStaleAction: vi.fn(), resolveSettingsDriftAction: vi.fn(),
+        resolveContentDriftAction: vi.fn().mockResolvedValue('pull'), resolveImportPath: vi.fn(),
+      } as unknown as PullResolver;
+      await applyPull({ applyConfigUpdate } as LockedSession, ctx, { batch: true, verbose: false, skipContent: false },
+        { orphans: [], stale: [], settingsDrift: [], contentDrift: drift }, resolver);
+      return { drift, skipped, entry: applyConfigUpdate.mock.calls[0]?.[0]?.publish_history?.[0] };
+    };
+
+    // Obstructed: the changed file is restored, but data/ stays marked and the run is failed.
+    const blocked = await run();
+    expect(blocked.skipped).toHaveLength(1);
+    expect(blocked.skipped[0].reason).toMatch(/data\/ still incomplete/);
+    expect(blocked.drift[0].partsDrift[0].stillIncompleteDirectories).toEqual(['data']);
+    expect(await fs.readFile(path.join(dataDir, 'a.txt'), 'utf8')).toBe('changed on remote');
+    expect(blocked.entry.content_state[path.join('asn1', 'data')]).toBe('incomplete-pull');
+    expect(blocked.entry.status).toBe('failed');
+    expect(blocked.entry.failed).toEqual([expect.objectContaining({ id: path.join('asn1', 'data') })]);
+
+    // Fixed: remove the symlink; a complete recovery now clears the marker.
+    await fs.unlink(path.join(dataDir, 'missed.txt'));
+    const fixed = await run();
+    expect(fixed.skipped).toEqual([]);
+    expect(fixed.entry.status).toBe('success');
+    expect(fixed.entry.content_state[path.join('asn1', 'data')]).toMatch(/^[0-9a-f]{16,}$/);
+  });
 });
 
