@@ -76,7 +76,7 @@ const ELITE_LABTYPES = [
  */
 export function detectArchitecture(labtype: string | null | undefined): 'elite' | 'container' {
   if (!labtype) { return 'container'; }
-  return ELITE_LABTYPES.includes(labtype.toLowerCase()) ? 'elite' : 'container';
+  return ELITE_LABTYPES.includes(labtype.trim().toLowerCase()) ? 'elite' : 'container';
 }
 
 /**

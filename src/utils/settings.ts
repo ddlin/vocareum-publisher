@@ -55,7 +55,7 @@ function normalizeUpperEnum<T extends string>(
 function toWholeNumber(value: unknown, min: number, max?: number): number | undefined {
   let n: number | undefined;
   if (typeof value === 'number') { n = value; }
-  else if (typeof value === 'string' && /^\s*-?\d+\s*$/.test(value)) { n = Number(value); }
+  else if (typeof value === 'string' && /^\s*-?\d+(\.\d+)?\s*$/.test(value)) { n = Number(value); }
   if (n === undefined || !Number.isInteger(n) || n < min || (max !== undefined && n > max)) { return undefined; }
   return n;
 }

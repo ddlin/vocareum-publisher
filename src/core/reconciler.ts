@@ -33,7 +33,7 @@ import {
 import { mapRubrics, planRubricSync } from '../utils/rubrics';
 import { deepEqual } from '../utils/deep-equal';
 import { mapPeerReviewSettings } from '../utils/settings';
-import { peerReviewPayload } from './payload-helpers';
+import { coercedPeerDependents, peerReviewPayload } from './payload-helpers';
 
 const ACCEPTED_UNVERIFIED_ASSIGNMENT_KEYS = [
   'anonymous_grading',
@@ -117,7 +117,9 @@ function cleanupTimeDiffers(configPart: Part, remotePart: VocareumPartResponse |
  */
 export function cleanupTimeIgnoredByServer(part: Part, remotePart: VocareumPartResponse | undefined): boolean {
   if (!cleanupTimeDiffers(part, remotePart)) { return false; }
-  return detectArchitecture(remotePart?.labtype) === 'elite' && Number(remotePart?.cleanup_time) === 0;
+  const readback = remotePart?.cleanup_time;
+  const readsZero = readback === 0 || (typeof readback === 'string' && readback.trim() === '0');
+  return detectArchitecture(remotePart?.labtype) === 'elite' && readsZero;
 }
 
 /**
@@ -257,6 +259,18 @@ export async function reconcile(
       // Check for changes in fields that can be updated via API
       // Working fields: name, description, nosubmit, auto_submit, grading_on_submit, publish, etc.
       // NOT working: due_date, points (return "No valid parameters")
+      if (shouldSyncAssignmentSettings(config, configAssignment)) {
+        // Warn whenever a configured true cannot take effect, even when the
+        // server is already false (no PUT): otherwise the intent is silently
+        // unapplied and push reports the assignment as in sync.
+        const coerced = coercedPeerDependents(configAssignment.settings, { remoteToggle: remotePeerReviewToggle });
+        if (coerced.length > 0) {
+          events.emit({
+            level: 'warn',
+            message: `"${configAssignment.name}": ${coerced.join(', ')} ${coerced.length === 1 ? 'is' : 'are'} true in vocareum.yaml but peer review is off, so ${coerced.length === 1 ? 'it is' : 'they are'} sent as false (Vocareum rejects true). Set peer_review_toggle: true to enable ${coerced.length === 1 ? 'it' : 'them'}, or set ${coerced.length === 1 ? 'it' : 'them'} to false.`,
+          });
+        }
+      }
       assignmentMetadataChanged = shouldSyncAssignmentSettings(config, configAssignment)
         ? detectAssignmentSettingsChanged(configAssignment, fullAssignment) ||
           hasAcceptedUnverifiedAssignmentChange(configAssignment, lastPublishHistory)
@@ -279,9 +293,10 @@ export async function reconcile(
           }
 
           let metadataChanged = false;
+          let cleanupIgnored = false;
           if (shouldSyncPartSettings(config, configAssignment, configPart)) {
             const fullPart = await getPart(client, config.vocareum.course_id, remoteAssignment.id, mapping.apiPartId);
-            const cleanupIgnored = cleanupTimeIgnoredByServer(configPart, fullPart);
+            cleanupIgnored = cleanupTimeIgnoredByServer(configPart, fullPart);
             if (cleanupIgnored) {
               events.emit({
                 level: 'warn',
@@ -397,6 +412,7 @@ export async function reconcile(
               // can read them directly instead of recomputing (Stage 1a Fix 3).
               dirHashes: Object.keys(dirHashes).length > 0 ? dirHashes : undefined,
               metadataChanged,
+              ...(cleanupIgnored ? { cleanupTimeIgnored: true } : {}),
               rubricPlan,
               remoteRubrics,
               rubricReadFailed,

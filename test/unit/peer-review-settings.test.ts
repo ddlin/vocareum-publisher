@@ -488,3 +488,21 @@ assignments:
     expect(asn._observed_settings).toBeUndefined();
   });
 });
+
+describe('round-3 review: what is recorded and what is parked', () => {
+  it('settings_state records peer values as sent (off-toggle option false, null date null)', async () => {
+    const { collectSettingsState } = await import('../../src/core/payload-helpers');
+    const state = collectSettingsState({
+      assignments: [{ path: 'cd', settings: { peer_review_toggle: false, peer_gallery: true, peer_review_start_date: null }, parts: [] }],
+    } as never);
+    expect(state['assignments/cd/settings/peer_gallery']).toBe(false);
+    expect(state['assignments/cd/settings/peer_review_start_date']).toBeNull();
+  });
+
+  it('a decimal-looking whole number from the API ("1.0", "30.0") is read, not parked', () => {
+    expect(mapAssignmentSettings(apiAssignment({ reviews_number: '1.0' })).reviews_number).toBe(1);
+    const p = mapPartSettings(apiContainerPart({ cleanup_time: '30.0' }));
+    expect(p.cleanup_time).toBe(30);
+    expect(p._unknown_settings).toBeUndefined();
+  });
+});

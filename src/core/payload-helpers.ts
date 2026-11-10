@@ -392,9 +392,17 @@ export function collectSettingsState(config: Config): Record<string, unknown> {
   for (const assignment of config.assignments) {
     const asnSettings = assignment.settings;
     if (asnSettings && shouldSyncAssignmentSettings(config, assignment)) {
+      const peerSent = peerReviewPayload(asnSettings);
       for (const [key, value] of Object.entries(asnSettings)) {
         if (value === undefined || value === null || key.startsWith('_')) { continue; }
         if (!KNOWN_ASSIGNMENT_SETTING_KEYS.has(key)) { continue; }
+        state[`assignments/${assignment.path}/settings/${key}`] = value;
+      }
+      // Peer-review values are recorded as push sends them (an off-toggle
+      // option as false, a null date as null), not as the file spells them.
+      // The stored toggle is not known here, so a config that leaves the toggle
+      // unset records its options as written.
+      for (const [key, value] of Object.entries(peerSent)) {
         state[`assignments/${assignment.path}/settings/${key}`] = value;
       }
     }

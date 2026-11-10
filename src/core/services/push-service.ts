@@ -197,7 +197,6 @@ import {
   pushSettingChange,
   buildPartSettingsPayload,
   omitPlatformKeysForUpdate,
-  coercedPeerDependents,
   peerReviewPayload,
   findPlatformFieldDrift,
   collectSettingsState,
@@ -372,13 +371,6 @@ export async function planPush(
         // Same builder as executePush, so the fingerprint covers exactly what is sent.
         const peerOptions = { remoteToggle: action.remotePeerReviewToggle };
         Object.assign(knownPayload, peerReviewPayload(asnSettings, peerOptions));
-        const coerced = coercedPeerDependents(asnSettings, peerOptions);
-        if (coerced.length > 0) {
-          ctx.events.emit({
-            level: 'warn',
-            message: `"${action.assignment.name}": ${coerced.join(', ')} ${coerced.length === 1 ? 'is' : 'are'} true in vocareum.yaml but sent as false, because peer review is off (Vocareum rejects them otherwise). Set peer_review_toggle: true to enable them, or set them to false.`,
-          });
-        }
         const filteredUnknowns = filterUnknownSettingsForPayload(
           asnSettings._unknown_settings,
           RESERVED_ASSIGNMENT_KEYS,
@@ -440,6 +432,11 @@ export async function planPush(
             'full',
           ),
         );
+        // The reconciler found this part does not store cleanup_time; a PUT made
+        // for another setting must not carry it (and the warning says so).
+        if (partAction.cleanupTimeIgnored === true) {
+          delete partSettingsPayload.cleanup_time;
+        }
       }
 
       // Existing parts get an exact approved deletion set. New assignments have

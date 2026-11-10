@@ -75,6 +75,12 @@ export interface PartAction {
   dirHashes?: Record<string, string>;
   /** True when part metadata (name) differs from remote and needs updating */
   metadataChanged?: boolean;
+  /**
+   * cleanup_time is set locally but this part does not store it (Elite
+   * architecture reading back 0). The part payload must then omit it, so a
+   * push sent for another setting does not carry it either.
+   */
+  cleanupTimeIgnored?: boolean;
   /** Rubric work this part needs, when rubric sync is enabled and the part has
    *  `rubrics` in config. Present only when non-empty — a part whose rubrics already
    *  match carries no plan and stays a `skip`. */
