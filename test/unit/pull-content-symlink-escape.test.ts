@@ -10,7 +10,7 @@ vi.mock('../../src/api/content', () => ({
   downloadContent: mockDownloadContent,
 }));
 
-import { detectContentDrift, applyPull } from '../../src/core/services/pull-service';
+import { detectContentDrift, applyPull, toRemoteKey, managedLinkCovering } from '../../src/core/services/pull-service';
 import type {
   PullResolver,
   PullInspection,
@@ -527,11 +527,23 @@ describe('content drift completes a directory an earlier pull left incomplete', 
       resolveOrphanAction: vi.fn(), resolveStaleAction: vi.fn(), resolveSettingsDriftAction: vi.fn(),
       resolveContentDriftAction: vi.fn().mockResolvedValue('pull'), resolveImportPath: vi.fn(),
     } as unknown as PullResolver;
-    await applyPull({ applyConfigUpdate } as LockedSession, ctx, { batch: true, verbose: false, skipContent: false },
+    const result = await applyPull({ applyConfigUpdate } as LockedSession, ctx, { batch: true, verbose: false, skipContent: false },
       { orphans: [], stale: [], settingsDrift: [], contentDrift: drift }, resolver);
     const entry = applyConfigUpdate.mock.calls[0]?.[0]?.publish_history?.[0];
     expect(entry.status).toBe('failed');
     expect(entry.content_state[path.join('asn1', 'data')]).toBe('incomplete-pull');
+    // Round 4: nothing was actually pulled, so it is not counted or announced as pulled.
+    expect(result.contentPulled).toBe(0);
+    const lines = (ctx.events as CollectingEventSink).events.map((e: ServiceEvent) => e.message ?? '');
+    expect(lines.some(l => l.includes('data/ (still incomplete'))).toBe(true);
+    expect(lines.some(l => l.startsWith('Pulled content changes'))).toBe(false);
+
+    // Skipping writes nothing (the help promises no changes); the exit-1 skip list still reports it.
+    const skipUpdate = vi.fn().mockResolvedValue(undefined);
+    const skipResolver = { ...resolver, resolveContentDriftAction: vi.fn().mockResolvedValue('skip') } as unknown as PullResolver;
+    await applyPull({ applyConfigUpdate: skipUpdate } as LockedSession, ctx, { batch: false, verbose: false, skipContent: false },
+      { orphans: [], stale: [], settingsDrift: [], contentDrift: drift }, skipResolver);
+    expect(skipUpdate).not.toHaveBeenCalled();
   });
 });
 
@@ -557,11 +569,12 @@ describe("detectContentDrift — Vocareum's lib/publicdata link (round-3 review)
       parts: [{ part_id: 'P1', name: 'Part 1', path: '.', directories: ['lib'] }],
     } as unknown as Assignment;
     const skipped: { assignmentName: string; reason: string }[] = [];
+    const warnings: string[] = [];
     const result = await detectContentDrift(
       { assignments: [assignment], vocareum: { course_id: 'C1', architecture: 'elite' } },
-      {} as never, new Set<string>(), workspaceRoot, () => undefined, undefined, skipped,
+      {} as never, new Set<string>(), workspaceRoot, (m) => warnings.push(m), undefined, skipped,
     );
-    return { result, skipped };
+    return { result, skipped, warnings };
   }
 
   it('local files under lib/publicdata are never planned as deletions; the check is reported incomplete', async () => {
@@ -570,6 +583,21 @@ describe("detectContentDrift — Vocareum's lib/publicdata link (round-3 review)
     expect(diffs.find(d => d.filePath.includes('publicdata'))).toBeUndefined();
     expect(skipped).toHaveLength(1);
     expect(skipped[0].reason).toContain('lib/publicdata/');
+  });
+
+  it('the user is told which path was not compared and what to do (round 4: the reason was never printed)', async () => {
+    const { warnings } = await drift({ 'lib/helper.py': 'h', 'lib/publicdata/notes.txt': 'mine' });
+    expect(warnings.join('\n')).toMatch(/lib\/publicdata\/.*Move them elsewhere/);
+  });
+
+  it('Windows paths are compared in the remote "/" form, so the guard and every lookup still match (round 4)', () => {
+    expect(toRemoteKey('lib\\publicdata\\notes.txt', '\\')).toBe('lib/publicdata/notes.txt');
+    expect(toRemoteKey('lib\\helper.py', '\\')).toBe('lib/helper.py');
+    expect(toRemoteKey('lib/helper.py', '/')).toBe('lib/helper.py');
+    const links = ['lib/publicdata'];
+    expect(managedLinkCovering(toRemoteKey('lib\\publicdata', '\\'), links)).toBe('lib/publicdata');
+    expect(managedLinkCovering(toRemoteKey('lib\\publicdata\\notes.txt', '\\'), links)).toBe('lib/publicdata');
+    expect(managedLinkCovering(toRemoteKey('lib\\publicdata2\\x', '\\'), links)).toBeUndefined();
   });
 
   it('with nothing local at that path, the skipped link costs nothing (clean, not incomplete)', async () => {

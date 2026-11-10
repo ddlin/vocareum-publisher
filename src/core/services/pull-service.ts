@@ -906,6 +906,28 @@ async function detectSettingsDrift(
   return driftList;
 }
 
+/**
+ * A local relative path in the '/'-separated form remote FileMap keys use on
+ * every platform. On Windows `path.join` yields backslashes, which matched no
+ * remote key, so every local file looked remotely deleted and batch apply
+ * unlinked it.
+ *
+ * @internal Exported for testing
+ */
+export function toRemoteKey(nativeRelativePath: string, sep: string = path.sep): string {
+  return sep === '/' ? nativeRelativePath : nativeRelativePath.split(sep).join('/');
+}
+
+/**
+ * The managed link (e.g. `lib/publicdata`) a remote key sits at or under, if
+ * any. `lib/publicdata2` is a sibling, not covered.
+ *
+ * @internal Exported for testing
+ */
+export function managedLinkCovering(key: string, links: readonly string[]): string | undefined {
+  return links.find(link => key === link || key.startsWith(`${link}/`));
+}
+
 export async function detectContentDrift(
   config: {
     assignments: Assignment[];
@@ -1048,7 +1070,10 @@ export async function detectContentDrift(
               const file = String(entry);
               if (file === '.gitkeep' || file.endsWith('/.gitkeep')) { continue; }
 
-              const relativePath = path.join(dir, file);
+              // Remote keys (and managed links) are '/'-separated on every
+              // platform; on Windows path.join gives '\\', which matched nothing
+              // and made every local file look remotely deleted.
+              const relativePath = toRemoteKey(path.join(dir, file));
               const fullPath = path.join(localDirPath, file);
               // Skip nested entries that resolve outside the part directory
               // (an escaping symlink below a confined dir) for the same reason.
@@ -1058,9 +1083,7 @@ export async function detectContentDrift(
                 // Under a Vocareum-managed link the remote content is unreadable,
                 // not deleted: never plan an unlink there. Report the check as
                 // incomplete instead (the pull exits 1, nothing is removed).
-                const underLink = managedLinks.find(
-                  link => relativePath === link || relativePath.startsWith(`${link}${path.sep}`) || relativePath.startsWith(`${link}/`)
-                );
+                const underLink = managedLinkCovering(relativePath, managedLinks);
                 if (underLink !== undefined) {
                   shadowedByLink.add(underLink);
                   continue;
@@ -1074,12 +1097,11 @@ export async function detectContentDrift(
         }
 
         if (shadowedByLink.size > 0) {
-          skipped?.push({
-            assignmentName: assignment.name,
-            reason: `local files under ${[...shadowedByLink].map(l => `${l}/`).join(', ')} were not compared: ` +
-              `on Vocareum that path is a link it manages, which cannot be read. Move them elsewhere; ` +
-              `they are not deleted.`,
-          });
+          const reason = `local files under ${[...shadowedByLink].map(l => `${l}/`).join(', ')} were not compared: ` +
+            `on Vocareum that path is a link it manages, which cannot be read. Move them elsewhere; ` +
+            `they are not deleted.`;
+          warnFn(`"${assignment.name}": ${reason}`);
+          skipped?.push({ assignmentName: assignment.name, reason });
         }
 
         const contentState = config.publish_history?.[0]?.content_state ?? {};
@@ -1238,6 +1260,7 @@ export async function applyPull(
   const importFailures: HistoryFailedEntity[] = [];
   /** Marked directories a content-drift pull could not complete (marker kept). */
   const driftStillIncomplete: HistoryFailedEntity[] = [];
+  const stillIncompleteSeen: HistoryFailedEntity[] = [];
 
   // ── Process orphaned assignments ──────────────────────────────────────────
   if (inspection.orphans.length > 0) {
@@ -1498,6 +1521,16 @@ export async function applyPull(
         for (const dir of partDrift.incompleteDirectories ?? []) {
           events.emit({ level: 'plain', message: `    ! ${dir}/ (an earlier pull was incomplete; pulling completes it and unblocks push)` });
         }
+        for (const dir of partDrift.stillIncompleteDirectories ?? []) {
+          events.emit({ level: 'plain', message: `    ! ${dir}/ (still incomplete: some remote files cannot be written locally, so pull cannot finish it and push still refuses it)` });
+          // Recorded whatever the user chooses below, so a history entry this
+          // run writes for other reasons never says success (round-4 review).
+          stillIncompleteSeen.push({
+            type: 'file',
+            id: path.join(drift.assignmentPath, partDrift.partPath === '.' ? '' : partDrift.partPath, dir),
+            error: 'still incomplete: some remote files could not be written locally; push still refuses it',
+          });
+        }
       }
 
       const action = await resolver.resolveContentDriftAction(issue);
@@ -1576,8 +1609,13 @@ export async function applyPull(
           }
         }
 
-        result.contentPulled++;
-        events.emit({ level: 'success', message: `Pulled content changes for "${drift.assignmentName}"` });
+        const pulledSomething = drift.partsDrift.some(
+          pd => pd.fileDiffs.length > 0 || (pd.incompleteDirectories?.length ?? 0) > 0
+        );
+        if (pulledSomething) {
+          result.contentPulled++;
+          events.emit({ level: 'success', message: `Pulled content changes for "${drift.assignmentName}"` });
+        }
       } else if (action === 'keep') {
         events.emit({ level: 'plain', message: '  Keeping local files (will push to Vocareum on next push)' });
       } else {
@@ -1596,7 +1634,14 @@ export async function applyPull(
     assignmentsToReset.length > 0 ||
     settingsUpdates.size > 0;
 
+  // Deduplicate: an accepted part is in both lists.
+  const stillIncompleteFailures = [...new Map(
+    [...driftStillIncomplete, ...stillIncompleteSeen].map(f => [f.id, f])
+  ).values()];
+
   let newPublishHistory: PublishHistory[] | undefined;
+  // A skipped or kept check writes nothing on its own (the help promises no
+  // changes then); only an entry written for other reasons reports it.
   if (Object.keys(importedContentState).length > 0 || importFailures.length > 0 || driftStillIncomplete.length > 0) {
     const commitSha = await getCommitSha(workspaceRoot).catch(() => 'unknown');
     const gitUserName = await getGitUserName(workspaceRoot).catch(() => null);
@@ -1615,10 +1660,10 @@ export async function applyPull(
       // An import that missed files is a failed run, recorded as one (AGENTS.md
       // #9). Its directories carry INCOMPLETE_PULL_MARKER, not a hash.
       // A run with any miss or failed import is failed, even if others succeeded.
-      status: importMisses.length > 0 || importFailures.length > 0 || driftStillIncomplete.length > 0 ? 'failed' : 'success',
+      status: importMisses.length > 0 || importFailures.length > 0 || stillIncompleteFailures.length > 0 ? 'failed' : 'success',
       content_state: mergedContentState,
-      ...(importMisses.length > 0 || importFailures.length > 0 || driftStillIncomplete.length > 0
-        ? { failed: [...importFailures, ...driftStillIncomplete, ...historyFailuresFor(importMisses)] }
+      ...(importMisses.length > 0 || importFailures.length > 0 || stillIncompleteFailures.length > 0
+        ? { failed: [...importFailures, ...stillIncompleteFailures, ...historyFailuresFor(importMisses)] }
         : {}),
     };
 
