@@ -377,3 +377,57 @@ describe('VOCAREUM_MAX_DOWNLOAD_FILES', () => {
   });
 });
 
+
+describe("Vocareum's course-wide publicdata link (seen 2026-11-10, test course 215500)", () => {
+  // lib/ (Elite) is the course-wide tree; Vocareum puts a root-owned link
+  // publicdata -> /mnt/.../course<id>/data at its top. The API lists it but can
+  // neither fetch nor list it, and an upload cannot remove it.
+  function libTree(): FakeTree {
+    return {
+      dirs: { '/resource/lib': ['public', 'publicdata', 'helper.py'], '/resource/lib/public': [] },
+      files: { 'lib/helper.py': 'h' },
+    };
+  }
+  async function pullLib(tree: FakeTree, strict = false) {
+    const { client, events } = fakeClient(tree);
+    const failures: DownloadFailure[] = [];
+    const files = await downloadContent(client, 'c', 'a', 'p', ['lib'], 'elite', { strict, failures });
+    return { files, failures, warnings: events.filter(e => e.level === 'warn').map(e => e.message) };
+  }
+
+  it('top-level lib/publicdata is skipped: no failure, no warning, so lib/ is not marked incomplete', async () => {
+    const { files, failures, warnings } = await pullLib(libTree());
+    expect(Object.keys(files)).toEqual(['lib/helper.py']);
+    expect(failures).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  it('strict mode (drift detection) skips it too instead of throwing', async () => {
+    const { files } = await pullLib(libTree(), true);
+    expect(Object.keys(files)).toEqual(['lib/helper.py']);
+  });
+
+  it('only that exact entry: a nested publicdata, or one in another directory, is still a failure', async () => {
+    const tree = libTree();
+    tree.dirs['/resource/lib/public'] = ['publicdata'];
+    const { failures } = await pullLib(tree);
+    expect(failures.map(f => f.path)).toEqual(['lib/public/publicdata']);
+
+    const data = nestedTree();
+    data.dirs['/voc/data'].push('publicdata');
+    const { failures: dataFailures } = await pull(data);
+    expect(dataFailures.map(f => f.path)).toEqual(['data/publicdata']);
+  });
+});
+
+describe('an upload target the course does not have (seen 2026-11-10)', () => {
+  it('turns Vocareum\'s "Invalid target (lib)" into a config fix', async () => {
+    const { invalidTargetMessage } = await import('../../src/api/content');
+    const raw = new APIError('Invalid target (lib) for content update. Valid targets: [course, data, docs, scripts, startercode, private]', 400);
+    const msg = invalidTargetMessage(raw, 'lib');
+    expect(msg).toContain('Vocareum does not accept "lib/"');
+    expect(msg).toContain('Valid targets: [course, data, docs, scripts, startercode, private]');
+    expect(msg).toContain('vocareum.architecture');
+    expect(invalidTargetMessage(new APIError('specified file does not exist x', 400), 'lib')).toBeUndefined();
+  });
+});

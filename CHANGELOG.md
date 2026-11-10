@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   downloaded. Before, the whole import was discarded. A single file over the
   per-file cap is skipped and reported, and the rest of the walk continues.
   Content drift (`--content`) still stops at any limit.
+- **Vocareum's `publicdata` link no longer makes a pull incomplete.** The
+  course-wide tree (`lib/` on Elite) holds a root-owned link, `publicdata`, to
+  the course data mount. The API lists it but cannot fetch it, and an upload
+  cannot remove it. Pull now skips that one entry instead of marking `lib/`
+  incomplete and blocking every push of it. Any other unreadable entry still
+  counts.
+- **An upload target the course does not have is explained.** Vocareum rejects
+  `lib` as a target in a Container course, which happens when a Vocareum
+  Standard part sits in one. Push now says to remove `lib` from that part's
+  directories or set `vocareum.architecture`, instead of passing the raw API
+  error through.
 
 ### Fixed
 - **`pull` now downloads subdirectories.** For a path that is a directory, the

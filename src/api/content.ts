@@ -722,6 +722,12 @@ export async function uploadContent(
         });
       }
     } catch (error) {
+      // Vocareum refuses the target before applying anything, so this is not
+      // a partial upload even mid-sequence (it can only happen on chunk 0).
+      const invalidTarget = invalidTargetMessage(error, directory);
+      if (invalidTarget !== undefined) {
+        throw new APIError(invalidTarget, 400, error);
+      }
       // Any failure in a multi-chunk sequence is indeterminate, chunk 0
       // included. A client-side abort does not tell us whether the server
       // applied the request -- that indeterminacy is the whole premise of this
@@ -989,6 +995,13 @@ async function downloadDirectoryTree(
           continue;
         }
         if (childListing.absent) {
+          if (isVocareumManagedLink(directory, relativePath, entry.path)) {
+            client.events.emit({
+              level: 'debug',
+              message: `Skipping ${filemapKey}: Vocareum's course-wide data link, not assignment content`,
+            });
+            continue;
+          }
           recordDownloadFailure(
             client, budget, strict, filemapKey,
             'not downloadable as a file and not listable as a directory'
@@ -1006,6 +1019,42 @@ async function downloadDirectoryTree(
       );
     }
   }
+}
+
+/**
+ * Vocareum rejects an upload target the course's workspace does not have, e.g.
+ * `lib` in a Container course ("Invalid target (lib) for content update.
+ * Valid targets: [course, data, docs, ...]", seen 2026-11-10 on a Vocareum
+ * Standard part inside Container course 215500). vocgit picks the directory set
+ * from the part's labtype, which can disagree with the course; say how to fix
+ * the config instead of passing the raw API text through.
+ *
+ * @internal Exported for testing
+ */
+export function invalidTargetMessage(error: unknown, directory: DirectoryType): string | undefined {
+  const message = error instanceof Error ? error.message : '';
+  const m = /Invalid target \(([^)]+)\) for content update\.?\s*(Valid targets: \[[^\]]*\])?/i.exec(message);
+  if (!m) { return undefined; }
+  return (
+    `Vocareum does not accept "${directory}/" as an upload target for this part` +
+    `${m[2] !== undefined ? ` (${m[2]})` : ''}. The course's workspace layout differs ` +
+    `from the one vocgit inferred from the part's labtype. Remove "${directory}" from this ` +
+    `part's directories in vocareum.yaml, or set vocareum.architecture to match the course ` +
+    `(Container courses have no lib/ or asnlib/ upload target).`
+  );
+}
+
+/**
+ * `publicdata` at the top of the course-wide tree (`lib/` on Elite, `course/`
+ * on Container) is a root-owned link Vocareum creates to the course data mount
+ * (`/voc/course/publicdata -> /mnt/.../course<id>/data`, seen 2026-11-10). The
+ * API lists it but can neither fetch nor list it, and an upload cannot remove
+ * it (a reset upload of `course` on test course 215500 left it in place). It is
+ * not assignment content, so it is skipped rather than marking the pull
+ * incomplete and blocking every push of `lib/`.
+ */
+function isVocareumManagedLink(directory: DirectoryType, relativePath: string, name: string): boolean {
+  return relativePath === '' && (directory === 'lib' || directory === 'course') && name === 'publicdata';
 }
 
 /**
