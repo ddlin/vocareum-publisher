@@ -342,6 +342,14 @@ limits: 5,000 files, 100 MiB for any single file, or 500 MiB total for one
 `downloadContent` pass. These limits protect local machines and CI runners from
 unexpectedly large or malformed remote file listings.
 
+**An incomplete pull exits 1.** If an import cannot download some remote files,
+vocgit still writes the files that did arrive and saves the assignment to
+`vocareum.yaml`, but it marks the import `INCOMPLETE`, adds a `Not downloaded`
+count to the summary, and exits 1. Likewise, if `--content` cannot finish the
+drift check for an assignment, vocgit names it and exits 1; it never reports
+"No sync issues found" for a check it skipped. Re-run the pull once the cause is
+fixed: the warnings above the summary name each file and the reason.
+
 **For orphaned assignments** (in Vocareum, not in config):
 - **Import**: Download content and add to your local repository
 - **Exclude**: Hide from future scans (add to `excluded_assignments`)

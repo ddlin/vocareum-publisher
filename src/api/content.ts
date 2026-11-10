@@ -97,6 +97,8 @@ export class DownloadLimitError extends APIError {
 }
 
 interface DownloadBudget {
+  /** Per-walk collector for entries a non-strict walk skipped. */
+  failures?: DownloadFailure[];
   limits: DownloadContentLimits;
   files: number;
   bytes: number;
@@ -215,6 +217,29 @@ export class NotAFileError extends Error {
   }
 }
 
+/** A remote entry a non-strict download could not retrieve. Path is the
+ *  FileMap key (`<directory>/<relative path>`), never an API-internal path. */
+export interface DownloadFailure {
+  path: string;
+  reason: string;
+}
+
+/**
+ * The v2 files API answers `?filename=<a directory>` with HTTP 400 and
+ * `{"error":{"message":"specified file does not exist <path>"}}` — observed on
+ * NA course 196169, 2026-11-09 — not the `status:"error"` body handled below.
+ * `lib/` entries say "specified source does not exist" for the same case.
+ * Treating it as an ordinary API error dropped every subdirectory of a pull
+ * (1,386 of 1,393 files) while the pull still reported success.
+ */
+function isNotAFileHttp400(error: unknown): boolean {
+  if (!isHttp400(error)) {
+    return false;
+  }
+  const message = error instanceof Error ? error.message : '';
+  return /specified (?:file|source) does not exist/i.test(message);
+}
+
 function isAxios404(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) {
     return false;
@@ -246,11 +271,19 @@ async function fetchFileContent(
   const fullPath = `${directory}/${filePath}`;
 
   // Request download URL from API
-  const response = await client.request<FileDownloadResponse>({
-    method: 'GET',
-    url,
-    params: { filename: fullPath },
-  });
+  let response: FileDownloadResponse;
+  try {
+    response = await client.request<FileDownloadResponse>({
+      method: 'GET',
+      url,
+      params: { filename: fullPath },
+    });
+  } catch (error) {
+    if (isNotAFileHttp400(error)) {
+      throw new NotAFileError(fullPath);
+    }
+    throw error;
+  }
 
   // Vocareum returns status:"error" with a literal "specified file does not exist"
   // in the download_url field when the path isn't a real file (usually a directory).
@@ -748,6 +781,9 @@ export function downloadContent(
     strict?: boolean;
     /** Defensive resource limits for remote content downloads. */
     limits?: Partial<DownloadContentLimits>;
+    /** Non-strict only: receives every entry that was skipped, so the caller
+     *  can report the pull as incomplete instead of successful. */
+    failures?: DownloadFailure[];
   }
 ): Promise<FileMap> {
   return (async (): Promise<FileMap> => {
@@ -759,6 +795,7 @@ export function downloadContent(
       limits: resolveDownloadLimits(options?.limits),
       files: 0,
       bytes: 0,
+      failures: options?.failures,
     };
 
     for (const directory of dirs) {
@@ -801,12 +838,14 @@ async function downloadDirectoryTree(
   depth: number,
   downloaded: FileMap,
   strict: boolean,
-  budget: DownloadBudget
+  budget: DownloadBudget,
+  /** Entries the caller already listed for this directory (saves a request). */
+  preListed?: FileInfo[]
 ): Promise<void> {
   const apiDirPath = relativePath ? `${baseApiPath}/${relativePath}` : baseApiPath;
   // Only the part's own declared directory is worth warning about; deeper
   // levels are paths we discovered, so their absence is not a config problem.
-  const entries = await listFilesByApiPath(
+  const entries = preListed ?? await listFilesByApiPath(
     client, courseId, assignmentId, partId, apiDirPath, relativePath === ''
   );
 
@@ -855,34 +894,75 @@ async function downloadDirectoryTree(
           });
           continue;
         }
-        if (depth < MAX_DOWNLOAD_DEPTH) {
-          await downloadDirectoryTree(
-            client, courseId, assignmentId, partId,
-            directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict, budget
+        if (depth >= MAX_DOWNLOAD_DEPTH) {
+          // Truncating the walk drops files — the caller must not see a clean
+          // pull. Warn without --verbose (a debug line here once hid an entire
+          // course's nested assets) and record it as a failure.
+          recordDownloadFailure(
+            client, budget, strict, filemapKey,
+            `directory nesting exceeds the ${MAX_DOWNLOAD_DEPTH}-level download limit; ` +
+            `it and anything below it were NOT downloaded`
           );
-        } else {
-          // Truncating the walk drops files silently — the caller still sees a
-          // successful pull. Warn so it is visible without --verbose; a debug
-          // line here hid an entire course's nested assets until someone
-          // compared the workspace against the Vocareum UI by eye.
-          client.events.emit({
-            level: 'warn',
-            message:
-              `Directory nesting exceeds the ${MAX_DOWNLOAD_DEPTH}-level download limit, ` +
-              `skipping ${filemapKey} and anything below it — these files were NOT downloaded`,
-          });
+          continue;
         }
+        // Not a file: list it as a directory. "Absent" here means the entry is
+        // neither — e.g. a dangling link, or a file deleted mid-walk. That must
+        // be reported, not silently treated as an empty directory.
+        let childListing: { entries: FileInfo[]; absent: boolean };
+        try {
+          childListing = await listDirectory(
+            client, courseId, assignmentId, partId, `${baseApiPath}/${entryRelPath}`, false
+          );
+        } catch (listError) {
+          // One unlistable subdirectory must not abort the rest of the part.
+          recordDownloadFailure(
+            client, budget, strict, filemapKey,
+            `could not be listed as a directory: ${listError instanceof Error ? listError.message : 'Unknown'}`
+          );
+          continue;
+        }
+        if (childListing.absent) {
+          recordDownloadFailure(
+            client, budget, strict, filemapKey,
+            'not downloadable as a file and not listable as a directory'
+          );
+          continue;
+        }
+        await downloadDirectoryTree(
+          client, courseId, assignmentId, partId,
+          directory, baseApiPath, entryRelPath, depth + 1, downloaded, strict, budget,
+          childListing.entries
+        );
         continue;
       }
       if (strict) {
         throw error;
       }
-      client.events.emit({
-        level: 'warn',
-        message: `Failed to download ${filemapKey}: ${error instanceof Error ? error.message : 'Unknown'}`,
-      });
+      recordDownloadFailure(
+        client, budget, strict, filemapKey, error instanceof Error ? error.message : 'Unknown'
+      );
     }
   }
+}
+
+/**
+ * A non-strict walk records the miss and carries on, so one bad entry does not
+ * cost the rest of the tree; callers read `failures` to report the pull as
+ * incomplete. A strict walk (drift detection) throws instead: a silently
+ * incomplete remote map would make the missing files look deleted remotely.
+ */
+function recordDownloadFailure(
+  client: VocareumClient,
+  budget: DownloadBudget,
+  strict: boolean,
+  filemapKey: string,
+  reason: string
+): void {
+  if (strict) {
+    throw new APIError(`Could not download ${filemapKey}: ${reason}`);
+  }
+  client.events.emit({ level: 'warn', message: `Failed to download ${filemapKey}: ${reason}` });
+  budget.failures?.push({ path: filemapKey, reason });
 }
 
 function assertListedFileWithinBudget(
@@ -996,14 +1076,30 @@ async function listFilesByApiPath(
   assignmentId: string,
   partId: string,
   apiDirPath: string,
+  warnIfAbsent = false,
+): Promise<FileInfo[]> {
+  return (await listDirectory(client, courseId, assignmentId, partId, apiDirPath, warnIfAbsent)).entries;
+}
+
+/**
+ * List a directory, distinguishing "absent" from "empty" — the walk needs the
+ * difference to tell a real (empty) subdirectory from an entry that is not
+ * there at all.
+ */
+async function listDirectory(
+  client: VocareumClient,
+  courseId: string,
+  assignmentId: string,
+  partId: string,
+  apiDirPath: string,
   /**
    * Warn when the API reports this path absent. Only true for a directory the
    * part actually DECLARES. The walk also calls this speculatively — to decide
    * whether a zero-byte entry is really a directory — and those probes are
    * expected to miss constantly. Warning on them would bury the real signal.
    */
-  warnIfAbsent = false,
-): Promise<FileInfo[]> {
+  warnIfAbsent: boolean,
+): Promise<{ entries: FileInfo[]; absent: boolean }> {
   const url = `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
 
   try {
@@ -1012,11 +1108,12 @@ async function listFilesByApiPath(
       url,
       params: { dir: apiDirPath, list: true },
     });
-    return parseFileListResponse(response).map((entry) => ({
+    const entries = parseFileListResponse(response).map((entry) => ({
       path: entry.path,
       size: entry.size,
       modifiedAt: entry.modifiedAt,
     }));
+    return { entries, absent: false };
   } catch (error) {
     // Missing optional directories are normal, but only mask the error when it
     // names the requested directory. Other 400s likely indicate bad IDs/params.
@@ -1039,7 +1136,7 @@ async function listFilesByApiPath(
             `workspaces keep scripts, startercode, docs, data and private under /voc).`,
           });
         }
-        return [];
+        return { entries: [], absent: true };
       }
     }
     // Transient/non-400 errors must propagate: returning [] here would make an

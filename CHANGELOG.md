@@ -5,6 +5,29 @@ All notable changes to `vocareum-publisher` (the `vocgit` CLI) are documented he
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`pull` now downloads subdirectories.** For a path that is a directory, the
+  v2 files API returns HTTP 400 `specified file does not exist <path>`, not the
+  `status:"error"` body vocgit checked for. Each subdirectory was therefore
+  logged as "Failed to download" and skipped, so its files were never fetched.
+  On one course a pull lost 1,386 of 1,393 files and still printed
+  `✓ Imported`. That 400 (and the `specified source does not exist` form) now
+  means "not a file", so vocgit lists the path as a directory and walks into it.
+- **A pull that loses files says so, and exits 1.** An import that cannot
+  download some files still writes what arrived and saves the assignment, but
+  is reported `INCOMPLETE` instead of imported. The summary gains a
+  `Not downloaded` count. An entry that is neither a downloadable file nor a
+  listable directory (for example a dangling link), a subdirectory that cannot
+  be listed, and anything past the 10-level nesting limit are each recorded as
+  a failure. Before, they were dropped silently or ended the download early.
+- **`pull --content` no longer reports a skipped drift check as clean.** The
+  first subdirectory used to abort the drift check for the whole assignment,
+  and the run still printed `✓ No sync issues found.` Subdirectories are now
+  walked. Any assignment whose check still cannot finish is named, and the pull
+  exits 1.
+
 ## [1.5.0] — 2026-11-09
 
 ### Added

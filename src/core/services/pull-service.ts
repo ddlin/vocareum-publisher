@@ -12,7 +12,7 @@ import { assertConfinedToWorkspace } from '../local-scan';
 import { reconcile } from '../reconciler';
 import { getAssignment } from '../../api/assignments';
 import { listParts, getPart } from '../../api/parts';
-import { downloadContent } from '../../api/content';
+import { downloadContent, type DownloadFailure } from '../../api/content';
 import { pathExists, ensureDirectory, writeFile, writeFileUnderBase, calculateDirectoryHash, validatePath, readDirectory } from '../../utils/files';
 import { isPathConfinedToBase } from '../../utils/path-security';
 import { getCommitSha, getGitUserName } from '../../utils/git';
@@ -216,6 +216,15 @@ export function scopeAssignmentsForContent(
 export interface ImportResult {
   assignment: Assignment;
   contentState: Record<string, string>;
+  /** Remote entries that could not be downloaded. Non-empty means the import
+   *  is INCOMPLETE and must not be reported as a success. */
+  missingFiles: DownloadFailure[];
+}
+
+/** An assignment whose content drift check could not finish. */
+export interface ContentDriftSkip {
+  assignmentName: string;
+  reason: string;
 }
 
 /** Represents a single setting that differs between local and remote */
@@ -333,6 +342,9 @@ export interface PullInspection {
   stale: StaleAssignment[];
   settingsDrift: AssignmentSettingsDrift[];
   contentDrift: AssignmentContentDrift[];
+  /** Assignments whose content drift check was skipped. When non-empty the
+   *  drift result is incomplete — never report it as "no sync issues". */
+  contentDriftIncomplete?: ContentDriftSkip[];
 }
 
 export interface PullResult {
@@ -343,6 +355,8 @@ export interface PullResult {
   reset: number;
   settingsPulled: number;
   contentPulled: number;
+  /** Files that imports could not download (see ImportResult.missingFiles). */
+  filesNotDownloaded: number;
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
@@ -581,6 +595,7 @@ async function importAssignment(
 
   const configParts: Part[] = [];
   const takenPartPaths = new Set<string>();
+  const missingFiles: DownloadFailure[] = [];
 
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
@@ -597,6 +612,7 @@ async function importAssignment(
 
     let files: FileMap = {};
     let usedExistingContent = false;
+    const partFailures: DownloadFailure[] = [];
     if (skipContent) {
       const existing = await readDirectory(partDir, ['.gitkeep', '**/.gitkeep']);
       if (Object.keys(existing).length > 0) {
@@ -612,8 +628,10 @@ async function importAssignment(
         assignmentId,
         part.id,
         downloadPlan.directories,
-        downloadPlan.architecture
+        downloadPlan.architecture,
+        { failures: partFailures }
       );
+      missingFiles.push(...partFailures);
     }
     const fileCount = Object.keys(files).length;
 
@@ -648,6 +666,12 @@ async function importAssignment(
 
     if (usedExistingContent) {
       events.emit({ level: 'plain', message: `  Part ${i + 1}/${parts.length}: reused ${fileCount} existing file${fileCount === 1 ? '' : 's'} (--skip-content)` });
+    } else if (partFailures.length > 0) {
+      events.emit({
+        level: 'warn',
+        message: `  Part ${i + 1}/${parts.length}: downloaded ${fileCount} file${fileCount === 1 ? '' : 's'}, ` +
+          `${partFailures.length} could NOT be downloaded (listed above)`,
+      });
     } else if (fileCount > 0) {
       events.emit({ level: 'plain', message: `  Part ${i + 1}/${parts.length}: downloaded ${fileCount} file${fileCount === 1 ? '' : 's'}` });
     } else {
@@ -692,7 +716,7 @@ async function importAssignment(
     }
   }
 
-  return { assignment, contentState };
+  return { assignment, contentState, missingFiles };
 }
 
 async function detectSettingsDrift(
@@ -847,6 +871,9 @@ export async function detectContentDrift(
   workspaceRoot: string,
   warnFn: (msg: string) => void,
   partIds?: Set<string>,
+  /** Receives each assignment whose check was skipped, so the caller can
+   *  report the drift result as incomplete rather than clean. */
+  skipped?: ContentDriftSkip[],
 ): Promise<AssignmentContentDrift[]> {
   const driftList: AssignmentContentDrift[] = [];
   const excludedIds = new Set(config.vocareum.excluded_assignments ?? []);
@@ -1005,6 +1032,7 @@ export async function detectContentDrift(
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       warnFn(`Skipping content drift check for "${assignment.name}": ${message}`);
+      skipped?.push({ assignmentName: assignment.name, reason: message });
     }
   }
 
@@ -1039,6 +1067,7 @@ export async function inspectPull(
   const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds, warnFn, reporter, rubricFetcher);
 
   let contentDrift: AssignmentContentDrift[] = [];
+  const contentDriftIncomplete: ContentDriftSkip[] = [];
   if (req.content) {
     const scoped = scopeAssignmentsForContent(
       config.assignments,
@@ -1052,6 +1081,7 @@ export async function inspectPull(
       workspaceRoot,
       warnFn,
       scoped.partIds,
+      contentDriftIncomplete,
     );
   }
 
@@ -1060,6 +1090,7 @@ export async function inspectPull(
     stale: plan.staleInConfig,
     settingsDrift,
     contentDrift,
+    contentDriftIncomplete,
   };
 }
 
@@ -1093,6 +1124,7 @@ export async function applyPull(
     reset: 0,
     settingsPulled: 0,
     contentPulled: 0,
+    filesNotDownloaded: 0,
   };
 
   const newAssignments: Partial<Assignment>[] = [];
@@ -1132,7 +1164,7 @@ export async function applyPull(
           : await resolver.resolveImportPath(issue, suggestedName);
 
         try {
-          const { assignment, contentState } = await importAssignment(
+          const { assignment, contentState, missingFiles } = await importAssignment(
             client,
             config.vocareum.course_id,
             orphan,
@@ -1149,7 +1181,18 @@ export async function applyPull(
           newAssignments.push(assignment);
           Object.assign(importedContentState, contentState);
           result.imported++;
-          events.emit({ level: 'success', message: `Imported "${orphan.name}" to ${finalDirName}/` });
+          if (missingFiles.length > 0) {
+            // Saved so the user keeps what did arrive, but never shown as a
+            // clean success: this is the line a 1,386-file loss hid behind.
+            result.filesNotDownloaded += missingFiles.length;
+            events.emit({
+              level: 'warn',
+              message: `Imported "${orphan.name}" to ${finalDirName}/ INCOMPLETE: ` +
+                `${missingFiles.length} file${missingFiles.length === 1 ? '' : 's'} could not be downloaded`,
+            });
+          } else {
+            events.emit({ level: 'success', message: `Imported "${orphan.name}" to ${finalDirName}/` });
+          }
         } catch (error) {
           events.emit({ level: 'error', message: `Failed to import: ${error instanceof Error ? error.message : 'Unknown'}` });
           result.skipped++;

@@ -253,6 +253,11 @@ Description:
     Override per run with --api-base-url or VOCAREUM_API_BASE_URL
     (precedence: flag > env > vocareum.yaml > NA default).
 
+  Exit status:
+    1 when the pull is incomplete: an import could not download some files
+    (it is still saved, marked INCOMPLETE, and counted under "Not downloaded"),
+    or --content could not finish the drift check for an assignment.
+
   This is useful when:
     - Onboarding an existing course to Git-based management
     - Assignments were created/modified directly in Vocareum UI

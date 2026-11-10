@@ -16,6 +16,7 @@ import { loadDotEnvIfPresent, isCI } from '../utils/env';
 import { prompt, promptChoice } from '../utils/prompts';
 import { UnknownFieldReporter } from '../utils/unknown-field-reporter';
 import { withSession } from '../core/session';
+import { CommandFailureError } from '../utils/command-failure';
 import { LoggerEventSink } from '../utils/logger-event-sink';
 import { InteractivePrompter, NonInteractivePrompter } from '../core/services/context';
 import type { PullContext } from '../core/services/context';
@@ -97,6 +98,10 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
   const events = new LoggerEventSink();
   const reporter = new UnknownFieldReporter(events);
 
+  // Set inside the session; acted on after it closes so imports already
+  // written are kept and the lock is released before we fail the command.
+  const incomplete: string[] = [];
+
   try {
     loadDotEnvIfPresent(path.join(workspaceRoot, '.env'));
     const config = await loadConfig(configPath);
@@ -144,9 +149,20 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
       const hasStale = inspection.stale.length > 0;
       const hasSettingsDrift = inspection.settingsDrift.length > 0;
       const hasContentDrift = inspection.contentDrift.length > 0;
+      const driftSkipped = inspection.contentDriftIncomplete ?? [];
+      if (driftSkipped.length > 0) {
+        incomplete.push(
+          `content drift check skipped for ${driftSkipped.length} assignment(s): ` +
+          driftSkipped.map(d => `"${d.assignmentName}"`).join(', ')
+        );
+      }
 
       if (!hasOrphans && !hasStale && !hasSettingsDrift && !hasContentDrift) {
-        logger.success('No sync issues found.');
+        // A skipped drift check is "unknown", not "clean": this line once
+        // reported a workspace missing 1,374 files as in sync.
+        if (driftSkipped.length === 0) {
+          logger.success('No sync issues found.');
+        }
         return;
       }
 
@@ -246,8 +262,18 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
       logger.plain(`  Removed:         ${pullResult.removed}`);
       logger.plain(`  Reset:           ${pullResult.reset}`);
       logger.plain(`  Skipped:         ${pullResult.skipped}`);
+      if (pullResult.filesNotDownloaded > 0) {
+        logger.plain(`  Not downloaded:  ${pullResult.filesNotDownloaded}`);
+        incomplete.push(`${pullResult.filesNotDownloaded} file(s) could not be downloaded`);
+      }
     });
   } finally {
     reporter.printSummary();
+  }
+
+  if (incomplete.length > 0) {
+    const msg = `Pull incomplete: ${incomplete.join('; ')}. See the warnings above.`;
+    logger.error(msg);
+    throw new CommandFailureError(msg);
   }
 }

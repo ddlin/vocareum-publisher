@@ -576,3 +576,104 @@ describe('pullCommand content-drift gating', () => {
     }
   });
 });
+
+// Field report (1.3.7): `pull --non-interactive --content` printed "Skipping
+// content drift check …" and then "✓ No sync issues found." while 1,374 files
+// were missing locally. A skipped check is unknown, not clean, and must fail.
+describe('pullCommand — incomplete content drift check', () => {
+  const config: Config = {
+    version: '1.0',
+    vocareum: { org_id: '1', course_id: 'c1', api_base_url: 'https://api.vocareum.com', excluded_assignments: [] },
+    assignments: [
+      { assignment_id: 'a-lab1', name: 'lab1', path: 'lab1', create_from_template: false, settings: {},
+        parts: [{ part_id: 'p1', path: 'part1', settings: {} }] },
+    ],
+    publish_options: { on_missing_id: 'skip', auto_commit: false, abort_on_error: false, sync_deletes: false, exclude_patterns: [] },
+    publish_history: [],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VOCAREUM_API_KEY = 'token';
+    isCIMock.mockReturnValue(false);
+    loadConfigMock.mockResolvedValue(config);
+    getAssignmentMock.mockResolvedValue({ assignments: [{ id: 'a-lab1', name: 'lab1' }] });
+    mapAssignmentSettingsMock.mockReturnValue({});
+    mapPartSettingsMock.mockReturnValue({});
+    listPartsMock.mockResolvedValue([]);
+    reconcileMock.mockResolvedValue({
+      config, course: { type: 'skip' }, assignments: [],
+      summary: { coursesToUpdate: 0, assignmentsToCreate: 0, assignmentsToUpdate: 0, assignmentsWithDiscoveredIds: 0, assignmentsToSkip: 0, partsToCreate: 0, partsToUpdate: 0, estimatedApiCalls: 0 },
+      orphanedInVocareum: [], staleInConfig: [],
+    });
+  });
+
+  it('a skipped check exits 1 and never prints "No sync issues found"', async () => {
+    vi.mocked(downloadContent).mockRejectedValue(new Error('specified file does not exist startercode.0/py3.10-exercises'));
+    const { logger } = await import('../../src/utils/logger');
+
+    const run = pullCommand({ nonInteractive: true, content: true });
+    await expect(run).rejects.toMatchObject({
+      name: 'CommandFailureError',
+      exitCode: 1,
+      message: expect.stringMatching(/Pull incomplete: content drift check skipped for 1 assignment\(s\): "lab1"/),
+    });
+    expect(loggerSuccessMock).not.toHaveBeenCalledWith('No sync issues found.');
+    // Logged once by the command (AGENTS.md #14); the entrypoint does not re-log.
+    expect(vi.mocked(logger.error)).toHaveBeenCalledTimes(1);
+  });
+
+  it('a check that completes with no drift is still clean and exits 0', async () => {
+    vi.mocked(downloadContent).mockResolvedValue({});
+    await expect(pullCommand({ nonInteractive: true, content: true })).resolves.toBeUndefined();
+    expect(loggerSuccessMock).toHaveBeenCalledWith('No sync issues found.');
+  });
+});
+
+describe('pullCommand --batch — import that could not download every file', () => {
+  it('keeps the import, prints "Not downloaded", and exits 1', async () => {
+    vi.clearAllMocks();
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-pull-incomplete-'));
+    try {
+      const config: Config = {
+        version: '1.0',
+        vocareum: { org_id: '1', course_id: 'c1', api_base_url: 'https://api.vocareum.com', excluded_assignments: [] },
+        assignments: [],
+        publish_options: { on_missing_id: 'skip', auto_commit: false, abort_on_error: false, sync_deletes: false, exclude_patterns: [] },
+        publish_history: [],
+      };
+      process.env.VOCAREUM_API_KEY = 'token';
+      isCIMock.mockReturnValue(false);
+      loadConfigMock.mockResolvedValue(config);
+      updateConfigMock.mockResolvedValue(undefined);
+      reconcileMock.mockResolvedValue({
+        config, course: { type: 'skip' }, assignments: [],
+        summary: { coursesToUpdate: 0, assignmentsToCreate: 0, assignmentsToUpdate: 0, assignmentsWithDiscoveredIds: 0, assignmentsToSkip: 0, partsToCreate: 0, partsToUpdate: 0, estimatedApiCalls: 0 },
+        orphanedInVocareum: [{ type: 'assignment', id: 'a-1', name: 'CD15315 v2', message: 'orphan' }],
+        staleInConfig: [],
+      });
+      getAssignmentMock.mockResolvedValue({ assignments: [{ id: 'a-1', name: 'CD15315 v2' }] });
+      mapAssignmentSettingsMock.mockReturnValue({});
+      mapPartSettingsMock.mockReturnValue({});
+      listPartsMock.mockResolvedValue([{ id: 'p-1', name: 'Part 1', seqnum: '0', deleted: '0' }]);
+      getPartMock.mockResolvedValue({ parts: [{ id: 'p-1', name: 'Part 1' }] });
+      vi.mocked(downloadContent).mockImplementation(async (...args: unknown[]) => {
+        const opts = args[6] as { failures?: Array<{ path: string; reason: string }> } | undefined;
+        opts?.failures?.push({ path: 'startercode/py3.10-exercises', reason: 'r' });
+        return { 'startercode/README.md': Buffer.from('readme') };
+      });
+      const { logger } = await import('../../src/utils/logger');
+
+      await expect(pullCommand({ batch: true, root: workspace, config: path.join(workspace, 'vocareum.yaml') }))
+        .rejects.toMatchObject({ exitCode: 1, message: expect.stringMatching(/1 file\(s\) could not be downloaded/) });
+
+      expect(vi.mocked(logger.plain)).toHaveBeenCalledWith('  Not downloaded:  1');
+      // What did arrive is written and the assignment is saved to config.
+      expect(await fs.readFile(path.join(workspace, 'cd15315-v2', 'startercode', 'README.md'), 'utf8')).toBe('readme');
+      expect(updateConfigMock).toHaveBeenCalled();
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+

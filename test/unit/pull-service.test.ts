@@ -1120,3 +1120,62 @@ describe('derived point fields — round-trip matrix', () => {
     expect(inspection.settingsDrift[0]?.partsDrift[0]?.remoteSettings._observed_settings).toBeUndefined();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Field report (1.3.7, NA course 196169): a pull that dropped 1,386 files still
+// printed "✓ Imported". A lossy import must keep what arrived but say INCOMPLETE.
+describe('applyPull — import that could not download every file', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function importWithFailures(failures: Array<{ path: string; reason: string }>) {
+    const { ctx, events } = makeCtx();
+    const { session, applyConfigUpdate } = makeSession();
+    mockGetAssignment.mockResolvedValueOnce({
+      assignments: [{ id: ORPHAN_1.id, name: ORPHAN_1.name, nosubmit: false }],
+    });
+    mockListParts.mockResolvedValueOnce([{ id: 'part-alpha-1', name: 'Part 1', seqnum: '1', deleted: '0' }]);
+    mockGetPart.mockResolvedValueOnce({
+      parts: [{ id: 'part-alpha-1', name: 'Part 1', seqnum: '1', deleted: '0', submission_filters: {} }],
+    });
+    mockDownloadContent.mockImplementationOnce(
+      async (...args: unknown[]) => {
+        const opts = args[6] as { failures?: Array<{ path: string; reason: string }> } | undefined;
+        opts?.failures?.push(...failures);
+        return {};
+      }
+    );
+    mockListRubrics.mockResolvedValueOnce([]);
+    const resolver = makeStubResolver({
+      resolveOrphanAction: vi.fn<[PullIssueOrphan], Promise<OrphanAction>>().mockResolvedValue('import'),
+    });
+    const inspection: PullInspection = { orphans: [ORPHAN_1], stale: [], settingsDrift: [], contentDrift: [] };
+    const result = await applyPull(session, ctx, { batch: true, verbose: false, skipContent: false }, inspection, resolver);
+    const emitted: Array<{ level: string; message: string }> = [];
+    events.flushTo({ emit: (e) => { emitted.push({ level: e.level, message: e.message ?? '' }); } });
+    return { result, emitted, applyConfigUpdate };
+  }
+
+  it('counts the missing files, warns INCOMPLETE instead of success, and still saves the import', async () => {
+    const { result, emitted, applyConfigUpdate } = await importWithFailures([
+      { path: 'startercode/py3.10-exercises', reason: 'x' },
+      { path: 'data/ec2-setup', reason: 'y' },
+    ]);
+    expect(result.imported).toBe(1);
+    expect(result.filesNotDownloaded).toBe(2);
+    const imported = emitted.filter(e => e.message.includes(`Imported "${ORPHAN_1.name}"`));
+    expect(imported).toHaveLength(1);
+    expect(imported[0].level).toBe('warn');
+    expect(imported[0].message).toMatch(/INCOMPLETE: 2 files could not be downloaded/);
+    expect(emitted.some(e => e.level === 'warn' && /Part 1\/1: downloaded 0 files, 2 could NOT be downloaded/.test(e.message))).toBe(true);
+    expect((applyConfigUpdate.mock.calls[0][0] as ConfigUpdates).assignments).toHaveLength(1);
+  });
+
+  it('a complete import is still a plain success with nothing counted', async () => {
+    const { result, emitted } = await importWithFailures([]);
+    expect(result.filesNotDownloaded).toBe(0);
+    const imported = emitted.filter(e => e.message.includes(`Imported "${ORPHAN_1.name}"`));
+    expect(imported[0].level).toBe('success');
+  });
+});
