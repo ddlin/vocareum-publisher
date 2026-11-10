@@ -12,7 +12,10 @@ import { LoggerEventSink } from '../utils/logger-event-sink';
 import type { AuthProvider } from './auth/auth-provider';
 import { RequestScheduler } from './scheduler';
 import { DEFAULT_THROTTLE, type ResolvedThrottle } from './throttle';
-import { REGION_HOSTS, VOCAREUM_REGIONS, canonicalBaseUrl, normalizeApiBaseUrl } from './regions';
+import {
+  REGION_HOSTS, VOCAREUM_REGIONS, canonicalBaseUrl, hasUnsafeBaseUrlChars, normalizeApiBaseUrl,
+  redactUrlForDisplay,
+} from './regions';
 
 /**
  * Base error class for Vocareum API errors
@@ -97,16 +100,36 @@ export class ForbiddenError extends VocareumError {
  * Error for insecure API base URL configuration
  */
 export class InsecureBaseUrlError extends VocareumError {
-  constructor(url: string) {
+  /**
+   * @param url - the offending URL. Echoed only in redacted form
+   *   (scheme://host/path): a token pasted into userinfo or a query must not
+   *   reach the terminal or CI logs.
+   * @param malformed - true when the URL carries a query, fragment, userinfo,
+   *   backslash or whitespace. The override flag does not help there, so the
+   *   message says what to remove instead of suggesting it.
+   */
+  constructor(url: string, malformed = false) {
     super(
-      `Insecure API base URL: "${url}". ` +
-      `Only the Vocareum API hosts are allowed by default: ` +
-      `https://api.vocareum.com and https://labs.vocareum.com (NA), ` +
-      `https://api.eu.vocareum.com (EU). ` +
-      `Set VOCAREUM_ALLOW_CUSTOM_BASE_URL=1 to override (use with caution).`,
+      `Insecure API base URL: "${redactUrlForDisplay(url)}". ` +
+      (malformed
+        ? `API base URLs must be a plain https://host[/api/vN] with no query (?), ` +
+          `fragment (#), credentials (user@), backslash or whitespace.`
+        : `Only the Vocareum API hosts are allowed by default: ` +
+          `https://api.vocareum.com and https://labs.vocareum.com (NA), ` +
+          `https://api.eu.vocareum.com (EU). ` +
+          `Set VOCAREUM_ALLOW_CUSTOM_BASE_URL=1 to override (use with caution).`),
       'INSECURE_BASE_URL'
     );
     this.name = 'InsecureBaseUrlError';
+  }
+}
+
+/** Reject a base URL the parser would validate differently from how axios
+ *  sends it. Runs before the override check: VOCAREUM_ALLOW_CUSTOM_BASE_URL
+ *  relaxes WHICH host is allowed, never whether the URL is well-formed. */
+export function assertWellFormedBaseUrl(baseUrl: string): void {
+  if (hasUnsafeBaseUrlChars(baseUrl)) {
+    throw new InsecureBaseUrlError(baseUrl, true);
   }
 }
 
@@ -141,6 +164,9 @@ export { normalizeApiBaseUrl };
  *  `version`. Pure: ignores VOCAREUM_ALLOW_CUSTOM_BASE_URL and emits nothing —
  *  for display (status), not for gating a request. */
 export function isAllowlistedBaseUrl(baseUrl: string, version: 'v2' | 'v3'): boolean {
+  if (hasUnsafeBaseUrlChars(baseUrl)) {
+    return false;
+  }
   const canonical = canonicalBaseUrl(baseUrl);
   if (canonical?.startsWith('https://') !== true) {
     return false;
@@ -159,6 +185,7 @@ export function isAllowlistedBaseUrl(baseUrl: string, version: 'v2' | 'v3'): boo
  */
 export function assertAllowedBaseUrl(baseUrl: string, events?: EventSink): void {
   const sink: EventSink = events ?? new LoggerEventSink();
+  assertWellFormedBaseUrl(baseUrl);
   const allowCustom = process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL === '1';
   let parsed: URL;
   try { parsed = new URL(baseUrl); } catch { throw new InsecureBaseUrlError(baseUrl); }
@@ -193,6 +220,7 @@ export function assertAllowedBaseUrl(baseUrl: string, events?: EventSink): void 
 export function assertBaseUrlForVersion(baseUrl: string, version: 'v2' | 'v3', events?: EventSink): void {
   const sink: EventSink = events ?? new LoggerEventSink();
   const allowed = version === 'v2' ? ALLOWED_V2_BASE_URLS : ALLOWED_V3_BASE_URLS;
+  assertWellFormedBaseUrl(baseUrl);
   const allowCustom = process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL === '1';
   let parsed: URL;
   try { parsed = new URL(baseUrl); } catch { throw new InsecureBaseUrlError(baseUrl); }

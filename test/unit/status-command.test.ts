@@ -161,7 +161,7 @@ describe('statusCommand — API host / region', () => {
   let stdoutWrites: string[];
   let stdoutSpy: ReturnType<typeof vi.spyOn>;
 
-  type ApiField = { base_url: string; host: string; region: string | null; source: string; allowlisted: boolean };
+  type ApiField = { base_url: string; host: string; region: string | null; source: string; allowlisted: boolean; malformed: boolean };
 
   function configWithHost(apiBaseUrl: string): Config {
     const config = makeConfig();
@@ -196,6 +196,7 @@ describe('statusCommand — API host / region', () => {
       region: 'na',
       source: 'config',
       allowlisted: true,
+      malformed: false,
     });
   });
 
@@ -241,6 +242,9 @@ describe('statusCommand — API host / region', () => {
     expect(stdoutWrites.join('')).not.toContain(secret);
     const doc = JSON.parse(stdoutWrites[0]) as { api: ApiField };
     expect(doc.api.base_url).toBe('https://api.eu.vocareum.com/api/v2');
+    // ...and it is reported as refused, not as a usable EU host.
+    expect(doc.api).toMatchObject({ allowlisted: false, malformed: true, region: null });
+    expect(stdoutWrites.join('')).toMatch(/API host: api\.eu\.vocareum\.com \(custom host, from vocareum\.yaml\) — MALFORMED/);
   });
 
   it('never echoes an unparsable host value', async () => {

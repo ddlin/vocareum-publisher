@@ -697,6 +697,12 @@ or set `VOCAREUM_API_BASE_URL`. Precedence:
 Overrides must still be HTTPS and allowlisted. If an override differs from the
 host in `vocareum.yaml`, vocgit prints a warning naming both hosts.
 
+Wherever it comes from, the base URL must be a plain `https://host[/api/v2]`.
+vocgit refuses a URL containing a query (`?`), fragment (`#`), credentials
+(`user@`), a backslash or whitespace, even with
+`VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`. Error messages show the URL with any such
+credentials removed.
+
 The region applies to v2 token auth only. v3 OAuth always targets the NA
 `labs.vocareum.com` host; no EU v3 host is supported yet.
 

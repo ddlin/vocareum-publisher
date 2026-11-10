@@ -38,6 +38,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`base_url`, `host`, `region`, `source`, `allowlisted`); `schema_version`
   stays `1`.
 
+### Changed
+- **API base URLs must be a plain `https://host[/api/vN]`.** vocgit now refuses
+  a base URL or OAuth token URL that contains a query (`?`), fragment (`#`),
+  credentials (`user@`), a backslash, whitespace or a control character, even
+  with `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`. Before, the URL parser stripped these
+  and the check passed on the clean host, but axios sent the raw string. So
+  `…/api/v2?x=` turned every request path into query data, `#` moved it into a
+  fragment that was never sent, and `user@` carried a credential. This applies
+  to NA configs too; a config without these characters is unaffected.
+- **`InsecureBaseUrlError` no longer echoes the raw URL.** It shows
+  `scheme://host/path` only, so a token pasted into the URL cannot reach the
+  terminal or CI logs.
+
 ### Unchanged
 - Existing configs, including ones with no `api_base_url`, still resolve to
   `https://api.vocareum.com`. Non-HTTPS URLs and unknown or look-alike hosts are

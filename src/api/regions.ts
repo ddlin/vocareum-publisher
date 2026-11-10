@@ -70,6 +70,22 @@ export function canonicalBaseUrl(baseUrl: string): string | undefined {
   }
 }
 
+/**
+ * Characters that make a base URL validate as one thing and be sent as another.
+ * The URL parser silently drops or rewrites them (an empty `?`, a tab, an empty
+ * `user@`, backslashes all parse to a clean host/path), while axios joins the
+ * RAW string with the request path — so `…/api/v2?x=` turns `/courses/1` into
+ * query data, `#` puts it in a fragment that is never sent, and `user@` carries
+ * a credential. A Vocareum base URL never needs any of them.
+ */
+const UNSAFE_BASE_URL_CHARS = /[?#@\\\s\p{Cc}]/u;
+
+/** True when the raw value contains a query, fragment, userinfo, backslash,
+ *  whitespace or control character. Checked on the raw string, never the parse. */
+export function hasUnsafeBaseUrlChars(raw: string): boolean {
+  return UNSAFE_BASE_URL_CHARS.test(raw);
+}
+
 /** Placeholder shown instead of a value that does not parse as a URL — the raw
  *  string could be anything, including a pasted token, so it is never echoed. */
 export const INVALID_URL_LABEL = '<invalid URL>';
@@ -84,12 +100,21 @@ export function displayHost(baseUrl: string): string {
   }
 }
 
+/** A base URL safe to put in an error or log line: scheme://host/path with
+ *  userinfo, query and fragment dropped, or `<invalid URL>`. */
+export function redactUrlForDisplay(baseUrl: string): string {
+  return canonicalBaseUrl(baseUrl) ?? INVALID_URL_LABEL;
+}
+
 /**
  * The region a base URL belongs to, or undefined for a custom/unknown host.
  * Matches the exact (scheme, host, version-path) pair after normalization, so
  * `http://…`, look-alike hosts, and stray paths are never classified as a region.
  */
 export function regionForBaseUrl(baseUrl: string): VocareumRegion | undefined {
+  if (hasUnsafeBaseUrlChars(baseUrl.trim())) {
+    return undefined;
+  }
   const canonical = canonicalBaseUrl(normalizeApiBaseUrl(baseUrl.trim()));
   if (canonical === undefined) {
     return undefined;

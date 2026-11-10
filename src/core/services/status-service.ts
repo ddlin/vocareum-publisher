@@ -213,7 +213,9 @@ export function renderStatusHuman(
       : api.source === 'config' ? 'vocareum.yaml'
       : api.source === 'flag' ? '--api-base-url'
       : 'default';
-    const gate = api.allowlisted ? '' : ' — NOT allowlisted; requests will be refused unless VOCAREUM_ALLOW_CUSTOM_BASE_URL=1';
+    const gate = api.malformed
+      ? ' — MALFORMED: remove any query (?), fragment (#), credentials (user@) or whitespace; requests will be refused'
+      : api.allowlisted ? '' : ' — NOT allowlisted; requests will be refused unless VOCAREUM_ALLOW_CUSTOM_BASE_URL=1';
     events.emit({ level: 'plain', message: `- API host: ${api.host} (${region}, from ${from})${gate}` });
   }
   events.emit({ level: 'plain', message: `- Runtime: ${report.runtime}` });

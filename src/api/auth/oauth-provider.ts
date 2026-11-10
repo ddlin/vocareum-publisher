@@ -1,6 +1,6 @@
 import axios, { type AxiosInstance } from 'axios';
 import type { AuthProvider } from './auth-provider';
-import { AuthenticationError, InsecureBaseUrlError, assertBaseUrlForVersion } from '../client';
+import { AuthenticationError, InsecureBaseUrlError, assertBaseUrlForVersion, assertWellFormedBaseUrl } from '../client';
 import type { EventSink } from '../../core/services/event-sink';
 
 const TOKEN_REFRESH_BUFFER_SEC = 300; // refresh 5 min early
@@ -29,6 +29,7 @@ export interface OAuthProviderOptions {
 interface CachedToken { accessToken: string; expiresAtMs: number; }
 
 function assertAllowedTokenUrl(tokenUrl: string): void {
+  assertWellFormedBaseUrl(tokenUrl);
   const allowCustom = process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL === '1';
   let parsed: URL;
   try { parsed = new URL(tokenUrl); } catch { throw new InsecureBaseUrlError(tokenUrl); }

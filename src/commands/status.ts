@@ -9,7 +9,7 @@ import { loadConfig } from '../core/config';
 import { resolveWorkspaceContext } from '../core/workspace';
 import { loadDotEnvIfPresent, isCI, getCIProvider, getAuthModeEnv, getOAuthClientId, getOAuthClientSecret, getV3ApiBaseUrl } from '../utils/env';
 import { isAllowlistedBaseUrl } from '../api/client';
-import { INVALID_URL_LABEL, canonicalBaseUrl, displayHost, normalizeApiBaseUrl, regionForBaseUrl, resolveV2ApiBaseUrl } from '../api/regions';
+import { INVALID_URL_LABEL, canonicalBaseUrl, displayHost, hasUnsafeBaseUrlChars, normalizeApiBaseUrl, regionForBaseUrl, resolveV2ApiBaseUrl } from '../api/regions';
 import { CommandFailureError } from '../utils/command-failure';
 import { LoggerEventSink } from '../utils/logger-event-sink';
 import { InteractivePrompter } from '../core/services/context';
@@ -42,6 +42,7 @@ function resolveApiTarget(authMode: 'token' | 'oauth', configBaseUrl: string | u
       region: regionForBaseUrl(baseUrl) ?? null,
       source: process.env.VOCAREUM_API_V3_BASE_URL !== undefined ? 'env' : 'default',
       allowlisted: isAllowlistedBaseUrl(baseUrl, 'v3'),
+      malformed: hasUnsafeBaseUrlChars(baseUrl),
     };
   }
   const resolved = resolveV2ApiBaseUrl({ config: configBaseUrl });
@@ -52,6 +53,7 @@ function resolveApiTarget(authMode: 'token' | 'oauth', configBaseUrl: string | u
     region: regionForBaseUrl(baseUrl) ?? null,
     source: resolved.source,
     allowlisted: isAllowlistedBaseUrl(baseUrl, 'v2'),
+    malformed: hasUnsafeBaseUrlChars(baseUrl),
   };
 }
 

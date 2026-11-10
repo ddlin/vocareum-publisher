@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  assertAllowedBaseUrl, assertBaseUrlForVersion, isAllowlistedBaseUrl, normalizeApiBaseUrl,
+  VocareumClient, assertAllowedBaseUrl, assertBaseUrlForVersion, isAllowlistedBaseUrl, normalizeApiBaseUrl,
 } from '../../src/api/client';
+import { OAuthClientCredentialsProvider } from '../../src/api/auth/oauth-provider';
 import {
   REGION_HOSTS, regionForBaseUrl, resolveV2ApiBaseUrl,
 } from '../../src/api/regions';
@@ -101,6 +102,84 @@ describe('EU look-alikes and downgrades are still rejected', () => {
     const sink = new RecordingSink();
     expect(() => assertBaseUrlForVersion('https://staging.example.com/api/v2', 'v2', sink)).not.toThrow();
     expect(sink.events.map(e => e.message).join('\n')).toMatch(/credentials will be sent/);
+  });
+});
+
+describe('malformed base URLs: validated one way, sent another — always refused', () => {
+  // Each of these PARSES to the allowlisted EU host+path (the URL parser drops or
+  // rewrites the offending part), but axios joins the RAW string with the
+  // request path: the course path lands in a query or fragment, or a credential
+  // rides along in userinfo.
+  const malformed: Array<[string, string]> = [
+    ['query', 'https://api.eu.vocareum.com/api/v2?x=/api/v2'],
+    ['empty query', 'https://api.eu.vocareum.com/api/v2?'],
+    ['fragment', 'https://api.eu.vocareum.com/api/v2#/api/v2'],
+    ['userinfo', 'https://token@api.eu.vocareum.com/api/v2'],
+    ['empty userinfo', 'https://@api.eu.vocareum.com/api/v2'],
+    ['backslashes', 'https://api.eu.vocareum.com\\api\\v2'],
+    ['embedded tab', 'https://api.eu.vocareum.com/api/\tv2'],
+    ['embedded newline', 'https://api.eu.vocareum.com/api/\nv2'],
+    ['NUL', 'https://api.eu.vocareum.com/api/v2\u0000'],
+  ];
+
+  for (const [label, url] of malformed) {
+    it(`refuses ${label} even with VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`, () => {
+      // Sanity: the parser really does see the allowlisted host — this is the trap.
+      expect(new URL(url).host).toBe('api.eu.vocareum.com');
+      for (const override of [undefined, '1']) {
+        if (override === undefined) { delete process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL; }
+        else { process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL = override; }
+        expect(() => assertAllowedBaseUrl(url)).toThrow(/must be a plain https/);
+        expect(() => assertBaseUrlForVersion(url, 'v2')).toThrow(/must be a plain https/);
+      }
+      expect(isAllowlistedBaseUrl(url, 'v2')).toBe(false);
+      expect(regionForBaseUrl(url)).toBeUndefined();
+    });
+  }
+
+  it('TokenAuthProvider refuses a query URL arriving from config/env/flag', () => {
+    expect(() => new TokenAuthProvider('tok', 'https://api.eu.vocareum.com/api/v2?x=1')).toThrow(/must be a plain https/);
+  });
+
+  it('VocareumClient refuses a provider whose base URL carries a fragment', () => {
+    const provider = {
+      apiBaseUrl: 'https://api.eu.vocareum.com/api/v2#/api/v2',
+      getAuthorizationHeader: () => Promise.resolve('Token t'),
+    };
+    expect(() => new VocareumClient(provider, { maxConcurrency: 1, minIntervalMs: 0, jitter: false }))
+      .toThrow(/must be a plain https/);
+  });
+
+  it('the OAuth token URL gets the same rule', () => {
+    expect(() => new OAuthClientCredentialsProvider({
+      clientId: 'c', clientSecret: 's',
+      apiBaseUrl: 'https://labs.vocareum.com/api/v3',
+      tokenUrl: 'https://labs.vocareum.com/api/v3/oauth/token?x=1',
+    })).toThrow(/must be a plain https/);
+  });
+
+  it('the error message never echoes a credential from the URL', () => {
+    const secret = 'secret-token-789';
+    for (const url of [
+      `https://${secret}@api.eu.vocareum.com/api/v2`,
+      `https://api.eu.vocareum.com/api/v2?key=${secret}`,
+      `https://${secret}@evil.example.com/api/v2`,
+      `not a url ${secret}`,
+    ]) {
+      let message = '';
+      try { assertAllowedBaseUrl(url); } catch (e) { message = (e as Error).message; }
+      expect(message).toMatch(/Insecure API base URL/);
+      expect(message).not.toContain(secret);
+    }
+  });
+
+  it('plain NA and EU URLs (with trailing slash, uppercase, default port) still pass', () => {
+    for (const url of [
+      'https://api.vocareum.com/api/v2', 'https://api.vocareum.com/api/v2/',
+      'https://API.EU.VOCAREUM.COM/api/v2', 'https://api.eu.vocareum.com:443/api/v2',
+    ]) {
+      expect(() => assertBaseUrlForVersion(url, 'v2')).not.toThrow();
+    }
   });
 });
 

@@ -27,6 +27,9 @@ export interface ApiTargetFacts {
   /** Exact allowlist match for the auth mode's API version. When false, the
    *  run is refused unless VOCAREUM_ALLOW_CUSTOM_BASE_URL=1. */
   allowlisted: boolean;
+  /** The configured URL carries a query, fragment, userinfo, backslash or
+   *  whitespace. Always refused — VOCAREUM_ALLOW_CUSTOM_BASE_URL does not help. */
+  malformed: boolean;
 }
 
 export interface RuntimeFacts {
