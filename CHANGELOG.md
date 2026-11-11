@@ -70,6 +70,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error through.
 
 ### Fixed
+- **Directories with more than 100 entries are read in full.** Vocareum's file
+  listing returns at most 100 names per request and pages the rest, without
+  saying so; vocgit read only the first page. In any directory with more than
+  100 entries, every name after the 100th in listing order was missed, with no
+  warning. Pull did not download those files and did not mark the import
+  incomplete. `pull --content` read them as deleted on Vocareum, so `--batch`
+  could delete the local copies. A push of that directory after it changed
+  locally (a clear-and-replace upload) could then delete them from Vocareum.
+  Listings now read page after page until an empty one. A listing fails,
+  instead of coming back short, when a page repeats names already read (a
+  server ignoring the page request), when the directory vanishes partway
+  through, or past 10,000 pages. Each directory costs one extra request to
+  confirm the end. Files changed on Vocareum while a listing is being read can
+  still be missed. **If a repo was pulled from a course with large
+  directories, run `vocgit pull --batch --content` before pushing those
+  directories**, to bring back files that were missed. Files that a push
+  already removed from Vocareum cannot be brought back this way.
+- **Signed download URLs no longer reach logs or error messages.** With
+  `VOCAREUM_LOG_LEVEL=DEBUG`, API responses were logged with signed
+  file-download URLs intact, credentials included. API error messages, which
+  appear in warnings at every log level, could carry them too. Log output and
+  error text now drop the query string and any user-info of absolute URLs
+  (including JSON-escaped ones), and redact signed-URL credential parameters
+  (`X-Amz-*`, `Signature`, `Policy`, `Key-Pair-Id`) wherever they appear.
 - **A pulled container image ID is no longer pushed back.** `container_image_id` and
   `container_image_label` used to ride in `_unknown_settings` and were sent on every part
   update. That included a push to a different tenant, where an NA image ID means nothing.

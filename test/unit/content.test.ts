@@ -16,6 +16,7 @@ import {
 } from '../../src/api/content';
 import { VocareumClient, VocareumError } from '../../src/api/client';
 import axios from 'axios';
+import { withEmptyLaterPages } from '../helpers/paged-listing';
 
 // Mock axios for S3 downloads
 vi.mock('axios');
@@ -181,7 +182,7 @@ describe('waitForPartUpdateTransaction', () => {
   beforeEach(() => {
     requestMock = vi.fn();
     mockClient = {
-      request: requestMock,
+      request: withEmptyLaterPages(requestMock),
       events: { emit: vi.fn() },
     } as unknown as VocareumClient;
   });
@@ -293,7 +294,7 @@ describe('uploadContent', () => {
   beforeEach(() => {
     requestMock = vi.fn();
     mockClient = {
-      request: requestMock,
+      request: withEmptyLaterPages(requestMock),
       events: { emit: vi.fn() },
     } as unknown as VocareumClient;
   });
@@ -445,7 +446,7 @@ describe('listFiles', () => {
   beforeEach(() => {
     requestMock = vi.fn();
     mockClient = {
-      request: requestMock,
+      request: withEmptyLaterPages(requestMock),
       events: { emit: vi.fn() },
     } as unknown as VocareumClient;
   });
@@ -572,7 +573,7 @@ describe('deleteFile', () => {
   beforeEach(() => {
     requestMock = vi.fn();
     mockClient = {
-      request: requestMock,
+      request: withEmptyLaterPages(requestMock),
       events: { emit: vi.fn() },
     } as unknown as VocareumClient;
   });
@@ -632,7 +633,7 @@ describe('downloadContent', () => {
   beforeEach(() => {
     requestMock = vi.fn();
     mockClient = {
-      request: requestMock,
+      request: withEmptyLaterPages(requestMock),
       events: { emit: vi.fn() },
     } as unknown as VocareumClient;
     vi.clearAllMocks();
@@ -933,7 +934,7 @@ describe('downloadContent recursive directory handling', () => {
   beforeEach(() => {
     requestMock = vi.fn();
     mockClient = {
-      request: requestMock,
+      request: withEmptyLaterPages(requestMock),
       events: { emit: vi.fn() },
     } as unknown as VocareumClient;
     vi.clearAllMocks();

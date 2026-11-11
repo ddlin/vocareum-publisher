@@ -335,6 +335,8 @@ describe('push-fingerprint: deletePaths populated and shifts fingerprint (FIX 1b
     recorder.enqueue(getPartResponseDefault);
     // listFiles response (called once per changed directory when syncDeletes=true)
     recorder.enqueue({ files: remoteFiles });
+    // Listings are read until an empty page.
+    recorder.enqueue({ files: [] });
   }
 
   it('a different remote file set produces a different deletePaths and shifts fingerprint', async () => {

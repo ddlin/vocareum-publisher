@@ -335,12 +335,51 @@ function sleep(ms: number): Promise<void> {
 
 const REDACT_KEY = /^(authorization|client_secret|access_token|refresh_token|id_token|password|secret|token)$/i;
 const REDACT_FORM_PARAM = /((?:^|&)(?:authorization|client_secret|access_token|refresh_token|id_token|password|secret|token)=)[^&]*/gi;
+/**
+ * An absolute http(s) URL, including the JSON-escaped form (`https:\/\/…`).
+ * The class always matches to the next whitespace, quote or angle bracket and
+ * never fails, so matching is linear in the input (no rescans per `https://`).
+ */
+const ABSOLUTE_URL = /https?:(?:\/\/|\\\/\\\/)[^\s"'<>]*/gi;
+/** Punctuation that usually ends a sentence rather than a URL. */
+const URL_TRAILING_PUNCTUATION = /[.,;:!)\]}]+$/;
+/**
+ * Credential parameters of signed URLs, wherever they appear — after a quote
+ * or line break that ended the URL match early, or in a protocol-relative or
+ * otherwise unrecognised URL. Names: S3 (`X-Amz-*`, `AWSAccessKeyId`,
+ * `Signature`), CloudFront (`Signature`, `Policy`, `Key-Pair-Id`), generic
+ * (`sig`, `signature`, `token`).
+ */
+const SIGNED_URL_PARAM = /((?:^|[?&\s"'\\])(?:X-Amz-[A-Za-z-]+|AWSAccessKeyId|Signature|Policy|Key-Pair-Id|sig|token)=)[^&\s"'\\]*/gi;
 
 /**
- * Sanitize a value for logging (redact secrets recursively in objects, arrays, and form strings)
+ * Redact one absolute URL: drop user-info (`user:pass@`) and the whole query
+ * string, keeping scheme, host and path. Signed download URLs carry their
+ * credential in the query (S3's `X-Amz-*`, the files API's `download_url`),
+ * and the parameter names vary by issuer, so the whole query goes.
+ */
+function redactUrl(match: string): string {
+  const trailing = URL_TRAILING_PUNCTUATION.exec(match)?.[0] ?? '';
+  let url = trailing.length > 0 ? match.slice(0, -trailing.length) : match;
+  url = url.replace(/^(https?:(?:\/\/|\\\/\\\/))[^/\\@]*@/i, '$1[REDACTED]@');
+  const q = url.indexOf('?');
+  if (q !== -1) { url = `${url.slice(0, q)}?[REDACTED]`; }
+  return url + trailing;
+}
+
+/** Redact secrets in a free-text string (log line, error message). */
+export function sanitizeLogString(text: string): string {
+  return text
+    .replace(ABSOLUTE_URL, redactUrl)
+    .replace(SIGNED_URL_PARAM, '$1[REDACTED]')
+    .replace(REDACT_FORM_PARAM, '$1[REDACTED]');
+}
+
+/**
+ * Sanitize a value for logging (redact secrets recursively in objects, arrays, form strings, and URL query strings)
  */
 export function sanitizeForLog(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
-  if (typeof value === 'string') { return value.replace(REDACT_FORM_PARAM, '$1[REDACTED]'); }
+  if (typeof value === 'string') { return sanitizeLogString(value); }
   if (Array.isArray(value)) { return value.map((v) => sanitizeForLog(v, seen)); }
   if (value && typeof value === 'object') {
     if (seen.has(value)) { return '[Circular]'; }
@@ -461,7 +500,9 @@ export class VocareumClient {
       const status = error.response?.status;
       const data = error.response?.data as { message?: string; error?: { message?: string } } | undefined;
       // Vocareum API returns errors as { error: { message: "..." } } or { message: "..." }
-      const message = data?.error?.message ?? data?.message ?? error.message;
+      // Error text and bodies end up in warnings and error output, which are
+      // not debug-gated: never let a signed URL's credentials through.
+      const message = sanitizeLogString(data?.error?.message ?? data?.message ?? error.message);
 
       // Try to detect resource type from URL for better error messages
       const url = error.config?.url ?? '';
@@ -483,7 +524,7 @@ export class VocareumClient {
             retryAfterFromAxiosError(error)
           );
         default:
-          return new APIError(message, status, data);
+          return new APIError(message, status, sanitizeForLog(data));
       }
     }
 
