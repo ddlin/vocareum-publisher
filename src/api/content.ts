@@ -1206,6 +1206,11 @@ async function listFilesByApiPath(
   return (await listDirectory(client, courseId, assignmentId, partId, apiDirPath, warnIfAbsent)).entries;
 }
 
+/** Names per listing page (observed; the API ignores requests for more). */
+const LIST_PAGE_SIZE = 100;
+/** 1,000,000 entries — the VOCAREUM_MAX_DOWNLOAD_FILES ceiling — in pages. */
+const MAX_LIST_PAGES = 10_000;
+
 /**
  * List a directory, distinguishing "absent" from "empty" — the walk needs the
  * difference to tell a real (empty) subdirectory from an entry that is not
@@ -1228,16 +1233,45 @@ async function listDirectory(
   const url = `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
 
   try {
-    const response = await client.request<unknown>({
-      method: 'GET',
-      url,
-      params: { dir: apiDirPath, list: true },
-    });
-    const entries = parseFileListResponse(response).map((entry) => ({
-      path: entry.path,
-      size: entry.size,
-      modifiedAt: entry.modifiedAt,
-    }));
+    const entries: FileInfo[] = [];
+    const seen = new Set<string>();
+    // The listing returns at most LIST_PAGE_SIZE names per request, sorted, and
+    // takes a 0-based `page` (no `page` = page 0; `per_page`/`limit` are
+    // ignored). Probed on course 215500, 2026-11-11: a 115-entry directory
+    // answered 100 names, then 15 on page=1, then none. Reading only the first
+    // page silently dropped every name after the 100th — pull lost the files,
+    // drift read them as remote deletions, and a reset push then deleted them.
+    for (let page = 0; ; page++) {
+      const response = await client.request<unknown>({
+        method: 'GET',
+        url,
+        params: page === 0 ? { dir: apiDirPath, list: true } : { dir: apiDirPath, list: true, page },
+      });
+      const batch = parseFileListResponse(response);
+      let added = 0;
+      for (const entry of batch) {
+        if (seen.has(entry.path)) { continue; }
+        seen.add(entry.path);
+        entries.push({ path: entry.path, size: entry.size, modifiedAt: entry.modifiedAt });
+        added += 1;
+      }
+      if (batch.length < LIST_PAGE_SIZE) { break; }
+      if (added === 0) {
+        // A full page with nothing new: the server ignored `page`. Stopping is
+        // the only safe answer, but the directory may hold more than we saw,
+        // and a short listing reads as deletions downstream — so fail loudly.
+        throw new APIError(
+          `Listing ${apiDirPath} returned the same ${batch.length} names for page ${page}; ` +
+          `cannot read past them, so the directory cannot be listed completely`
+        );
+      }
+      if (page + 1 >= MAX_LIST_PAGES) {
+        throw new APIError(
+          `Listing ${apiDirPath} still had more names after ${MAX_LIST_PAGES} pages; ` +
+          `stopping rather than reading it as complete`
+        );
+      }
+    }
     return { entries, absent: false };
   } catch (error) {
     // Missing optional directories are normal, but only mask the error when it

@@ -335,12 +335,21 @@ function sleep(ms: number): Promise<void> {
 
 const REDACT_KEY = /^(authorization|client_secret|access_token|refresh_token|id_token|password|secret|token)$/i;
 const REDACT_FORM_PARAM = /((?:^|&)(?:authorization|client_secret|access_token|refresh_token|id_token|password|secret|token)=)[^&]*/gi;
+/**
+ * The query string of any absolute URL. Signed download URLs carry their
+ * credential there (S3's `X-Amz-Security-Token`, `X-Amz-Credential`,
+ * `X-Amz-Signature`; the files API's `download_url`), and the parameter names
+ * vary by issuer, so the whole query goes. Scheme, host and path stay.
+ */
+const URL_QUERY = /(\bhttps?:\/\/[^\s"'?#]*)\?[^\s"'#]*/gi;
 
 /**
- * Sanitize a value for logging (redact secrets recursively in objects, arrays, and form strings)
+ * Sanitize a value for logging (redact secrets recursively in objects, arrays, form strings, and URL query strings)
  */
 export function sanitizeForLog(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
-  if (typeof value === 'string') { return value.replace(REDACT_FORM_PARAM, '$1[REDACTED]'); }
+  if (typeof value === 'string') {
+    return value.replace(URL_QUERY, '$1?[REDACTED]').replace(REDACT_FORM_PARAM, '$1[REDACTED]');
+  }
   if (Array.isArray(value)) { return value.map((v) => sanitizeForLog(v, seen)); }
   if (value && typeof value === 'object') {
     if (seen.has(value)) { return '[Circular]'; }

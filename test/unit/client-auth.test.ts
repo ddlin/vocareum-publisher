@@ -89,6 +89,25 @@ describe('sanitizeForLog (recursive)', () => {
     expect(out).toContain('client_id=cid');
     expect(out).toContain('client_secret=[REDACTED]');
   });
+
+  it('redacts the query string of signed download URLs, keeping the host', () => {
+    // Shapes seen in API responses: the directory-zip job result and the files API download_url.
+    const out = JSON.stringify(sanitizeForLog({
+      data: {
+        state: 'success',
+        message: 'https://bucket.s3.us-west-2.amazonaws.com/u1_p2.zip?response-content-disposition=attachment&X-Amz-Security-Token=TOK&X-Amz-Credential=CRED&X-Amz-Signature=SIG',
+        files: [{ download_url: 'https://labs.vocareum.com/web/download.php?k=SECRETKEY&e=1' }],
+      },
+    }));
+    for (const secret of ['TOK', 'CRED', 'SIG', 'SECRETKEY']) { expect(out).not.toContain(secret); }
+    expect(out).toContain('https://bucket.s3.us-west-2.amazonaws.com/u1_p2.zip?[REDACTED]');
+    expect(out).toContain('https://labs.vocareum.com/web/download.php?[REDACTED]');
+  });
+
+  it('leaves a URL without a query, and plain text, alone', () => {
+    expect(sanitizeForLog('see https://labs.vocareum.com/api/v2/courses for details')).toBe('see https://labs.vocareum.com/api/v2/courses for details');
+    expect(sanitizeForLog('what? nothing here')).toBe('what? nothing here');
+  });
 });
 
 // A custom adapter must reject non-2xx itself — axios only applies validateStatus

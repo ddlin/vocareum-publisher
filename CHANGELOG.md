@@ -70,6 +70,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error through.
 
 ### Fixed
+- **Directories with more than 100 entries are read in full.** Vocareum's file
+  listing returns at most 100 names per request and pages the rest; vocgit read
+  only the first page. In any directory with more than 100 entries, every name
+  after the 100th (alphabetically) was missed, with no warning: pull did not
+  download those files and did not mark the import incomplete, `pull --content`
+  read them as deleted on Vocareum (so `--batch` could delete the local copies),
+  pushing that directory (a clear-and-replace upload) could then delete them
+  from Vocareum, and `--sync-deletes` never saw them. Listings now read every page.
+  If the server ignores the page request, the listing fails instead of
+  returning a short list. **Repos pulled from courses with large directories
+  should be re-pulled with `vocgit pull --batch --content` before the next
+  push**, to bring back files that were missed.
+- **Signed download URLs are no longer written to debug logs.** `--verbose` /
+  `VOCAREUM_LOG_LEVEL=DEBUG` logged API responses with signed file-download URLs
+  intact, credentials included. Log output now drops the query string of any
+  URL, keeping the host and path.
 - **A pulled container image ID is no longer pushed back.** `container_image_id` and
   `container_image_label` used to ride in `_unknown_settings` and were sent on every part
   update. That included a push to a different tenant, where an NA image ID means nothing.
