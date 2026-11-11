@@ -1206,9 +1206,11 @@ async function listFilesByApiPath(
   return (await listDirectory(client, courseId, assignmentId, partId, apiDirPath, warnIfAbsent)).entries;
 }
 
-/** Names per listing page (observed; the API ignores requests for more). */
-const LIST_PAGE_SIZE = 100;
-/** 1,000,000 entries — the VOCAREUM_MAX_DOWNLOAD_FILES ceiling — in pages. */
+/**
+ * Pages read before a listing is refused as unbounded: 10,000 pages of the
+ * observed 100 names is 1,000,000 entries, the VOCAREUM_MAX_DOWNLOAD_FILES
+ * ceiling; page 10,000 itself is the empty page that confirms the end.
+ */
 const MAX_LIST_PAGES = 10_000;
 
 /**
@@ -1232,22 +1234,38 @@ async function listDirectory(
 ): Promise<{ entries: FileInfo[]; absent: boolean }> {
   const url = `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
 
+  // Which page failed decides what an error means: only page 0 can say the
+  // directory is absent. Declared outside the try so the catch can see it.
+  let page = 0;
   try {
     const entries: FileInfo[] = [];
     const seen = new Set<string>();
-    // The listing returns at most LIST_PAGE_SIZE names per request, sorted, and
-    // takes a 0-based `page` (no `page` = page 0; `per_page`/`limit` are
-    // ignored). Probed on course 215500, 2026-11-11: a 115-entry directory
-    // answered 100 names, then 15 on page=1, then none. Reading only the first
-    // page silently dropped every name after the 100th — pull lost the files,
-    // drift read them as remote deletions, and a reset push then deleted them.
-    for (let page = 0; ; page++) {
+    // The listing is paged and says nothing about it: no total, no "more"
+    // flag. It takes a 0-based `page` (no `page` = page 0; `per_page`/`limit`
+    // are ignored). Probed on course 215500, 2026-11-11: a 115-entry
+    // directory answered 100 names, then 15 on page=1, then none. Reading only
+    // the first page silently dropped every name after the 100th, so pull lost
+    // the files and drift read them as remote deletions.
+    //
+    // Read until a page comes back EMPTY, not merely short. The page size is
+    // observed, not documented: a deployment with a smaller page, or a server
+    // that filters entries (hidden files) after paging, would end a page early
+    // with more to come. One extra request per directory buys never mistaking
+    // a short page for the end.
+    for (; ; page++) {
+      if (page > MAX_LIST_PAGES) {
+        throw new APIError(
+          `Listing ${apiDirPath} was still returning names after ${MAX_LIST_PAGES} pages; ` +
+          `stopping rather than reading it as complete`
+        );
+      }
       const response = await client.request<unknown>({
         method: 'GET',
         url,
         params: page === 0 ? { dir: apiDirPath, list: true } : { dir: apiDirPath, list: true, page },
       });
       const batch = parseFileListResponse(response);
+      if (batch.length === 0) { break; }
       let added = 0;
       for (const entry of batch) {
         if (seen.has(entry.path)) { continue; }
@@ -1255,20 +1273,13 @@ async function listDirectory(
         entries.push({ path: entry.path, size: entry.size, modifiedAt: entry.modifiedAt });
         added += 1;
       }
-      if (batch.length < LIST_PAGE_SIZE) { break; }
-      if (added === 0) {
-        // A full page with nothing new: the server ignored `page`. Stopping is
-        // the only safe answer, but the directory may hold more than we saw,
-        // and a short listing reads as deletions downstream — so fail loudly.
+      if (page > 0 && added === 0) {
+        // A page with nothing new: the server ignored `page` and repeated an
+        // earlier one. We cannot read past it, and a short listing reads as
+        // deletions downstream, so fail rather than guess.
         throw new APIError(
-          `Listing ${apiDirPath} returned the same ${batch.length} names for page ${page}; ` +
-          `cannot read past them, so the directory cannot be listed completely`
-        );
-      }
-      if (page + 1 >= MAX_LIST_PAGES) {
-        throw new APIError(
-          `Listing ${apiDirPath} still had more names after ${MAX_LIST_PAGES} pages; ` +
-          `stopping rather than reading it as complete`
+          `Listing ${apiDirPath}: page ${page} repeated names already read; ` +
+          `cannot page through it, so the directory cannot be listed completely`
         );
       }
     }
@@ -1276,7 +1287,10 @@ async function listDirectory(
   } catch (error) {
     // Missing optional directories are normal, but only mask the error when it
     // names the requested directory. Other 400s likely indicate bad IDs/params.
-    if (isHttp400(error)) {
+    // "Doesn't exist" means absent only on page 0. On a later page the names
+    // already read prove the directory existed; treating it as absent would
+    // throw them away and report an empty directory.
+    if (page === 0 && isHttp400(error)) {
       const msg = error instanceof Error ? error.message : String(error);
       if (missingDirectoryMessageMatches(msg, apiDirPath)) {
         // An absent directory is not an error — returning [] is correct, and

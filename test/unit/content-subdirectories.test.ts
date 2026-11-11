@@ -33,8 +33,10 @@ const SIGNED = 'https://signed.example.com/';
 function fakeClient(tree: FakeTree): { client: VocareumClient; events: ServiceEvent[]; calls: string[] } {
   const events: ServiceEvent[] = [];
   const calls: string[] = [];
-  const request = vi.fn(async (cfg: { params: { dir?: string; filename?: string } }) => {
-    const { dir, filename } = cfg.params;
+  const request = vi.fn(async (cfg: { params: { dir?: string; filename?: string; page?: number } }) => {
+    const { dir, filename, page } = cfg.params;
+    // Every listing here fits one page; later pages are empty, as on the real API.
+    if (dir !== undefined && page !== undefined && page >= 1) { return { files: [] }; }
     if (dir !== undefined) {
       calls.push(`list ${dir}`);
       const listError = tree.listErrors?.[dir];

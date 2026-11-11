@@ -107,6 +107,45 @@ describe('sanitizeForLog (recursive)', () => {
   it('leaves a URL without a query, and plain text, alone', () => {
     expect(sanitizeForLog('see https://labs.vocareum.com/api/v2/courses for details')).toBe('see https://labs.vocareum.com/api/v2/courses for details');
     expect(sanitizeForLog('what? nothing here')).toBe('what? nothing here');
+    // Error text the content code matches on must survive unchanged.
+    expect(sanitizeForLog('specified file does not exist data/x/token=1.txt')).toBe('specified file does not exist data/x/token=1.txt');
+  });
+
+  // Shapes from the adversarial review of the first version (2026-11-11).
+  it.each([
+    ['user-info', 'https://user:s3cret@host/a?X-Amz-Signature=SIG', ['s3cret', 'SIG']],
+    ['a quote inside the query', 'https://host/a?name="q"&X-Amz-Signature=SIG', ['SIG']],
+    ['a line break inside the query', 'https://host/a?\nX-Amz-Signature=SIG', ['SIG']],
+    ['JSON-escaped slashes', '{"u":"https:\\/\\/b.s3.amazonaws.com\\/a.zip?X-Amz-Signature=SIG"}', ['SIG']],
+    ['a protocol-relative URL', '//bucket.s3.amazonaws.com/a?X-Amz-Security-Token=TOK&X-Amz-Credential=CRED', ['TOK', 'CRED']],
+    ['upper-case scheme', 'HTTPS://HOST/A?X-Amz-Signature=SIG', ['SIG']],
+  ])('redacts a signed URL with %s', (_label, input, secrets) => {
+    const out = sanitizeForLog(input) as string;
+    for (const secret of secrets) { expect(out).not.toContain(secret); }
+  });
+
+  it('keeps punctuation that ends the sentence, not the URL', () => {
+    expect(sanitizeForLog('see https://host/a?X-Amz-Signature=SIG, next')).toBe('see https://host/a?[REDACTED], next');
+    expect(sanitizeForLog('(https://host/p?k=SECRET).')).toBe('(https://host/p?[REDACTED]).');
+  });
+
+  it('runs in linear time on many URL-like fragments', () => {
+    const big = 'https://a/'.repeat(80_000);
+    const start = Date.now();
+    sanitizeForLog(big);
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+});
+
+describe('API error text is sanitized', () => {
+  it('a signed URL in an error body never reaches the thrown message or details', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    const body = { message: 'download failed https://bucket.s3.amazonaws.com/p.zip?X-Amz-Signature=SECRETSIG' };
+    setAdapter(client, mockAdapter([{ status: 400, data: body }]));
+    const error = await client.request({ method: 'GET', url: '/courses' }).catch((e: unknown) => e) as Error & { details?: unknown };
+    expect(error.message).not.toContain('SECRETSIG');
+    expect(error.message).toContain('https://bucket.s3.amazonaws.com/p.zip?[REDACTED]');
+    expect(JSON.stringify(error.details)).not.toContain('SECRETSIG');
   });
 });
 

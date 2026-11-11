@@ -35,10 +35,14 @@ function names(n: number, prefix = 'f'): string[] {
 interface FakeOptions {
   /** API dir path → names. */
   dirs: Record<string, string[]>;
-  /** Serve page 0 for every page (a server that ignores `page`). */
-  ignorePage?: boolean;
-  /** Repeat the last name of the previous page at the start of the next. */
+  /** Names per page (the real API: 100). */
+  pageSize?: number;
+  /** Serve page 0 for every page (a server that ignores `page`): everywhere, or for the listed dirs. */
+  ignorePage?: boolean | string[];
+  /** Each later page also starts with the previous page's last name (an insertion shifting pages). */
   overlap?: boolean;
+  /** API dir path → the page number that answers "doesn't exist" (the directory vanished mid-listing). */
+  vanishOnPage?: Record<string, number>;
 }
 
 function fakeClient(opts: FakeOptions) {
@@ -49,12 +53,15 @@ function fakeClient(opts: FakeOptions) {
     if (dir !== undefined) {
       listCalls.push({ dir, page });
       const all = opts.dirs[dir];
-      if (all === undefined) { throw new APIError(`${dir} doesn't exist`, 400); }
-      const p = opts.ignorePage === true ? 0 : (page ?? 0);
-      const start = p * PAGE;
-      const slice = all.slice(start, start + PAGE);
-      const withOverlap = opts.overlap === true && p > 0 && slice.length > 0 ? [all[start - 1], ...slice.slice(0, PAGE - 1)] : slice;
-      return { courseid: 'c', directory: dir, files: withOverlap };
+      if (all === undefined || opts.vanishOnPage?.[dir] === (page ?? 0)) { throw new APIError(`${dir} doesn't exist`, 400); }
+      const size = opts.pageSize ?? PAGE;
+      const ignores = opts.ignorePage === true || (Array.isArray(opts.ignorePage) && opts.ignorePage.includes(dir));
+      const p = ignores ? 0 : (page ?? 0);
+      const start = p * size;
+      const slice = all.slice(start, start + size);
+      const withOverlap = opts.overlap === true && p > 0 && slice.length > 0 ? [all[start - 1], ...slice] : slice;
+      // The real response shape (see the probe in the header comment).
+      return { courseid: 'c', assignmentid: 'a', partid: 'p', directory: dir, files: withOverlap };
     }
     const isFile = Object.entries(opts.dirs).some(([d, ns]) => ns.includes(filename!.split('/').pop()!) && `/voc/${filename}`.startsWith(`${d}/`)
       && opts.dirs[`/voc/${filename}`] === undefined);
@@ -69,14 +76,16 @@ function fakeClient(opts: FakeOptions) {
 beforeEach(() => { vi.clearAllMocks(); });
 
 describe('listFiles reads every page', () => {
+  // Reads until an EMPTY page: one more request than there are non-empty pages.
   it.each([
     [0, 1],
-    [99, 1],
+    [1, 2],
+    [99, 2],
     [100, 2],
-    [101, 2],
-    [115, 2],
+    [101, 3],
+    [115, 3],
     [200, 3],
-    [250, 3],
+    [250, 4],
   ])('%i entries → all of them, in %i request(s)', async (count, requests) => {
     const all = names(count);
     const { client, listCalls } = fakeClient({ dirs: { '/voc/startercode': all } });
@@ -88,17 +97,37 @@ describe('listFiles reads every page', () => {
     expect(listCalls.slice(1).map((c) => c.page)).toEqual(Array.from({ length: requests - 1 }, (_, i) => i + 1));
   });
 
-  it('does not duplicate a name repeated across a page boundary', async () => {
-    const all = names(150);
+  it('keeps every name, once each, when a name repeats across page boundaries', async () => {
+    const all = names(250);
     const { client } = fakeClient({ dirs: { '/voc/startercode': all }, overlap: true });
     const entries = await listFiles(client, 'c', 'a', 'p', 'startercode', 'container');
-    expect(new Set(entries.map((e) => e.path)).size).toBe(entries.length);
+    expect(entries.map((e) => e.path)).toEqual(all);
+  });
+
+  it('a short page is not taken as the end (a smaller page size, or entries filtered after paging)', async () => {
+    const all = names(150);
+    const { client } = fakeClient({ dirs: { '/voc/startercode': all }, pageSize: 50 });
+    const entries = await listFiles(client, 'c', 'a', 'p', 'startercode', 'container');
+    expect(entries.map((e) => e.path)).toEqual(all);
   });
 
   it('fails loudly, rather than looping or returning a short list, when the server ignores `page`', async () => {
     const { client, listCalls } = fakeClient({ dirs: { '/voc/startercode': names(250) }, ignorePage: true });
-    await expect(listFiles(client, 'c', 'a', 'p', 'startercode', 'container')).rejects.toThrow(/same 100 names/);
+    await expect(listFiles(client, 'c', 'a', 'p', 'startercode', 'container')).rejects.toThrow(/page 1 repeated names/);
     expect(listCalls).toHaveLength(2);
+  });
+
+  it('"doesn\'t exist" on a later page fails the listing; it never discards the names already read as an absent directory', async () => {
+    const { client } = fakeClient({ dirs: { '/voc/startercode': names(250) }, vanishOnPage: { '/voc/startercode': 1 } });
+    await expect(listFiles(client, 'c', 'a', 'p', 'startercode', 'container')).rejects.toThrow(/doesn't exist/);
+  });
+
+  it('reads up to 10,000 pages plus the empty page that ends them, and refuses more', async () => {
+    // Page size 1 keeps the fixture small; the guard counts pages, not names.
+    const atLimit = fakeClient({ dirs: { '/voc/startercode': names(10_000) }, pageSize: 1 });
+    expect(await listFiles(atLimit.client, 'c', 'a', 'p', 'startercode', 'container')).toHaveLength(10_000);
+    const overLimit = fakeClient({ dirs: { '/voc/startercode': names(10_002) }, pageSize: 1 });
+    await expect(listFiles(overLimit.client, 'c', 'a', 'p', 'startercode', 'container')).rejects.toThrow(/still returning names after 10000 pages/);
   });
 
   it('a missing directory is still absent (no paging attempted)', async () => {
@@ -128,8 +157,13 @@ describe('downloads past the 100th entry', () => {
     expect(files['startercode/f0129.txt']).toBeDefined();
   });
 
+  it('strict mode: a directory that vanishes mid-listing throws, so drift plans no deletions', async () => {
+    const { client } = fakeClient({ dirs: { '/voc/startercode': names(250) }, vanishOnPage: { '/voc/startercode': 2 } });
+    await expect(downloadContent(client, 'c', 'a', 'p', ['startercode'], 'container', { strict: true })).rejects.toThrow();
+  });
+
   it('a subdirectory whose server ignores `page` is recorded as a failure (pull marked incomplete), not silently short', async () => {
-    const { client } = fakeClient({ dirs: { '/voc/startercode': ['sub'], '/voc/startercode/sub': names(250, 's') }, ignorePage: true });
+    const { client } = fakeClient({ dirs: { '/voc/startercode': ['sub'], '/voc/startercode/sub': names(250, 's') }, ignorePage: ['/voc/startercode/sub'] });
     const failures: DownloadFailure[] = [];
     await downloadContent(client, 'c', 'a', 'p', ['startercode'], 'container', { failures });
     expect(failures.map((f) => f.path)).toEqual(['startercode/sub']);

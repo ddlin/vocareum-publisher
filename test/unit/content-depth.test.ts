@@ -17,6 +17,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { downloadContent } from '../../src/api/content';
 import { VocareumClient } from '../../src/api/client';
 import axios from 'axios';
+import { withEmptyLaterPages } from '../helpers/paged-listing';
 
 vi.mock('axios');
 
@@ -28,7 +29,7 @@ describe('downloadContent depth (AWS Academy locale-nested assets)', () => {
   beforeEach(() => {
     requestMock = vi.fn();
     mockClient = {
-      request: requestMock,
+      request: withEmptyLaterPages(requestMock),
       events: { emit: vi.fn() },
     } as unknown as VocareumClient;
     vi.clearAllMocks();
