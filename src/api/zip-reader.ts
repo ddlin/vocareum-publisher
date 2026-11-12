@@ -261,39 +261,59 @@ export async function readZip(buf: Buffer, opts: ReadZipOptions): Promise<Stagin
       }
       let totalWritten = 0;
 
+      // Every callback body below is guarded: a synchronous throw inside an
+      // event callback (Buffer.allocUnsafe or a copy failing under memory
+      // pressure) would otherwise escape readZip as an uncaught exception and
+      // crash the pull. A read that cannot complete is simply not used.
       const next = (i: number): void => {
-        if (settled) {return;}
-        if (i === pending.length) { finish({ files, dirs }); return; }
-        const { entry, name } = pending[i];
-        const size = entry.uncompressedSize;
-        // Every byte is overwritten before the buffer is kept (written === size).
-        const out = Buffer.allocUnsafe(size);
-        let written = 0;
-        let crc = 0;
-        zf.openReadStream(entry, (err, stream) => {
-          if (settled) { stream?.destroy(); return; }
-          if (err !== null) { finish(INVALID); return; }
-          current = stream;
-          stream.on('data', (chunk: Buffer) => {
-            if (settled) {return;}
-            if (written + chunk.length > size || totalWritten + chunk.length > opts.maxTotalBytes) {
+        try {
+          if (settled) {return;}
+          if (i === pending.length) { finish({ files, dirs }); return; }
+          const { entry, name } = pending[i];
+          const size = entry.uncompressedSize;
+          // Every byte is overwritten before the buffer is kept (written === size).
+          const out = Buffer.allocUnsafe(size);
+          let written = 0;
+          let crc = 0;
+          zf.openReadStream(entry, (err, stream) => {
+            try {
+              if (settled) { stream?.destroy(); return; }
+              if (err !== null) { finish(INVALID); return; }
+              current = stream;
+              stream.on('data', (chunk: Buffer) => {
+                try {
+                  if (settled) {return;}
+                  if (written + chunk.length > size || totalWritten + chunk.length > opts.maxTotalBytes) {
+                    finish(INVALID);
+                    return;
+                  }
+                  chunk.copy(out, written);
+                  written += chunk.length;
+                  totalWritten += chunk.length;
+                  crc = crc32Update(crc, chunk);
+                } catch {
+                  finish(INVALID);
+                }
+              });
+              stream.on('error', () => { finish(INVALID); });
+              stream.on('end', () => {
+                try {
+                  if (settled) {return;}
+                  current = undefined;
+                  if (written !== size || crc !== entry.crc32) { finish(INVALID); return; }
+                  files.set(name, out);
+                  next(i + 1);
+                } catch {
+                  finish(INVALID);
+                }
+              });
+            } catch {
               finish(INVALID);
-              return;
             }
-            chunk.copy(out, written);
-            written += chunk.length;
-            totalWritten += chunk.length;
-            crc = crc32Update(crc, chunk);
           });
-          stream.on('error', () => { finish(INVALID); });
-          stream.on('end', () => {
-            if (settled) {return;}
-            current = undefined;
-            if (written !== size || crc !== entry.crc32) { finish(INVALID); return; }
-            files.set(name, out);
-            next(i + 1);
-          });
-        });
+        } catch {
+          finish(INVALID);
+        }
       };
       next(0);
     };
@@ -313,10 +333,14 @@ export async function readZip(buf: Buffer, opts: ReadZipOptions): Promise<Stagin
           zf.readEntry();
         });
         zf.once('end', () => {
-          if (settled) {return;}
-          const planned = preflightEntries(entries, opts);
-          if ('reason' in planned) { finish(planned); return; }
-          inflateAll(zf, planned);
+          try {
+            if (settled) {return;}
+            const planned = preflightEntries(entries, opts);
+            if ('reason' in planned) { finish(planned); return; }
+            inflateAll(zf, planned);
+          } catch {
+            finish(INVALID);
+          }
         });
         zf.readEntry();
       });

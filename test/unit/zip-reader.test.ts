@@ -365,3 +365,40 @@ describe('readZip deadline', () => {
     expect(close).toHaveBeenCalled();
   });
 });
+
+describe('readZip: a synchronous throw inside a stream callback (memory pressure)', () => {
+  // Buffer.allocUnsafe or a copy can throw under memory pressure. Inside a yauzl
+  // or stream callback that throw would escape readZip as an uncaught exception
+  // and crash the pull; it must end the read as zip_invalid instead.
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  function failAlloc(size: number): void {
+    const real = Buffer.allocUnsafe;
+    vi.spyOn(Buffer, 'allocUnsafe').mockImplementation((n: number) => {
+      if (n === size) { throw new RangeError('Array buffer allocation failed'); }
+      return real.call(Buffer, n);
+    });
+  }
+
+  it('in the first entry (next, from the central-directory end handler)', async () => {
+    failAlloc(12_345);
+    const buf = buildZip([{ name: 'a.bin', data: Buffer.alloc(12_345, 1) }]);
+    expect(await read(buf)).toEqual({ reason: 'zip_invalid' });
+  });
+
+  it('in a later entry (next, from the previous entry\'s end handler)', async () => {
+    failAlloc(12_345);
+    const buf = buildZip([{ name: 'a.txt', data: 'ok' }, { name: 'b.bin', data: Buffer.alloc(12_345, 2) }]);
+    expect(await read(buf)).toEqual({ reason: 'zip_invalid' });
+  });
+
+  it('in the data handler', async () => {
+    const real = Buffer.prototype.copy;
+    vi.spyOn(Buffer.prototype, 'copy').mockImplementation(function (this: Buffer, target: Uint8Array, ...rest: number[]) {
+      if (target.length === 12_346) { throw new RangeError('copy failed'); }
+      return real.call(this, target, ...rest);
+    });
+    const buf = buildZip([{ name: 'c.bin', data: Buffer.alloc(12_346, 3) }]);
+    expect(await read(buf)).toEqual({ reason: 'zip_invalid' });
+  });
+});
