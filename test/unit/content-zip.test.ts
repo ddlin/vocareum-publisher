@@ -7,6 +7,7 @@
  */
 import zlib from 'node:zlib';
 import { Readable } from 'node:stream';
+import { AxiosError } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   downloadContent,
@@ -527,6 +528,30 @@ describe('downloadContent zip path: robustness', () => {
     expect(r.files).toEqual(walk.files);
     expect(r.failures).toEqual([]);
     expect(tree.requests('start')).toHaveLength(1);
+  });
+
+  it('an unexpected throw is reported as a debug event, sanitised: no signed-URL query reaches it', async () => {
+    const signed = 'https://bucket.s3.amazonaws.com/u1.zip?X-Amz-Credential=CREDSECRET&X-Amz-Signature=SIGSECRET';
+    // An S3 axios error carries the signed URL in config.url; one message also quotes it.
+    const viaConfig = new AxiosError('timeout of 30000ms exceeded', 'ECONNABORTED', { url: signed } as never);
+    const viaMessage = new Error(`request to ${signed} failed`);
+    for (const thrown of [viaConfig, viaMessage]) {
+      const tree = s1Tree(true);
+      tree.s3Intercept = (kind, n) => (kind === 's3-range' && n === 1
+        ? { status: 206, headers: { get: () => { throw thrown; } }, data: Readable.from([Buffer.from('x')]) }
+        : undefined);
+      const r = await pull(tree, ['startercode']);
+      expect(zipNotUsed(r.events)).toEqual([
+        { part_id: PART, directory: 'startercode', reason: 'zip_invalid', quarantined: true },
+      ]);
+      const debug = r.events.filter((e) => e.level === 'debug' && e.message.includes('failed unexpectedly'));
+      expect(debug).toHaveLength(1);
+      expect(debug[0].message).toContain(thrown === viaConfig ? 'timeout of 30000ms exceeded' : 'request to https://bucket.s3.amazonaws.com/u1.zip');
+      const text = JSON.stringify(debug[0]);
+      expect(text).not.toContain('X-Amz-');
+      expect(text).not.toContain('SECRET');
+      if (thrown === viaConfig) { expect(text).not.toContain('?'); }
+    }
   });
 
   it('the deadline timer is disposed once a used directory is done; none is left pending', async () => {

@@ -12,7 +12,7 @@
  * attempts more conservative.
  */
 import type { AxiosInstance } from 'axios';
-import type { VocareumClient } from './client';
+import { sanitizeLogString, type VocareumClient } from './client';
 import { listDirectoryBounded, type DownloadBudget } from './content';
 import { createDeadline, type Deadline } from './deadline';
 import { runZipJob } from './zip-job';
@@ -165,10 +165,17 @@ export async function tryZipDirectory(args: ZipDirectoryArgs): Promise<'used' | 
     let prepared: Prepared | ZipNotUsedReason;
     try {
       prepared = await prepareZip(args, deadline);
-    } catch {
+    } catch (error) {
       // Every step reports its own reason; a throw is a defect or an
       // unforeseen answer. Nothing was committed (I5), and a job of ours may
-      // still be writing, so it is a rejection like any other.
+      // still be writing, so it is a rejection like any other. Only the
+      // sanitised message is kept: an S3 axios error carries the signed URL
+      // in config.url, and a message may quote it.
+      const message = error instanceof Error ? error.message : String(error);
+      client.events.emit({
+        level: 'debug',
+        message: `Zip download of ${directory}/ of part ${partId} failed unexpectedly: ${sanitizeLogString(message)}`,
+      });
       prepared = 'zip_invalid';
     }
     if (typeof prepared === 'string') { return notUsed(prepared, true); }
