@@ -6,6 +6,16 @@
 
 import type { Assignment, Part, DirectoryType, Config } from './config';
 import type { RubricSyncPlan, RemoteRubric } from './api';
+import type { DirectoryBlockedReason } from '../core/diagnostics';
+
+/**
+ * A directory push refuses to upload, and why. `dir` is the path within the
+ * part; every consumer that builds a path or a list from blocks takes `.dir`.
+ */
+export interface BlockedDirectory {
+  dir: DirectoryType;
+  reason: DirectoryBlockedReason;
+}
 
 /**
  * Validation error types
@@ -81,10 +91,18 @@ export interface PartAction {
    * push sent for another setting does not carry it either.
    */
   cleanupTimeIgnored?: boolean;
-  /** Directories push must not upload because the last pull of them was
-   *  incomplete (INCOMPLETE_PULL_MARKER in content_state). Uploading them
-   *  with reset:1 would delete the remote files the pull missed. */
-  blockedDirectories?: DirectoryType[];
+  /** Directories push must not upload, each with its reason:
+   *  - `incomplete-pull`: the last pull of it was incomplete (INCOMPLETE_PULL_MARKER
+   *    in content_state). Uploading it with reset:1 would delete the remote files
+   *    the pull missed.
+   *  - `container-asnlib`: `asnlib` on a course not positively Elite, where an
+   *    upload could replace the `docs`/`data` aliases it holds.
+   *  Never in `changedDirectories`. */
+  blockedDirectories?: BlockedDirectory[];
+  /** The refusal message for a `container-asnlib` block, naming the evidence
+   *  (or its absence) the reconciler saw. Shown in the plan summary and emitted
+   *  as `directory_blocked` by executePush. */
+  asnlibRefusal?: string;
   /** Rubric work this part needs, when rubric sync is enabled and the part has
    *  `rubrics` in config. Present only when non-empty — a part whose rubrics already
    *  match carries no plan and stays a `skip`. */
