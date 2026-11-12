@@ -5,6 +5,7 @@
  * versioning this envelope, while each payload carries its own numeric
  * `payload_schema_version`. Adding a diagnostic code bumps the envelope;
  * reshaping pull's payload bumps only pull's.
+ * Schema 1.0 is what 1.5.0 first publishes; additions before that release bump nothing.
  */
 import { classifyFailure } from '../utils/failure-classifier';
 import { sanitizeForLog, sanitizeLogString } from '../api/client';

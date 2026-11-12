@@ -4,6 +4,7 @@
  * A code is a stable public identifier. Consumers branch on it and never on
  * `message`, which stays free to be reworded. Adding a code is a minor
  * schema_version bump; removing one or changing a severity is a major bump.
+ * Schema 1.0 is what 1.5.0 first publishes; additions before that release bump nothing.
  *
  * Severity never sets the exit code (see the spec, section 5.0): a warn-level
  * diagnostic fires on nearly every Elite pull, because those courses declare a
@@ -43,6 +44,8 @@ export const DIAGNOSTIC_SEVERITY = {
   // are terminal for rubrics, so both are error.
   rubric_write_forbidden: 'error',
   rubric_write_skipped: 'warn',
+  zip_not_used: 'warn',
+  directory_blocked: 'error',
 } as const satisfies Record<string, 'warn' | 'error'>;
 
 export const DIAGNOSTIC_CODES = [
@@ -60,6 +63,8 @@ export const DIAGNOSTIC_CODES = [
   'rubric_read_failed',
   'rubric_write_forbidden',
   'rubric_write_skipped',
+  'zip_not_used',
+  'directory_blocked',
 ] as const;
 
 export type DiagnosticCode = typeof DIAGNOSTIC_CODES[number];
@@ -90,6 +95,42 @@ export type WarnFn = (message: string, diagnostic?: WarnDiagnostic) => void;
 export function warnEvent(message: string, diagnostic?: WarnDiagnostic): ServiceEvent {
   if (diagnostic === undefined) { return { level: 'warn', message }; }
   return { level: DIAGNOSTIC_SEVERITY[diagnostic.code], code: diagnostic.code, message, data: diagnostic.data };
+}
+
+/**
+ * Why a directory was walked file by file although zip download was on. A closed
+ * set: adding a value is a minor schema change. The `code:` guard regex does not
+ * see `data.reason`, so the type is what keeps emit sites honest. No value may
+ * equal a registered code (hence `object_download_failed`, not `download_failed`).
+ */
+export const ZIP_NOT_USED_REASONS = [
+  'listing_failed', 'listing_over_budget', 'listed_size_over_limit',
+  'start_failed', 'poll_failed', 'deadline', 'url_rejected',
+  'clock_uncertain', 'object_stale', 'object_window', 'object_headers',
+  'object_changed', 'object_download_failed', 'object_settle_changed',
+  'zip_invalid', 'zip_over_budget', 'cycle_pattern', 'name_mismatch', 'budget',
+  'quarantined',
+] as const;
+
+export type ZipNotUsedReason = typeof ZIP_NOT_USED_REASONS[number];
+
+/** Why push refused a directory. */
+export const DIRECTORY_BLOCKED_REASONS = ['incomplete-pull', 'container-asnlib'] as const;
+
+export type DirectoryBlockedReason = typeof DIRECTORY_BLOCKED_REASONS[number];
+
+/**
+ * The `zip_not_used` diagnostic for a warning callback.
+ *
+ * @param quarantined - true when this rejection quarantined the part.
+ */
+export function zipNotUsedDiagnostic(
+  partId: string,
+  directory: string,
+  reason: ZipNotUsedReason,
+  quarantined: boolean,
+): WarnDiagnostic {
+  return { code: 'zip_not_used', data: { part_id: partId, directory, reason, quarantined } };
 }
 
 export function isDiagnosticCode(value: string): value is DiagnosticCode {
