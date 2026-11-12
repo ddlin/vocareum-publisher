@@ -9,6 +9,7 @@ import zlib from 'node:zlib';
 import { Readable } from 'node:stream';
 import { AxiosError } from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as content from '../../src/api/content';
 import {
   downloadContent,
   type DownloadContentLimits,
@@ -249,6 +250,51 @@ describe('downloadContent zip path: scenario contract', () => {
     expect(zip.files).toEqual(walk.files);
     expect(zip.failures).toEqual(walk.failures);
     expect(zip.failures[0].reason).toContain('is listed as 2000 bytes');
+  });
+
+  it('step 8 budget: kept files and directories over the remaining count, no listing tripping step 7 — budget, quarantined, walked', async () => {
+    // No explicit directory entries: the zip holds 3 entries (within
+    // maxEntries 3), while the commit would charge 3 files + directory a = 4.
+    const make = (): FakeVocareumTree => new FakeVocareumTree({ explicitDirs: false })
+      .file('/voc/startercode/a/a1.txt', '1')
+      .file('/voc/startercode/a/a2.txt', '2')
+      .file('/voc/startercode/a/a3.txt', '3');
+    // Step 8 is a backstop: while step 7's bound is one running total, every
+    // charged name is a listed name, so the listings trip first (next test).
+    // To reach it, each bounded listing gets a fresh copy of the counter —
+    // per-listing bounds, the regression step 8 guards against.
+    const real = content.listDirectoryBounded;
+    vi.spyOn(content, 'listDirectoryBounded').mockImplementation(
+      (client, courseId, assignmentId, partId, apiDirPath, counter) =>
+        real(client, courseId, assignmentId, partId, apiDirPath, { remaining: counter.remaining }),
+    );
+    const tree = make();
+    const zip = await pull(tree, ['startercode'], { limits: { maxFiles: 3 } });
+    vi.mocked(content.listDirectoryBounded).mockRestore();
+    const walk = await pull(make(), ['startercode'], { zip: false, limits: { maxFiles: 3 } });
+
+    expect(tree.requests('start')).toHaveLength(1);
+    // Step 7 listed the root and a, each within the bound.
+    expect(tree.requests('list', '/voc/startercode/a').length).toBeGreaterThan(0);
+    expect(zipNotUsed(zip.events)).toEqual([
+      { part_id: PART, directory: 'startercode', reason: 'budget', quarantined: true },
+    ]);
+    expect(zip.error).toBeUndefined();
+    expect(zip.files).toEqual(walk.files);
+    expect(zip.failures).toEqual(walk.failures);
+    expect(zip.failures).toHaveLength(1);
+    expect(zip.failures[0].reason).toContain('more than 3 files');
+  });
+
+  it('step 8 budget is a backstop: with the shipped running total the same tree stops at step 7 (listing_over_budget)', async () => {
+    const tree = new FakeVocareumTree({ explicitDirs: false })
+      .file('/voc/startercode/a/a1.txt', '1')
+      .file('/voc/startercode/a/a2.txt', '2')
+      .file('/voc/startercode/a/a3.txt', '3');
+    const r = await pull(tree, ['startercode'], { limits: { maxFiles: 3 } });
+    expect(zipNotUsed(r.events)).toEqual([
+      { part_id: PART, directory: 'startercode', reason: 'listing_over_budget', quarantined: true },
+    ]);
   });
 
   it('S15: strict — zip not used, then the walk fails and throws as today', async () => {
