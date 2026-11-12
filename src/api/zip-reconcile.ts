@@ -33,6 +33,10 @@ export interface ReconcilePlan {
   handoffEmpty: Map<string, Set<string>>;
   /** Kept directories the commit charges: `keptDirs` minus the handed-off ones. */
   keptDirsToCharge: Set<string>;
+  /** Parent path -> names of depth-cut directories. The walk handles each at
+   *  its parent: it fetches a name that is now a file, and otherwise lists it
+   *  and records the cut with its own message. The commit never charges them. */
+  handoffDepthCut: Map<string, Set<string>>;
 }
 
 /** Optional listed sizes, so the `listed_size_over_limit` rule is checked here. */
@@ -204,6 +208,12 @@ export function planReconcile(
     }
   }
 
+  const handoffDepthCut = new Map<string, Set<string>>();
+  for (const dir of filtered.depthCut) {
+    const { parent, name } = splitParent(dir);
+    addTo(handoffDepthCut, parent, name);
+  }
+
   let listedOverLimit = false;
   const { sizes, maxFileBytes } = options;
   if (sizes !== undefined && maxFileBytes !== undefined) {
@@ -217,5 +227,5 @@ export function planReconcile(
     }
   }
 
-  return { mismatch, listedOverLimit, missing, handoffEmpty, keptDirsToCharge };
+  return { mismatch, listedOverLimit, missing, handoffEmpty, keptDirsToCharge, handoffDepthCut };
 }

@@ -186,19 +186,65 @@ describe('downloadContent zip path: scenario contract', () => {
       tree.file('/voc/startercode/md/c1.txt', 'c1');
       tree.file('/voc/startercode/md/c2.txt', 'c2');
     };
-    // Commit charges 2 files + 10 kept dirs + 1 depth-cut dir = 13. The handoff
-    // charges m.txt (14) and md (15), then trips on md/c1.txt (16). If any kept
-    // name were charged again it would trip earlier, before m.txt arrived.
-    const r = await pull(tree, ['startercode'], { limits: { maxFiles: 15 } });
+    // Commit charges 2 files + 10 kept dirs = 12. The depth-cut directory is
+    // handed to the walk with the missing names, so the walk charges it.
+    // Handoff of the root: m.txt (13), md (14), md/c1.txt (15), md/c2.txt
+    // (16); then the handoff of d10 trips on d11 (17). If any kept name, or
+    // the depth-cut directory, were charged twice it would trip earlier.
+    const r = await pull(tree, ['startercode'], { limits: { maxFiles: 16 } });
 
     expect(zipNotUsed(r.events)).toEqual([]);
-    expect(Object.keys(r.files!).sort()).toEqual(['startercode/k1.txt', 'startercode/k2.txt', 'startercode/m.txt']);
-    expect(r.failures.map((f) => f.path)).toEqual([`startercode/${deep}`, 'startercode']);
-    expect(r.failures[0].reason).toContain('10-level download limit');
-    expect(r.failures[1].reason).toContain('more than 15 files while downloading startercode/md/c1.txt');
-    expect(codes(r.events)).toContain('download_truncated');
-    // The depth-cut directory is never listed.
+    expect(Object.keys(r.files!).sort()).toEqual([
+      'startercode/k1.txt', 'startercode/k2.txt', 'startercode/m.txt', 'startercode/md/c1.txt', 'startercode/md/c2.txt',
+    ]);
+    expect(r.failures.map((f) => f.path)).toEqual(['startercode']);
+    expect(r.failures[0].reason).toContain(`more than 16 files while downloading startercode/${deep}`);
+    // The cap tripped on the charge, before the depth-cut directory was fetched or listed.
     expect(tree.requests('list', `/voc/startercode/${deep}`)).toEqual([]);
+  });
+
+  it('S21: a depth-cut directory is handed to the walk, which records the cut with its own message, as zip off does', async () => {
+    const deep = Array.from({ length: 11 }, (_, i) => `d${i + 1}`).join('/');
+    const make = (): FakeVocareumTree => new FakeVocareumTree()
+      .file('/voc/startercode/k1.txt', 'one')
+      .file(`/voc/startercode/${deep}/f.txt`, 'too deep');
+    const zip = await pull(make(), ['startercode']);
+    const walk = await pull(make(), ['startercode'], { zip: false });
+
+    expect(zipNotUsed(zip.events)).toEqual([]);
+    expect(zip.files).toEqual(walk.files);
+    expect(zip.failures).toEqual(walk.failures);
+    expect(zip.failures.map((f) => f.path)).toEqual([`startercode/${deep}`]);
+    expect(zip.failures[0].reason).toContain('10-level download limit');
+    expect(codes(zip.events).filter((c) => c === 'download_truncated')).toHaveLength(1);
+  });
+
+  it('S21: strict, a depth-cut directory throws from the walk as zip off does', async () => {
+    const deep = Array.from({ length: 11 }, (_, i) => `d${i + 1}`).join('/');
+    const make = (): FakeVocareumTree => new FakeVocareumTree()
+      .file('/voc/startercode/k1.txt', 'one')
+      .file(`/voc/startercode/${deep}/f.txt`, 'too deep');
+    const zip = await pull(make(), ['startercode'], { strict: true });
+    const walk = await pull(make(), ['startercode'], { strict: true, zip: false });
+    expect(zipNotUsed(zip.events)).toEqual([]);
+    expect(zip.error).toBeInstanceOf(Error);
+    expect((zip.error as Error).message).toBe((walk.error as Error).message);
+  });
+
+  it('review Grok F3: a depth-cut prefix that is now a file is fetched by the handoff, not recorded as a cut', async () => {
+    const deep = Array.from({ length: 11 }, (_, i) => `d${i + 1}`).join('/');
+    const tree = new FakeVocareumTree()
+      .file('/voc/startercode/k1.txt', 'one')
+      .file(`/voc/startercode/${deep}/f.txt`, 'too deep');
+    // After the zip is built, the 11-segment directory becomes a file.
+    tree.onWritten = () => {
+      tree.remove(`/voc/startercode/${deep}`).file(`/voc/startercode/${deep}`, 'now a file');
+    };
+    const r = await pull(tree, ['startercode']);
+    expect(zipNotUsed(r.events)).toEqual([]);
+    expect(r.files![`startercode/${deep}`]).toEqual(Buffer.from('now a file'));
+    expect(r.failures).toEqual([]);
+    expect(codes(r.events)).not.toContain('download_truncated');
   });
 
   it('S13: byte cap, alias content charged twice — caps never exceeded, INCOMPLETE', async () => {

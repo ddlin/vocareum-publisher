@@ -944,9 +944,6 @@ export function downloadContent(
             downloaded, budget, timeoutMs: zip.timeoutMs, now: zipNow, http: zipHttp, state: zipState,
             isMissingDirectory: (error, apiDirPath) => isHttp400(error) &&
               missingDirectoryMessageMatches(error instanceof Error ? error.message : String(error), apiDirPath),
-            recordDepthCut: (filemapKey) => recordDownloadFailure(
-              client, budget, strict, filemapKey, DEPTH_CUT_REASON, partId, 'truncated'
-            ),
             walk: (relativePath, depth, preListed, only) => downloadDirectoryTree(
               client, courseId, assignmentId, partId, directory, baseApiPath, relativePath, depth,
               downloaded, strict, budget, preListed, only

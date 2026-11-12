@@ -223,7 +223,7 @@ describe('planReconcile', () => {
     expect(planReconcile(f, listings({ '': ['a.txt'] })).listedOverLimit).toBe(false);
   });
 
-  it('S12: kept, missing, handed-off and depth-cut entries are disjoint, each counted once', () => {
+  it('S12: kept, missing, handed-off and depth-cut entries are disjoint, each counted once; depth-cut ones are handed off', () => {
     const d11 = deep(11, 'd11');
     const d10 = deep(10, 'd10');
     const f = filterStaging(staging(
@@ -249,14 +249,17 @@ describe('planReconcile', () => {
     expect(plan.keptDirsToCharge.has('empty')).toBe(false);
     expect(sorted(plan.missing.get('') ?? [])).toEqual(['gone.txt', 'newdir']);
     expect(sorted(plan.handoffEmpty.get('') ?? [])).toEqual(['empty']);
-    // The depth-cut directory is accounted for in step 6, never missing.
+    // The depth-cut directory is never missing: it is handed to the walk at
+    // its parent, which charges it (never the commit).
     expect(plan.missing.has(d10)).toBe(false);
+    expect(sorted(plan.handoffDepthCut.get(d10) ?? [])).toEqual(['d11']);
+    expect(plan.keptDirsToCharge.has(d11)).toBe(false);
 
     const full = (dir: string, name: string): string => (dir ? `${dir}/${name}` : name);
     const groups: string[][] = [
       keptFiles,
       [...plan.keptDirsToCharge],
-      [...f.depthCut],
+      [...plan.handoffDepthCut].flatMap(([d, ns]) => [...ns].map(n => full(d, n))),
       [...plan.missing].flatMap(([d, ns]) => [...ns].map(n => full(d, n))),
       [...plan.handoffEmpty].flatMap(([d, ns]) => [...ns].map(n => full(d, n))),
     ];

@@ -60,8 +60,6 @@ export interface ZipDirectoryArgs {
   state: ZipPartState;
   /** True when the error is the API's "doesn't exist" answer for `apiDirPath`. */
   isMissingDirectory: (error: unknown, apiDirPath: string) => boolean;
-  /** Record a depth-cut directory with the walk's own message (strict mode throws). */
-  recordDepthCut: (filemapKey: string) => void;
   /** The walk's per-entry logic for one directory, restricted to the `only` names. */
   walk: (relativePath: string, depth: number, preListed: FileInfo[], only: ReadonlySet<string>) => Promise<void>;
 }
@@ -185,10 +183,11 @@ export async function tryZipDirectory(args: ZipDirectoryArgs): Promise<'used' | 
     budget.files += count;
     budget.bytes += bytes;
     for (const [path, buf] of filtered.files) { args.downloaded[`${directory}/${path}`] = buf; }
-    for (const cut of [...filtered.depthCut].sort()) { args.recordDepthCut(`${directory}/${cut}`); }
-
+    // Depth-cut directories go to the walk with the missing names: the zip saw
+    // them only as a prefix of deeper entries, so a name that is now a file
+    // must still be fetched; the walk records a real cut itself.
     const handoff = new Map<string, Set<string>>();
-    for (const source of [plan.missing, plan.handoffEmpty]) {
+    for (const source of [plan.missing, plan.handoffEmpty, plan.handoffDepthCut]) {
       for (const [dir, names] of source) {
         const set = handoff.get(dir) ?? new Set<string>();
         for (const name of names) { set.add(name); }
@@ -284,11 +283,12 @@ async function prepareZip(
   if (plan.mismatch) { return 'name_mismatch'; }
   if (plan.listedOverLimit) { return 'listed_size_over_limit'; }
 
-  // Step 8: the commit must fit. Missing names are not pre-charged: the
-  // handoff charges them once, and trips a limit exactly as the walk does.
+  // Step 8: the commit must fit. Missing names and depth-cut directories are
+  // not pre-charged: the handoff charges them once, and trips a limit exactly
+  // as the walk does.
   let bytes = 0;
   for (const buf of filtered.files.values()) { bytes += buf.length; }
-  const count = filtered.files.size + plan.keptDirsToCharge.size + filtered.depthCut.size;
+  const count = filtered.files.size + plan.keptDirsToCharge.size;
   if (budget.files + count > limits.maxFiles || budget.bytes + bytes > limits.maxTotalBytes) {
     return 'budget';
   }
