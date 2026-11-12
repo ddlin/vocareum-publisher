@@ -122,8 +122,7 @@ async function readBounded(
  *   `'walk'` when the caller must walk it
  */
 export async function tryZipDirectory(args: ZipDirectoryArgs): Promise<'used' | 'walk'> {
-  const { client, partId, directory, baseApiPath, budget, state } = args;
-  const limits = budget.limits;
+  const { client, partId, directory, budget, state } = args;
 
   const notUsed = (reason: ZipNotUsedReason, quarantines: boolean): 'walk' => {
     if (quarantines) { state.quarantined = true; }
@@ -136,25 +135,13 @@ export async function tryZipDirectory(args: ZipDirectoryArgs): Promise<'used' | 
 
   if (state.quarantined) { return notUsed('quarantined', false); }
 
-  // Step 1: list the top level. Nothing is started yet, so nothing here quarantines.
-  let top: ReadListing | 'over_budget';
-  try {
-    top = await readBounded(args, baseApiPath, { remaining: limits.maxFiles - budget.files });
-  } catch (error) {
-    // A missing directory keeps today's handling, silently here: the walk
-    // lists it again and decides. The bounded collector cannot say which page
-    // answered "doesn't exist", and only page 0 means absent; a later page
-    // means names were already read, which the walk reports as an error.
-    if (args.isMissingDirectory(error, baseApiPath)) { return 'walk'; }
-    return notUsed('listing_failed', false);
-  }
-  if (top === 'over_budget') { return notUsed('listing_over_budget', false); }
-  // Empty: stop. A zip request for it would never finish (Elite), and the walk
-  // of an empty listing does nothing, so the directory is done.
-  if (top.names.length === 0) { return 'used'; }
-  for (const size of top.sizes.values()) {
-    if (size > limits.maxFileBytes) { return notUsed('listed_size_over_limit', false); }
-  }
+  // Step 1. Only its verdict comes back: the listing itself stays inside
+  // checkTopLevel and is unreachable before the start request (spec memory
+  // bound); step 7 lists again.
+  const top = await checkTopLevel(args);
+  if (top === 'missing') { return 'walk'; }
+  if (top === 'empty') { return 'used'; }
+  if (top !== 'proceed') { return notUsed(top, false); }
 
   // From the start request on, any outcome but "used" quarantines the part:
   // a job of ours may still be writing the shared object.
@@ -204,6 +191,37 @@ export async function tryZipDirectory(args: ZipDirectoryArgs): Promise<'used' | 
     // The deadline bounds steps 2–6 only; its timer must not outlive the directory.
     deadline.dispose();
   }
+}
+
+/**
+ * Step 1: list the top level and decide whether to start a zip. Nothing is
+ * started yet, so no outcome here quarantines. Returns a verdict only, so the
+ * listing is garbage once this returns.
+ *
+ * - `missing`: the API's "doesn't exist" answer; the walk lists again and
+ *   decides, silently here. The bounded collector cannot say which page gave
+ *   it, and only page 0 means absent; a later page means names were already
+ *   read, which the walk reports as an error.
+ * - `empty`: done. A zip request for it would never finish (Elite), and the
+ *   walk of an empty listing does nothing.
+ */
+async function checkTopLevel(
+  args: ZipDirectoryArgs,
+): Promise<'proceed' | 'missing' | 'empty' | ZipNotUsedReason> {
+  const { budget, baseApiPath } = args;
+  let top: ReadListing | 'over_budget';
+  try {
+    top = await readBounded(args, baseApiPath, { remaining: budget.limits.maxFiles - budget.files });
+  } catch (error) {
+    if (args.isMissingDirectory(error, baseApiPath)) { return 'missing'; }
+    return 'listing_failed';
+  }
+  if (top === 'over_budget') { return 'listing_over_budget'; }
+  if (top.names.length === 0) { return 'empty'; }
+  for (const size of top.sizes.values()) {
+    if (size > budget.limits.maxFileBytes) { return 'listed_size_over_limit'; }
+  }
+  return 'proceed';
 }
 
 /** Steps 2–8 passed: everything step 9 commits and hands off. Nothing is committed yet. */
