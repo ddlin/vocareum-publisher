@@ -65,14 +65,18 @@ function activeCount(scheduler: RequestScheduler): number {
 afterEach(() => { vi.useRealTimers(); });
 
 describe('deadline primitives', () => {
-  it('createDeadline counts down on the injected clock and aborts with a DeadlineError', async () => {
+  it('createDeadline counts down on the injected clock and aborts with a DeadlineError', () => {
+    // Fake timers: a real 80 ms wait for a 50 ms timer is flaky on a loaded machine.
+    vi.useFakeTimers();
     let t = 1_000;
     const d = createDeadline(50, () => t);
     expect(d.remainingMs()).toBe(50);
     t += 20;
     expect(d.remainingMs()).toBe(30);
     expect(d.signal.aborted).toBe(false);
-    await new Promise((r) => setTimeout(r, 80));
+    vi.advanceTimersByTime(49);
+    expect(d.signal.aborted).toBe(false);
+    vi.advanceTimersByTime(1);
     expect(d.signal.aborted).toBe(true);
     expect(d.signal.reason).toBeInstanceOf(DeadlineError);
   });
