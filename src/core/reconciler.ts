@@ -7,7 +7,7 @@
 import * as path from 'path';
 import type { Config, PublishHistory, Part, Assignment, DirectoryType } from '../types/config';
 import { detectArchitecture, normalizeSubmissionFilters } from '../types/config';
-import { detectChangedDirectories, directoriesForPart, publishExcludePatterns } from './local-scan';
+import { detectChangedDirectories, directoriesForPart, publishExcludePatterns, INCOMPLETE_PULL_MARKER } from './local-scan';
 import type { VocareumAssignmentResponse, VocareumPartResponse, RubricSyncPlan, RemoteRubric } from '../types/api';
 import type {
   ReconciliationPlan,
@@ -579,12 +579,25 @@ export async function reconcile(
     } else if (assignmentActionType === 'create') {
       // For creation, we mark all parts as needing creation/upload
       for (const part of configAssignment.parts) {
-        // On create every directory is planned, so the guard applies here too.
-        // The template is never evidence: it may live in another course.
+        // A directory a partial pull marked is never planned, on create as on
+        // update (detectChangedDirectories): the template copy is complete,
+        // and a reset:1 upload of the partial local tree would delete what
+        // the pull missed and clear the marker that protects it.
         const blocked: BlockedDirectory[] = [];
+        const planned: DirectoryType[] = [];
+        for (const dir of directoriesForPart(config, part)) {
+          const key = path.join(configAssignment.path, part.path, dir);
+          if (lastPublishHistory?.content_state?.[key] === INCOMPLETE_PULL_MARKER) {
+            blocked.push({ dir, reason: 'incomplete-pull' });
+          } else {
+            planned.push(dir);
+          }
+        }
+        // On create every other directory is planned, so the guard applies here
+        // too. The template is never evidence: it may live in another course.
         const { changedDirs: createDirs, refusal } = await guardAsnlib(
           guard,
-          directoriesForPart(config, part),
+          planned,
           blocked,
           () => firstConfiguredPart(courseAssignments),
           path.join(configAssignment.path, part.path, 'asnlib'),

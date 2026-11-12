@@ -1402,6 +1402,25 @@ export async function executePush(
           continue;
         }
         for (const dir of contentDirectories) {
+          // Defence in depth: the planner never plans a directory a partial
+          // pull marked, but a reset:1 upload of one would delete every remote
+          // file the pull missed, so the executor refuses it too.
+          const markedKey = path.join(action.assignment.path, partAction.part.path, dir);
+          if (lastHistory?.content_state?.[markedKey] === INCOMPLETE_PULL_MARKER) {
+            const block: BlockedDirectory = { dir, reason: 'incomplete-pull' };
+            const message = blockedDirectoryMessage(action.assignment, partAction, block);
+            events.emit({
+              level: 'error',
+              code: 'directory_blocked',
+              message,
+              data: { part_id: partId, directory: dir, reason: block.reason },
+            });
+            result.failed.push({ type: 'file', id: markedKey, error: message });
+            result.contentState[markedKey] = INCOMPLETE_PULL_MARKER;
+            result.success = false;
+            if (abortOnError) { shouldAbort = true; break assignmentLoop; }
+            continue;
+          }
           try {
             const dirKey = path.join(action.assignment.path, partAction.part.path, dir);
             const localDirPath = path.resolve(workspaceRoot, dirKey);

@@ -509,6 +509,87 @@ describe('S34: create path', () => {
   });
 });
 
+describe('create path and incomplete-pull markers (review: Codex F1)', () => {
+  /** lab1 exists (the evidence part); lab2 is recreated from the template, with both directories marked by a partial pull. */
+  async function markedCreateWorld(): Promise<{ labs: Lab[]; config: Config }> {
+    await writeFiles('lab1/part1', { 'startercode/main.py': 'a\n', 'asnlib/g.py': 'a\n' });
+    await writeFiles('lab2/part1', { 'startercode/main.py': 'partial\n', 'asnlib/g.py': 'partial\n' });
+    m.copyAssignment.mockResolvedValue({ assignment_id: 'a2', parts: [{ part_id: 'p2', seqnum: '0' }] });
+    const labs: Lab[] = [
+      { path: 'lab1', assignmentId: 'a1', partId: 'p1' },
+      { path: 'lab2', assignmentId: null, partId: null, template: 'tmpl-9' },
+    ];
+    remoteFrom(labs);
+    const history = await historyFor([labs[0]]);
+    history.content_state = {
+      ...history.content_state,
+      'lab2/part1/startercode': INCOMPLETE_PULL_MARKER,
+      'lab2/part1/asnlib': INCOMPLETE_PULL_MARKER,
+    };
+    return { labs, config: makeConfig(labs, history, { template_assignment_id: 'tmpl-9' }) };
+  }
+
+  it('Elite course: a create never plans a directory marked incomplete-pull; both blocked, nothing uploaded, markers kept', async () => {
+    const { config } = await markedCreateWorld();
+    rootBody = pagesOf(ELITE);
+    const reconciled = await reconcile(config, client, config.publish_history![0], {
+      workspaceRoot: root, events: { emit: () => undefined }, asnlibGuard: { courseAssignments: config.assignments },
+    } as never);
+    const created = reconciled.assignments.find((a) => a.assignment.path === 'lab2')!.parts[0];
+    expect(created.type).toBe('create');
+    expect(created.changedDirectories).toEqual([]);
+    expect(created.blockedDirectories).toEqual([
+      { dir: 'startercode', reason: 'incomplete-pull' },
+      { dir: 'asnlib', reason: 'incomplete-pull' },
+    ]);
+
+    const run = await push(config);
+    expect(uploads).toEqual([]);
+    expect(blockedEvents(run.events).map((e) => e.data)).toEqual([
+      { part_id: 'p2', directory: 'startercode', reason: 'incomplete-pull' },
+      { part_id: 'p2', directory: 'asnlib', reason: 'incomplete-pull' },
+    ]);
+    expect(run.history?.content_state?.['lab2/part1/startercode']).toBe(INCOMPLETE_PULL_MARKER);
+    expect(run.history?.content_state?.['lab2/part1/asnlib']).toBe(INCOMPLETE_PULL_MARKER);
+    expect(run.result.success).toBe(false);
+  });
+
+  it('Container course: marked startercode is blocked too, not only asnlib', async () => {
+    const { config } = await markedCreateWorld();
+    rootBody = pagesOf(CONTAINER);
+    const run = await push(config);
+    expect(uploads).toEqual([]);
+    expect(part(run.plan, 1).blockedDirectories).toEqual([
+      { dir: 'startercode', reason: 'incomplete-pull' },
+      { dir: 'asnlib', reason: 'incomplete-pull' },
+    ]);
+    expect(run.history?.content_state?.['lab2/part1/startercode']).toBe(INCOMPLETE_PULL_MARKER);
+  });
+
+  it('defence in depth: executePush refuses a planned directory whose stored value is incomplete-pull', async () => {
+    const { labs, config } = await changedAsnlibWorld();
+    rootBody = pagesOf(ELITE);
+    const events: ServiceEvent[] = [];
+    const ctx = {
+      persistedConfig: config, effectiveConfig: config, configPath: path.join(root, 'vocareum.yaml'),
+      workspaceRoot: root, events: { emit: (e: ServiceEvent) => { events.push(e); } },
+      prompter: new NonInteractivePrompter(), client,
+    };
+    const req: PushRequest = { nonInteractive: true };
+    const plan = await planPush(ctx, req);
+    expect(Object.keys(part(plan).contentHashes)).toContain('asnlib');
+    // The marker lands after planning (a plan built from stale state).
+    config.publish_history![0].content_state![path.join(labs[0].path, 'part1', 'asnlib')] = INCOMPLETE_PULL_MARKER;
+    let history: PublishHistory | undefined;
+    const session = { applyConfigUpdate: vi.fn(async (u: { publish_history?: PublishHistory[] }) => { history = u.publish_history?.[0]; }) } as unknown as LockedSession;
+    const result = await executePush(session, ctx, req, plan);
+    expect(asnlibUploads()).toEqual([]);
+    expect(blockedEvents(events).map((e) => e.data)).toContainEqual({ part_id: 'p1', directory: 'asnlib', reason: 'incomplete-pull' });
+    expect(history?.content_state?.['lab1/part1/asnlib']).toBe(INCOMPLETE_PULL_MARKER);
+    expect(result.success).toBe(false);
+  });
+});
+
 // ── S36 ───────────────────────────────────────────────────────────────────────
 
 describe('S36: dry-run and the plan summary', () => {
