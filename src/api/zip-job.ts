@@ -81,14 +81,16 @@ export async function runZipJob(
   const url = `/courses/${ids.courseId}/assignments/${ids.assignmentId}/parts/${ids.partId}/files`;
 
   // Start. No includeHidden: the zip must match the step-1/step-7 listings.
-  let jobStart: number;
+  // jobStart is read when the start is handed to axios (onSend), after the
+  // token and the scheduler slot: an object written while we waited for
+  // either is newer than the job's start and must fail the stale check.
+  let jobStart = Number.NaN;
   let transactionId: string | undefined;
   for (let attempt = 0; ; attempt++) {
-    jobStart = now();
     try {
       const body = await client.request<unknown>(
         { method: 'GET', url, params: { dir: baseApiPath } },
-        { maxRetries: 1, noAuthReplay: true, deadline, zipAuth: true },
+        { maxRetries: 1, noAuthReplay: true, deadline, zipAuth: true, onSend: () => { jobStart = now(); } },
       );
       transactionId = transactionIdOf(body);
       break;
@@ -105,7 +107,9 @@ export async function runZipJob(
       try { await abortableSleep(delayMs, deadline.signal); } catch { return { reason: 'deadline' }; }
     }
   }
-  if (transactionId === undefined) { return { reason: 'start_failed' }; }
+  // NaN only if no attempt was ever handed to axios; never trust a start time
+  // we did not observe (a NaN compares false and would pass the stale check).
+  if (transactionId === undefined || Number.isNaN(jobStart)) { return { reason: 'start_failed' }; }
 
   // Poll. The waits are lower bounds: polls share the client's scheduler.
   let waitMs = FIRST_POLL_MS;

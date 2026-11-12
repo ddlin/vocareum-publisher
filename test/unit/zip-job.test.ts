@@ -77,7 +77,7 @@ async function settle<T>(promise: Promise<T>): Promise<T> {
 }
 
 function startOptions(deadline: Deadline) {
-  return { maxRetries: 1, noAuthReplay: true, deadline, zipAuth: true };
+  return { maxRetries: 1, noAuthReplay: true, deadline, zipAuth: true, onSend: expect.any(Function) };
 }
 function pollOptions(deadline: Deadline) {
   return { retryOverload: false, deadline, zipAuth: true };
@@ -161,6 +161,35 @@ describe('runZipJob: start and poll', () => {
     const result = await settle(runZipJob(client, IDS, BASE, createDeadline(60_000, now), now));
     // Start backoff 1000, then 2000: the third start is sent at 3000.
     expect(result).toEqual({ url: SIGNED, jobStart: 3_000, success: 3_000 + 250 + 120 });
+  });
+});
+
+describe('jobStart is the send instant (review: Grok F2)', () => {
+  it('a slow token and a held scheduler slot come before jobStart: it is read when the start is handed to axios', async () => {
+    // Every token read takes 700 ms. The one slot is taken first by another
+    // request, which reads its token inside the slot (700) and then takes
+    // 2_000 ms, so the slot frees at 2_700. The start reads its token outside
+    // the slot, then waits for it.
+    class SlowTokenProvider implements AuthProvider {
+      readonly apiBaseUrl = 'https://api.vocareum.com/api/v2';
+      async getAuthorizationHeader() { await new Promise((r) => setTimeout(r, 700)); return 'Token fake'; }
+    }
+    const sentAt: number[] = [];
+    const { client } = clientWith(async (config) => {
+      if (config.url === '/other') {
+        await new Promise((r) => setTimeout(r, 2_000));
+        return response(config, 200, {});
+      }
+      if (isStart(config)) { sentAt.push(now()); return response(config, 200, STARTED); }
+      return response(config, 200, { state: 'success', message: SIGNED });
+    }, new SlowTokenProvider());
+    const other = client.request({ method: 'GET', url: '/other' });
+    const result = await settle(runZipJob(client, IDS, BASE, createDeadline(60_000, now), now));
+    await settle(other);
+    expect(sentAt).toEqual([2_700]);
+    // Before the fix jobStart was 0: read before the token and the slot wait.
+    expect(result).toEqual({ url: SIGNED, jobStart: 2_700, success: expect.any(Number) });
+    expect((result as { success: number }).success).toBeGreaterThan(2_700);
   });
 });
 

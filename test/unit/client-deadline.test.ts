@@ -344,3 +344,22 @@ describe('Retry-After against the deadline', () => {
     expect(seen).toHaveLength(2); // t=0 and t=2 s; the second 2 s sleep would pass the deadline
   });
 });
+
+describe('onSend: the instant the request is handed to axios (review: Grok F2)', () => {
+  it('is called inside the slot just before each attempt is sent, once per attempt; the last call is the sent attempt', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const sentAt: number[] = [];
+    const { client } = clientWith(new TokenProvider(), (config, call) => {
+      sentAt.push(Date.now());
+      if (call === 1) { throw httpError(config, 503); }
+      return response(config, 200, { ok: true });
+    });
+    const calls: number[] = [];
+    const p = client.request({ method: 'GET', url: '/x' }, { maxRetries: 2, backoff: 500, onSend: () => { calls.push(Date.now()); } });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(p).resolves.toEqual({ ok: true });
+    expect(calls).toEqual(sentAt);
+    expect(calls).toEqual([0, 500]);
+  });
+});

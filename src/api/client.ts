@@ -249,6 +249,14 @@ interface RetryOptions {
    * a token exchange there could hold the slot past the deadline.
    */
   zipAuth?: boolean;
+  /**
+   * Called inside the scheduler slot immediately before each attempt is handed
+   * to axios, after the token and the slot wait. Called once per attempt, so
+   * the last call is the attempt that was answered. The zip job reads its
+   * `jobStart` here: a time read before those waits would let an object
+   * written during them pass the stale check (spec step 4).
+   */
+  onSend?: () => void;
 }
 
 /** The per-attempt timeout: the client's own, and the cap under a deadline. */
@@ -666,6 +674,7 @@ export class VocareumClient {
             };
             sent = preset;
           }
+          options.onSend?.();
           return this.axios.request<T>(sent);
         }, deadline?.signal);
         this.events.emit({ level: 'debug', message: `API response: ${response.status}`, data: sanitizeForLog({ data: response.data }) });
