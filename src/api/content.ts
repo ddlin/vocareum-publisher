@@ -182,8 +182,11 @@ export class NotAFileListingError extends APIError {
 
 function describeBody(response: unknown): string {
   if (response === null) { return 'null'; }
-  if (typeof response === 'string') { return `text: ${JSON.stringify(sanitizeLogString(response.trim().slice(0, 120)))}`; }
-  if (typeof response === 'object') { return `object with keys ${JSON.stringify(Object.keys(response).slice(0, 10))}`; }
+  // Redact first, then shorten (a cut can split a URL's user-info).
+  if (typeof response === 'string') { return `text: ${JSON.stringify(sanitizeLogString(response.trim()).slice(0, 120))}`; }
+  if (typeof response === 'object') {
+    return `object with keys ${sanitizeLogString(JSON.stringify(Object.keys(response).slice(0, 10)))}`;
+  }
   return typeof response;
 }
 
@@ -572,7 +575,7 @@ export async function waitForPartUpdateTransaction(
       txn = await client.request<TransactionResponse>({
         method: 'GET',
         url: `/transaction/${transactionId}`,
-      });
+      }, { retryOverload: false });
     } catch (error) {
       // An overloaded sample says nothing about the job: keep polling, as an
       // unreadable sample was before. Failing here would abandon a running

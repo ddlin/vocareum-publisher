@@ -641,3 +641,52 @@ describe('the overload error after review (Retry-After, redaction, type)', () =>
     expect(calls).toBe(2);
   });
 });
+
+describe('overload follow-up (focused review of 3cd80d6)', () => {
+  it('caps a huge Retry-After on the overload answer at 60 s', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+      let calls = 0;
+      setAdapter(client, async (config: unknown) => {
+        calls += 1;
+        if (calls === 1) {
+          return { data: THROTTLE_BODY, status: 200, statusText: 'OK', headers: { 'retry-after': '86400' }, config };
+        }
+        return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config };
+      });
+      const pending = client.request<{ ok: boolean }>({ method: 'GET', url: '/x' });
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(calls).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toEqual({ ok: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retryOverload: false throws the overload at once, but still retries other errors', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    let calls = 0;
+    setAdapter(client, async (config: unknown) => {
+      calls += 1;
+      return { data: THROTTLE_BODY, status: 200, statusText: 'OK', headers: {}, config };
+    });
+    await expect(client.request({ method: 'GET', url: '/x' }, { retryOverload: false, backoff: 1 }))
+      .rejects.toMatchObject({ name: 'OverloadError' });
+    expect(calls).toBe(1);
+
+    const other = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    setAdapter(other, mockAdapter([{ status: 500 }, { status: 200, data: { ok: true } }]));
+    expect(await other.request({ method: 'GET', url: '/x' }, { retryOverload: false, backoff: 1 })).toEqual({ ok: true });
+  });
+
+  it('redacts before shortening, so a cut inside user-info cannot leave the password', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    const body = `VOCAREUM-ERROR: https://user:SECRETPW${'x'.repeat(400)}@example.com/path`;
+    setAdapter(client, async (config: unknown) =>
+      ({ data: body, status: 200, statusText: 'OK', headers: {}, config }));
+    const err = await client.request({ method: 'GET', url: '/x' }, { maxRetries: 1 }).catch((e: unknown) => e as Error);
+    expect(err.message).not.toMatch(/SECRETPW/);
+  });
+});

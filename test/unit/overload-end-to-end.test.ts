@@ -73,6 +73,21 @@ describe('listing through the real client', () => {
   }, 10_000);
 });
 
+describe('a non-listing body is described without secrets', () => {
+  it('redacts a text body before shortening it, and redacts object keys', async () => {
+    const text = `https://user:SECRETPW${'x'.repeat(200)}@example.com/x`;
+    const a = clientWith(() => text);
+    const errA = await listFiles(a.client, 'c', 'a', 'p', 'startercode', 'container').catch((e: unknown) => e as Error);
+    expect(errA.message).toMatch(/not a file listing/);
+    expect(errA.message).not.toMatch(/SECRETPW/);
+
+    const b = clientWith(() => ({ 'https://u:KEYSECRET@host/x?token=TOKSECRET': 1 }));
+    const errB = await listFiles(b.client, 'c', 'a', 'p', 'startercode', 'container').catch((e: unknown) => e as Error);
+    expect(errB.message).toMatch(/not a file listing/);
+    expect(errB.message).not.toMatch(/KEYSECRET|TOKSECRET/);
+  });
+});
+
 describe('transaction polls ride out an overloaded sample', () => {
   // Before the fix a text sample had no `state` and the poll simply polled
   // again. Throwing would abandon a running job: an upload's later chunks
@@ -104,6 +119,35 @@ describe('transaction polls ride out an overloaded sample', () => {
     const { client } = clientWith(() => THROTTLE_BODY);
     await expect(waitForPartUpdateTransaction(client, 't1', { maxAttempts: 2, delayMs: 1 })).rejects.toThrow(/Timed out/);
   }, 20_000);
+
+  it('each overloaded sample is ONE request: no retry cycle (1 s + 2 s backoff) inside a sample', async () => {
+    // Total request counts can coincide either way, so time it: with a retry
+    // cycle per sample, two overloaded samples cost at least 1 s of backoff.
+    let transactionCalls = 0;
+    const { client } = clientWith(() => {
+      transactionCalls += 1;
+      return transactionCalls <= 2 ? THROTTLE_BODY : { status: 'success', state: 'success' };
+    });
+    const started = Date.now();
+    await waitForPartUpdateTransaction(client, 't1', { maxAttempts: 5, delayMs: 1 });
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(transactionCalls).toBe(3);
+  });
+
+  it('ignores a huge Retry-After inside a poll (the poll keeps its own pace and deadline)', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    let call = 0;
+    (client as unknown as { axios: { defaults: Record<string, unknown> } }).axios.defaults.adapter =
+      async (config: Req) => {
+        call += 1;
+        return call === 1
+          ? { data: THROTTLE_BODY, status: 200, statusText: 'OK', headers: { 'retry-after': '86400' }, config }
+          : { data: { status: 'success', state: 'success', objid: 'obj-1' }, status: 200, statusText: 'OK', headers: {}, config };
+      };
+    const started = Date.now();
+    await expect(waitForAssignmentObjId(client, 't1', { maxAttempts: 5, delayMs: 1, timeoutMs: 60_000 })).resolves.toBe('obj-1');
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
 
   it('a real failure state still fails the poll at once', async () => {
     const { client } = clientWith(() => ({ status: 'success', state: 'failed', message: 'unzip failed' }));

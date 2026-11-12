@@ -242,6 +242,13 @@ export function assertBaseUrlForVersion(baseUrl: string, version: 'v2' | 'v3', e
 interface RetryOptions {
   maxRetries?: number;
   backoff?: number;
+  /**
+   * false: an overload answer is thrown at once instead of retried. Pollers
+   * pass this: they treat an overloaded sample as "no news" and sample again
+   * after their own delay, so a retry cycle inside each sample would only
+   * multiply the poll's run time. Other errors are still retried.
+   */
+  retryOverload?: boolean;
 }
 
 const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set([
@@ -370,11 +377,22 @@ function retryAfterFromHeaders(headers: unknown): number | undefined {
  */
 function overloadError(data: unknown, headers: unknown): OverloadError | undefined {
   if (typeof data !== 'string' || !OVERLOAD_BODY.test(data)) { return undefined; }
+  // Redact first, then shorten: a cut inside "https://user:secret@host"
+  // would leave a fragment the URL redaction no longer recognises.
+  const retryAfter = retryAfterFromHeaders(headers);
   return new OverloadError(
-    `Vocareum is overloaded: ${sanitizeLogString(data.trim().slice(0, 300))}`,
-    retryAfterFromHeaders(headers),
+    `Vocareum is overloaded: ${sanitizeLogString(data.trim()).slice(0, 300)}`,
+    retryAfter === undefined ? undefined : Math.min(retryAfter, OVERLOAD_MAX_RETRY_AFTER_S),
   );
 }
+
+/**
+ * A server-sent Retry-After on the overload answer is honoured up to this
+ * many seconds. The retry budget is three attempts, so an uncapped value
+ * could hold a command for days; a longer outage fails after the budget and
+ * the user re-runs.
+ */
+const OVERLOAD_MAX_RETRY_AFTER_S = 60;
 
 /**
  * Sleep for a given number of milliseconds
@@ -526,6 +544,7 @@ export class VocareumClient {
         if (isRawApiResponse401(error)) {
           (wrapped as VocareumError & ApiUnauthorizedFlag).isApiResponseUnauthorized = true;
         }
+        if (wrapped instanceof OverloadError && options.retryOverload === false) { throw wrapped; }
         const retryable = isRetryable(wrapped, method) || isRetryable(error, method);
         if (a === maxRetries - 1 || !retryable) { throw wrapped; }
         // A server-provided Retry-After takes precedence over exponential backoff.

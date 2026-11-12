@@ -128,7 +128,7 @@ export async function updatePart(
         txn = await client.request<typeof txn>({
           method: 'GET',
           url: `/transaction/${response.transactionid}`,
-        });
+        }, { retryOverload: false });
       } catch (error) {
         // An overloaded sample says nothing about the update: keep polling.
         if (!isOverloadError(error)) { throw error; }

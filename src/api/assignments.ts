@@ -197,7 +197,7 @@ export async function waitForAssignmentObjId(
       txn = await client.request<TransactionResponse>({
         method: 'GET',
         url: `/transaction/${transactionId}`,
-      });
+      }, { retryOverload: false });
     } catch (error) {
       // An overloaded sample says nothing about the copy: keep polling.
       if (!isOverloadError(error)) { throw error; }
