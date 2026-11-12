@@ -74,6 +74,9 @@ const batch: PullResolver = {
   resolveImportPath: async (_issue, suggested) => suggested,
 };
 
+/** The part PUT body the uploader sends (`content[].zipcontent`, AGENTS.md #2). */
+interface PartPutBody { content: { target: string; zipcontent: string; reset: number }[] }
+
 interface Put { partId: string; target: string; reset: number; files: Record<string, string> }
 
 interface RemotePart { id: string; name: string }
@@ -120,7 +123,7 @@ class World {
   readonly inst: Installed;
   readonly puts: Put[] = [];
   parts: RemotePart[] = [{ id: PART, name: 'Part 1' }];
-  private readonly rawPuts: { partId: string; body: { content: { target: string; zipcontent: string; reset: number }[] } }[] = [];
+  private readonly rawPuts: { partId: string; body: PartPutBody }[] = [];
 
   constructor(tree: FakeVocareumTree) {
     this.tree = tree;
@@ -163,7 +166,7 @@ class World {
     if (url.endsWith('/files')) { return this.tree.adapter(config); }
     if ((config.method ?? 'get').toLowerCase() === 'put') {
       const m = /\/parts\/([^/]+)$/.exec(url);
-      const body = (typeof config.data === 'string' ? JSON.parse(config.data) : config.data) as Put & { content: { target: string; zipcontent: string; reset: number }[] };
+      const body = (typeof config.data === 'string' ? JSON.parse(config.data) : config.data) as PartPutBody;
       this.rawPuts.push({ partId: m?.[1] ?? '?', body });
       return ok({ status: 'success' });
     }
@@ -334,7 +337,304 @@ const blocked = (events: ServiceEvent[]): unknown[] =>
   events.filter((e) => e.code === 'directory_blocked').map((e) => e.data);
 const uploadedTargets = (w: World): string[] => w.puts.map((p) => p.target);
 
+describe('S30 round-trip matrix: added, removed, changed, unchanged via zip', () => {
+  it('import via zip: files on disk, hashes in content_state, no zip_not_used', async () => {
+    const w = await world();
+    const run = await w.import(w.zip());
+    expect(run.result.imported).toBe(1);
+    expect(zipNotUsed(run.events)).toEqual([]);
+    expect(w.tree.requests('start').map((e) => e.path).sort()).toEqual(['/voc/docs', '/voc/startercode']);
+    expect(w.tree.requests('fetch')).toEqual([]);
+    expect(await w.read('startercode/util/helpers.py')).toBe('def h(): pass\n');
+    expect(history(run.config)?.status).toBe('success');
+    expect(state(run.config)[KEY('startercode')]).toBe(await w.hash('startercode'));
+  });
+
+  it('added: remote gains a file — drift via zip reports added, batch apply writes it and advances the hash', async () => {
+    const w = await imported();
+    w.tree.file('/voc/startercode/new.txt', 'new\n');
+    const before = starts(w);
+    const run = await w.drift(w.zip());
+    expect(starts(w)).toBeGreaterThan(before);
+    expect(zipNotUsed(run.events)).toEqual([]);
+    expect(diffs(run)).toEqual([{ filePath: 'startercode/new.txt', status: 'added' }]);
+    expect(await w.read('startercode/new.txt')).toBe('new\n');
+    expect(state(run.config)[KEY('startercode')]).toBe(await w.hash('startercode'));
+    expect(history(run.config)?.status).toBe('success');
+  });
+
+  it('removed: remote file deleted — drift via zip reports deleted, batch apply unlinks it', async () => {
+    const w = await imported();
+    w.tree.remove('/voc/startercode/util/helpers.py');
+    const run = await w.drift(w.zip());
+    expect(zipNotUsed(run.events)).toEqual([]);
+    expect(diffs(run)).toEqual([{ filePath: 'startercode/util/helpers.py', status: 'deleted' }]);
+    expect(await w.exists('startercode/util/helpers.py')).toBe(false);
+    expect(state(run.config)[KEY('startercode')]).toBe(await w.hash('startercode'));
+  });
+
+  it('removed: remote directory emptied entirely — no zip, no warning; every local file deleted', async () => {
+    const w = await imported();
+    w.tree.remove('/voc/startercode/main.py').remove('/voc/startercode/util');
+    const before = w.tree.requests('start', '/voc/startercode').length;
+    const run = await w.drift(w.zip());
+    expect(w.tree.requests('start', '/voc/startercode')).toHaveLength(before);
+    expect(zipNotUsed(run.events)).toEqual([]);
+    expect(diffs(run)).toEqual([
+      { filePath: 'startercode/main.py', status: 'deleted' },
+      { filePath: 'startercode/util/helpers.py', status: 'deleted' },
+    ]);
+    expect(await w.exists('startercode/main.py')).toBe(false);
+  });
+
+  it('removed: directory emptied between step 1 and the start — deadline, quarantined, the walk sees it empty', async () => {
+    const w = await imported();
+    w.tree.intercept = (kind, p) => {
+      if (kind === 'start' && p === '/voc/startercode') {
+        w.tree.remove('/voc/startercode/main.py').remove('/voc/startercode/util');
+      }
+      return undefined;
+    };
+    const run = await w.drift(w.zip(5_000));
+    expect(zipNotUsed(run.events)).toEqual(quarantinedAfter({ reason: 'deadline' }));
+    expect(diffs(run)).toEqual([
+      { filePath: 'startercode/main.py', status: 'deleted' },
+      { filePath: 'startercode/util/helpers.py', status: 'deleted' },
+    ]);
+    expect(await w.exists('startercode/main.py')).toBe(false);
+  });
+
+  it('removed: file deleted between step 1 and the zip build — absent from zip and listing, no failure', async () => {
+    const w = await imported();
+    w.tree.intercept = (kind, p) => {
+      if (kind === 'start' && p === '/voc/startercode') { w.tree.remove('/voc/startercode/main.py'); }
+      return undefined;
+    };
+    const run = await w.drift(w.zip());
+    expect(zipNotUsed(run.events)).toEqual([]);
+    expect(diffs(run)).toEqual([{ filePath: 'startercode/main.py', status: 'deleted' }]);
+    expect(run.inspection.contentDriftIncomplete).toEqual([]);
+  });
+
+  it('removed: asnlib dropped from the part directory set — pull and push stop touching it', async () => {
+    const w = await imported(labTree().file('/resource/asnlib/grader.py', 'g\n'));
+    expect(await w.read('asnlib/grader.py')).toBe('g\n');
+    await w.editConfig((c) => {
+      const part = c.assignments[0].parts[0];
+      part.directories = (part.directories ?? []).filter((d) => d !== 'asnlib');
+    });
+    w.tree.file('/resource/asnlib/grader.py', 'g2\n');
+    const listedBefore = w.tree.requests('list', '/resource/asnlib').length;
+    const run = await w.drift(w.zip());
+    expect(w.tree.requests('list', '/resource/asnlib')).toHaveLength(listedBefore);
+    expect(diffs(run)).toEqual([]);
+    await w.write('asnlib/grader.py', 'local edit\n');
+    const pushed = await w.push({ forceAll: true });
+    expect(uploadedTargets(w)).not.toContain('asnlib');
+    expect(pushed.plan.intent.assignments[0].parts[0].blockedDirectories ?? []).toEqual([]);
+  });
+
+  it('changed: remote file content changed — drift via zip reports modified with the new bytes', async () => {
+    const w = await imported();
+    w.tree.file('/voc/startercode/main.py', 'print(2)\n');
+    const run = await w.drift(w.zip());
+    expect(zipNotUsed(run.events)).toEqual([]);
+    expect(diffs(run)).toEqual([{ filePath: 'startercode/main.py', status: 'modified' }]);
+    expect(await w.read('startercode/main.py')).toBe('print(2)\n');
+    expect(state(run.config)[KEY('startercode')]).toBe(await w.hash('startercode'));
+  });
+
+  it('unchanged: nothing changed remotely — zero diffs via zip, nothing written', async () => {
+    const w = await imported();
+    const historyBefore = (await loadConfig(w.configPath)).publish_history;
+    const before = starts(w);
+    const run = await w.drift(w.zip());
+    expect(starts(w)).toBe(before + 2);
+    expect(zipNotUsed(run.events)).toEqual([]);
+    expect(run.inspection.contentDrift).toEqual([]);
+    expect(run.inspection.contentDriftIncomplete).toEqual([]);
+    expect(run.config.publish_history).toEqual(historyBefore);
+  });
+});
+
+describe('S30 round-trip matrix: incomplete', () => {
+  /** Imported via zip with one unreadable symlink in startercode. */
+  async function incompleteWorld(): Promise<World> {
+    const w = await world(labTree().link('/voc/startercode/broken'));
+    const run = await w.import(w.zip());
+    expect(zipNotUsed(run.events)).toEqual([]);
+    expect(run.result.filesNotDownloaded).toBe(1);
+    expect(state(run.config)[KEY('startercode')]).toBe(INCOMPLETE_PULL_MARKER);
+    expect(state(run.config)[KEY('docs')]).toBe(await w.hash('docs'));
+    expect(history(run.config)?.status).toBe('failed');
+    expect(history(run.config)?.failed?.map((f) => f.id)).toEqual([path.join(LAB, 'startercode', 'broken')]);
+    return w;
+  }
+
+  it('incomplete: an unreadable symlink — failure recorded, marker set; push refuses the directory with incomplete-pull', async () => {
+    const w = await incompleteWorld();
+    await w.write('startercode/main.py', 'print("edited")\n');
+    const run = await w.push();
+    expect(blocked(run.events)).toEqual([{ part_id: PART, directory: 'startercode', reason: 'incomplete-pull' }]);
+    expect(uploadedTargets(w)).not.toContain('startercode');
+    expect(run.result.success).toBe(false);
+    expect(state(run.config)[KEY('startercode')]).toBe(INCOMPLETE_PULL_MARKER);
+  });
+
+  it('incomplete → recovered: the cause is gone, zero file diffs — still drift; apply replaces the marker with a hash', async () => {
+    const w = await incompleteWorld();
+    w.tree.remove('/voc/startercode/broken');
+    const run = await w.drift(w.zip());
+    expect(zipNotUsed(run.events)).toEqual([]);
+    expect(diffs(run)).toEqual([]);
+    expect(run.inspection.contentDrift[0].partsDrift[0].incompleteDirectories).toEqual(['startercode']);
+    expect(state(run.config)[KEY('startercode')]).toBe(await w.hash('startercode'));
+    expect(history(run.config)?.status).toBe('success');
+  });
+
+  it('incomplete → still incomplete: a local symlink sits at a destination — not written, the marker stays', async () => {
+    const w = await incompleteWorld();
+    w.tree.remove('/voc/startercode/broken');
+    w.tree.file('/voc/startercode/main.py', 'print(3)\n');
+    await fs.rm(w.abs('startercode/main.py'));
+    await fs.symlink(w.abs('docs/README.md'), w.abs('startercode/main.py'));
+    const run = await w.drift(w.zip());
+    expect(zipNotUsed(run.events)).toEqual([]);
+    expect(run.inspection.contentDrift[0].partsDrift[0].stillIncompleteDirectories).toEqual(['startercode']);
+    expect((await fs.lstat(w.abs('startercode/main.py'))).isSymbolicLink()).toBe(true);
+    expect(await w.read('docs/README.md')).toBe('# Lab\n');
+    expect(state(run.config)[KEY('startercode')]).toBe(INCOMPLETE_PULL_MARKER);
+    expect(history(run.config)?.status).toBe('failed');
+  });
+});
+
+describe('S30 round-trip matrix: managed link', () => {
+  it('lib/publicdata: a managed link — never a failure on import, never a deletion on drift', async () => {
+    const w = await imported(labTree().file('/resource/lib/util.py', 'x = 1\n').link('/resource/lib/publicdata'));
+    const cfg = await loadConfig(w.configPath);
+    expect(history(cfg)?.status).toBe('success');
+    expect(state(cfg)[KEY('lib')]).toBe(await w.hash('lib'));
+    expect(await w.read('lib/util.py')).toBe('x = 1\n');
+
+    await w.write('lib/publicdata/local.csv', 'a,b\n');
+    const run = await w.drift(w.zip());
+    expect(zipNotUsed(run.events)).toEqual([]);
+    expect(diffs(run)).toEqual([]);
+    expect(await w.read('lib/publicdata/local.csv')).toBe('a,b\n');
+  });
+});
+
+/** A Container `asnlib` with an alias directory: listable and zipped, refused file by file. */
+function aliasTree(): FakeVocareumTree {
+  return labTree()
+    .file('/resource/asnlib/grader.py', 'grade()\n')
+    .dir('/resource/asnlib/public/docs', true)
+    .file('/resource/asnlib/public/docs/guide.md', 'guide\n')
+    .file('/resource/asnlib/public/docs/extra.md', 'extra\n');
+}
+
+describe('S30 round-trip matrix: directory aliases', () => {
+  it('alias, added: asnlib pulled with an alias — alias files kept, no marker', async () => {
+    const w = await imported(aliasTree());
+    const cfg = await loadConfig(w.configPath);
+    expect(await w.read('asnlib/public/docs/guide.md')).toBe('guide\n');
+    expect(state(cfg)[KEY('asnlib')]).toBe(await w.hash('asnlib'));
+    expect(history(cfg)?.status).toBe('success');
+  });
+
+  it('alias, removed: remote alias content deleted — drift reports deleted under asnlib/public/docs', async () => {
+    const w = await imported(aliasTree());
+    w.tree.remove('/resource/asnlib/public/docs/guide.md');
+    const run = await w.drift(w.zip());
+    expect(zipNotUsed(run.events)).toEqual([]);
+    expect(diffs(run)).toEqual([{ filePath: 'asnlib/public/docs/guide.md', status: 'deleted' }]);
+    expect(await w.exists('asnlib/public/docs/guide.md')).toBe(false);
+    expect(await w.read('asnlib/public/docs/extra.md')).toBe('extra\n');
+  });
+
+  it('alias, local-only file: local asnlib/notes.txt absent remotely — drift reports deleted; apply removes it', async () => {
+    const w = await imported(aliasTree());
+    await w.write('asnlib/notes.txt', 'mine\n');
+    const run = await w.drift(w.zip());
+    expect(diffs(run)).toEqual([{ filePath: 'asnlib/notes.txt', status: 'deleted' }]);
+    expect(await w.exists('asnlib/notes.txt')).toBe(false);
+  });
+});
+
+describe('S30 round-trip matrix: zip turned off after a zip pull', () => {
+  it('no alias directory, remote unchanged: the walk agrees with the zip — zero diffs, no zip request', async () => {
+    const w = await imported();
+    const before = starts(w);
+    const run = await w.drift(w.zipFromEnv({ VOCAREUM_PULL_ZIP: 'off' }));
+    expect(starts(w)).toBe(before);
+    expect(run.inspection.contentDrift).toEqual([]);
+    expect(run.inspection.contentDriftIncomplete).toEqual([]);
+  });
+
+  it('Container asnlib with aliases, strict: the walk cannot read the alias — drift skips the assignment, nothing deleted', async () => {
+    const w = await imported(aliasTree());
+    const run = await w.drift(w.zipFromEnv({ VOCAREUM_PULL_ZIP: 'off' }));
+    expect(run.inspection.contentDrift).toEqual([]);
+    expect(run.inspection.contentDriftIncomplete?.map((s) => s.assignmentName)).toEqual(['Lab One']);
+    expect(await w.read('asnlib/public/docs/guide.md')).toBe('guide\n');
+  });
+
+  it('Container asnlib with aliases, non-strict: the INCOMPLETE marker comes back; push refuses asnlib with incomplete-pull', async () => {
+    const w = await world(aliasTree());
+    const run = await w.import(w.zipFromEnv({ VOCAREUM_PULL_ZIP: 'off' }));
+    expect(w.tree.requests('start')).toEqual([]);
+    expect(state(run.config)[KEY('asnlib')]).toBe(INCOMPLETE_PULL_MARKER);
+    expect(history(run.config)?.status).toBe('failed');
+
+    const pushed = await w.push();
+    expect(blocked(pushed.events)).toEqual([{ part_id: PART, directory: 'asnlib', reason: 'incomplete-pull' }]);
+    expect(uploadedTargets(w)).not.toContain('asnlib');
+  });
+
+  it('alias removed with zip off, alias still holds files: strict throws, no deletion reported', async () => {
+    const w = await imported(aliasTree());
+    w.tree.remove('/resource/asnlib/public/docs/guide.md');
+    const run = await w.drift(w.zipFromEnv({ VOCAREUM_PULL_ZIP: 'off' }));
+    expect(run.inspection.contentDrift).toEqual([]);
+    expect(run.inspection.contentDriftIncomplete?.map((s) => s.assignmentName)).toEqual(['Lab One']);
+    expect(await w.read('asnlib/public/docs/guide.md')).toBe('guide\n');
+  });
+
+  it('alias removed with zip off, alias now empty: it lists [], drift reports the local alias files deleted', async () => {
+    const w = await imported(aliasTree());
+    w.tree.remove('/resource/asnlib/public/docs/guide.md').remove('/resource/asnlib/public/docs/extra.md');
+    const run = await w.drift(w.zipFromEnv({ VOCAREUM_PULL_ZIP: 'off' }));
+    expect(run.inspection.contentDriftIncomplete).toEqual([]);
+    expect(diffs(run)).toEqual([
+      { filePath: 'asnlib/public/docs/extra.md', status: 'deleted' },
+      { filePath: 'asnlib/public/docs/guide.md', status: 'deleted' },
+    ]);
+    expect(await w.exists('asnlib/public/docs/guide.md')).toBe(false);
+  });
+});
+
 describe('S30 round-trip matrix: placeholder and type changes', () => {
+  it('unchanged: a zero-byte placeholder stored by an earlier walk — the zip hands the empty directory to the walk; no drift', async () => {
+    const w = await world(labTree().dir('/voc/startercode/empty'));
+    // This workspace serves the empty directory as a zero-byte downloadable object too.
+    w.tree.intercept = (kind, p) => (kind === 'fetch' && p === 'startercode/empty'
+      ? { status: 'success', files: [{ filename: p, download_url: `https://files.example/${p}` }] }
+      : undefined);
+    vi.mocked(axios.get).mockImplementation((async (url: string, cfg?: { maxContentLength?: number }) =>
+      (url.endsWith('/startercode/empty') ? { data: Buffer.alloc(0) } : w.tree.download(url, cfg))) as never);
+
+    const walked = await w.import(w.zipFromEnv({ VOCAREUM_PULL_ZIP: 'off' }));
+    expect(history(walked.config)?.status).toBe('success');
+    expect((await fs.stat(w.abs('startercode/empty'))).size).toBe(0);
+
+    const fetchesBefore = w.tree.requests('fetch', 'startercode/empty').length;
+    const run = await w.drift(w.zip());
+    expect(zipNotUsed(run.events)).toEqual([]);
+    expect(w.tree.requests('fetch', 'startercode/empty')).toHaveLength(fetchesBefore + 1);
+    expect(run.inspection.contentDrift).toEqual([]);
+    expect(run.inspection.contentDriftIncomplete).toEqual([]);
+  });
+
   it('file → directory after the zip was built: the zip file is kept (zip-only deviation); the next pull corrects it', async () => {
     const w = await imported(labTree().file('/voc/startercode/x', 'v1\n'));
     w.tree.file('/voc/startercode/x', 'v2\n');
@@ -355,5 +655,112 @@ describe('S30 round-trip matrix: placeholder and type changes', () => {
       { filePath: 'startercode/x/y', status: 'added' },
     ]);
     expect(await w.read('startercode/x/y')).toBe('why\n');
+  });
+
+  it.each([
+    ['empty' as const, 'name_mismatch'],
+    ['400' as const, 'listing_failed'],
+  ])('directory → file after the zip was built (a file path lists as %s): %s, walked; the walk fetches the file, as zip off does', async (fileListing, reason) => {
+    const w = await imported(new FakeVocareumTree({ fileListing })
+      .file('/voc/startercode/main.py', 'print(1)\n')
+      .file('/voc/startercode/d/c.txt', 'c\n'));
+    w.tree.onWritten = (job) => {
+      if (job.dir !== '/voc/startercode') { return; }
+      w.tree.remove('/voc/startercode/d').file('/voc/startercode/d', 'now a file\n');
+      w.tree.onWritten = () => undefined;
+    };
+    const run = await w.drift(w.zip());
+    expect(zipNotUsed(run.events)).toEqual(quarantinedAfter({ reason }));
+    // The walk fetched the new file in place of the zip's directory.
+    expect(w.tree.requests('download', 'startercode/d').length).toBeGreaterThan(0);
+    // Past the download, drift meets a local directory where the remote now
+    // has a file, and skips the assignment: reported, never clean, nothing
+    // deleted. That is drift's own pre-existing handling of a type change; the
+    // walk alone (zip off) ends the same way.
+    expect(diffs(run)).toEqual([]);
+    expect(run.inspection.contentDriftIncomplete).toEqual([{ assignmentName: 'Lab One', reason: expect.stringContaining('EISDIR') }]);
+    expect(await w.read('startercode/d/c.txt')).toBe('c\n');
+
+    const walked = await imported(new FakeVocareumTree({ fileListing })
+      .file('/voc/startercode/main.py', 'print(1)\n')
+      .file('/voc/startercode/d/c.txt', 'c\n'));
+    walked.tree.remove('/voc/startercode/d').file('/voc/startercode/d', 'now a file\n');
+    const walkRun = await walked.drift(walked.zipFromEnv({ VOCAREUM_PULL_ZIP: 'off' }));
+    expect(walkRun.inspection.contentDriftIncomplete).toEqual(run.inspection.contentDriftIncomplete);
+  });
+});
+
+describe('S30 round-trip matrix: push round trip', () => {
+  it('import via zip, edit one startercode file, push: the reset upload holds exactly the imported files plus the edit', async () => {
+    const w = await imported();
+    await w.write('startercode/main.py', 'print("edited")\n');
+    const run = await w.push();
+    expect(blocked(run.events)).toEqual([]);
+    expect(w.puts).toEqual([{
+      partId: PART,
+      target: 'startercode',
+      reset: 1,
+      files: { 'main.py': 'print("edited")\n', 'util/helpers.py': 'def h(): pass\n' },
+    }]);
+    expect(run.result.success).toBe(true);
+    expect(state(run.config)[KEY('startercode')]).toBe(await w.hash('startercode'));
+  });
+});
+
+describe('S30 round-trip matrix: quarantine (service level)', () => {
+  it("one directory's start fails: the part's next directory is walked as quarantined; other parts still use zip", async () => {
+    const w = await world();
+    w.parts = [{ id: PART, name: 'Part 1' }, { id: PART2, name: 'Part 2' }];
+    w.tree.intercept = (kind, p, n) => (kind === 'start' && p === '/voc/startercode' && n === 1 ? new Error('start refused') : undefined);
+    const run = await w.import(w.zip());
+    expect(zipNotUsed(run.events)).toEqual(quarantinedAfter({ reason: 'start_failed' }));
+    // Part 1: one start (refused). Part 2: both directories through the zip.
+    expect(w.tree.requests('start', '/voc/startercode')).toHaveLength(2);
+    expect(w.tree.requests('start', '/voc/docs')).toHaveLength(1);
+    for (const partDir of ['part-1', 'part-2']) {
+      expect(await w.read(`${partDir}/startercode/util/helpers.py`)).toBe('def h(): pass\n');
+      expect(await w.read(`${partDir}/docs/README.md`)).toBe('# Lab\n');
+    }
+    expect(history(run.config)?.status).toBe('success');
+  });
+
+  it('content reject: step 7 rejects one directory, the next is walked as quarantined with no second start', async () => {
+    const w = await world();
+    w.tree.onWritten = (job) => {
+      if (job.dir === '/voc/startercode') { w.tree.remove('/voc/startercode/main.py'); }
+    };
+    const run = await w.import(w.zip());
+    expect(zipNotUsed(run.events)).toEqual(quarantinedAfter({ reason: 'name_mismatch' }));
+    expect(w.tree.requests('start')).toHaveLength(1);
+    expect(await w.exists('startercode/main.py')).toBe(false);
+    expect(await w.read('startercode/util/helpers.py')).toBe('def h(): pass\n');
+    expect(history(run.config)?.status).toBe('success');
+  });
+});
+
+describe('S30 round-trip matrix: switches through the pull service', () => {
+  it('switch, off: VOCAREUM_PULL_ZIP=off — no zip request; the walk imports the same files', async () => {
+    const zipped = await imported();
+    const w = await world();
+    const run = await w.import(w.zipFromEnv({ VOCAREUM_PULL_ZIP: 'off' }));
+    expect(w.tree.requests('start')).toEqual([]);
+    expect(w.tree.requests('poll')).toEqual([]);
+    expect(w.tree.requests('s3-range')).toEqual([]);
+    expect(zipNotUsed(run.events)).toEqual([]);
+    for (const dir of ['startercode', 'docs']) {
+      expect(await w.hash(dir)).toBe(await zipped.hash(dir));
+    }
+  });
+
+  it.each([
+    ['VOCAREUM_PULL_ZIP=of', { VOCAREUM_PULL_ZIP: 'of' }],
+    ['VOCAREUM_ZIP_TIMEOUT_MS=1e6 with VOCAREUM_PULL_ZIP=off', { VOCAREUM_PULL_ZIP: 'off', VOCAREUM_ZIP_TIMEOUT_MS: '1e6' }],
+  ])('switch, invalid (%s): a bare ConfigError (usage, exit 2) before the service sends any request', async (_label, env) => {
+    const w = await world();
+    let thrown: unknown;
+    try { w.zipFromEnv(env); } catch (e) { thrown = e; }
+    expect(thrown).toBeInstanceOf(ConfigError);
+    expect(thrown).not.toBeInstanceOf(CommandFailureError);
+    expect(w.tree.log).toEqual([]);
   });
 });
