@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { vi } from 'vitest';
 import { AxiosError } from 'axios';
-import { normalizeApiBaseUrl, assertAllowedBaseUrl, VocareumClient, sanitizeForLog } from '../../src/api/client';
+import { normalizeApiBaseUrl, assertAllowedBaseUrl, VocareumClient, sanitizeForLog, sanitizeLogString } from '../../src/api/client';
 import { OAuthTokenExchangeError } from '../../src/api/auth/oauth-provider';
 import type { AuthProvider } from '../../src/api/auth/auth-provider';
 
@@ -688,5 +688,21 @@ describe('overload follow-up (focused review of 3cd80d6)', () => {
       ({ data: body, status: 200, statusText: 'OK', headers: {}, config }));
     const err = await client.request({ method: 'GET', url: '/x' }, { maxRetries: 1 }).catch((e: unknown) => e as Error);
     expect(err.message).not.toMatch(/SECRETPW/);
+  });
+});
+
+describe('sanitizeLogString stays linear', () => {
+  it('a URL followed by a long run of punctuation and a letter is redacted quickly', () => {
+    // An unanchored trailing-punctuation regex retried at every dot: 80,000
+    // dots took ~3 s, and the overload path scrubs the whole server text.
+    const text = `VOCAREUM-ERROR: https://host/a?token=SECRET${'.'.repeat(200_000)}x`;
+    const started = Date.now();
+    const out = sanitizeLogString(text);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(out).not.toMatch(/SECRET/);
+  });
+
+  it('still keeps sentence punctuation outside the redacted URL', () => {
+    expect(sanitizeLogString('see https://host/p?token=abc).')).toBe('see https://host/p?[REDACTED]).');
   });
 });

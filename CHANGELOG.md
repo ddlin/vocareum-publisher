@@ -80,11 +80,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the local copies. (Seen on 5 of 24 listing requests in one probe.)
 
   Such an answer is now an error, handled like an HTTP 503:
-  - GET, PUT and DELETE requests are retried (3 attempts in all, honouring a
-    `Retry-After` header); a POST is not, because it may have taken effect.
+  - GET, PUT and DELETE requests are retried (3 attempts in all). A
+    `Retry-After` header sent with it is honoured up to 60 seconds. A POST is
+    not retried, because it may have taken effect.
   - Polls of a running job (upload, settings update, assignment copy) treat it
-    as "no news yet" and keep polling, as before, instead of giving up on the
-    job.
+    as "no news yet": one request per check, then the poll's usual wait, as
+    before. They do not retry it or wait for `Retry-After`, and they end at
+    their usual limit instead of giving up on the job at the first busy answer.
   - A listing whose answer has no file list, or only entries without names,
     fails instead of reading as empty.
 

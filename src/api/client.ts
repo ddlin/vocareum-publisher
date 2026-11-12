@@ -410,7 +410,20 @@ const REDACT_FORM_PARAM = /((?:^|&)(?:authorization|client_secret|access_token|r
  */
 const ABSOLUTE_URL = /https?:(?:\/\/|\\\/\\\/)[^\s"'<>]*/gi;
 /** Punctuation that usually ends a sentence rather than a URL. */
-const URL_TRAILING_PUNCTUATION = /[.,;:!)\]}]+$/;
+const URL_TRAILING_PUNCTUATION = new Set(['.', ',', ';', ':', '!', ')', ']', '}']);
+
+/**
+ * The run of sentence punctuation at the end of `text`. A scan from the end,
+ * not the regex `/[.,;:!)\]}]+$/`: unanchored at the start, that regex
+ * retried at every character of a long punctuation run that does not reach
+ * the end, so redacting a URL followed by 200,000 dots and a letter took
+ * 23 s. Error text from the server is scrubbed whole, so this must be linear.
+ */
+function trailingPunctuation(text: string): string {
+  let i = text.length;
+  while (i > 0 && URL_TRAILING_PUNCTUATION.has(text[i - 1])) { i -= 1; }
+  return text.slice(i);
+}
 /**
  * Credential parameters of signed URLs, wherever they appear — after a quote
  * or line break that ended the URL match early, or in a protocol-relative or
@@ -427,7 +440,7 @@ const SIGNED_URL_PARAM = /((?:^|[?&\s"'\\])(?:X-Amz-[A-Za-z-]+|AWSAccessKeyId|Si
  * and the parameter names vary by issuer, so the whole query goes.
  */
 function redactUrl(match: string): string {
-  const trailing = URL_TRAILING_PUNCTUATION.exec(match)?.[0] ?? '';
+  const trailing = trailingPunctuation(match);
   let url = trailing.length > 0 ? match.slice(0, -trailing.length) : match;
   url = url.replace(/^(https?:(?:\/\/|\\\/\\\/))[^/\\@]*@/i, '$1[REDACTED]@');
   const q = url.indexOf('?');
