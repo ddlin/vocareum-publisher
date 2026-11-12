@@ -22,6 +22,9 @@ const MAX_ROOT_NAMES = 1000;
 
 const unknown = (detail: string): RootEvidence => ({ kind: 'unknown', detail });
 
+/** How an `unknown` detail starts when the root listing request itself failed. */
+export const ROOT_LISTING_FAILED = 'the course root listing failed';
+
 /**
  * The one name a raw element yields, or a reason it does not.
  * The selection mirrors `parseFileListResponse` (`path ?? filename ?? name`)
@@ -112,7 +115,7 @@ export async function resolveCourseRootEvidence(
     result = classifyCourseRoot(rawPages, complete);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    result = unknown(`the course root listing failed: ${sanitizeLogString(message)}`);
+    result = unknown(`${ROOT_LISTING_FAILED}: ${sanitizeLogString(message)}`);
   }
   cache.set(courseId, result);
   return result;

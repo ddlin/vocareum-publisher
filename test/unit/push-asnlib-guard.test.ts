@@ -299,6 +299,10 @@ describe('S32: asnlib changed on an existing part', () => {
     const [blocked] = blockedEvents(run.events);
     expect(blocked.data).toMatchObject({ reason: 'container-asnlib', directory: 'asnlib' });
     expect(blocked.message).toMatch(/^Not pushing `lab1\/part1\/asnlib`: the course root listing failed: .*socket hang up/);
+    // A failed listing may be passing: refused this time, checked again next push.
+    expect(blocked.message).toMatch(/refused this time\. The next push checks the course root again\./);
+    expect(blocked.message).not.toMatch(/every push/);
+    expect(blocked.message).not.toMatch(/report this root listing/);
     expect(run.history?.content_state?.['lab1/part1/asnlib']).toBe(PUSH_INCOMPLETE_MARKER);
   });
 
@@ -685,8 +689,10 @@ describe('matrix: alias, push ... / push guard ...', () => {
       expect(asnlibUploads()).toEqual([]);
       const [blocked] = blockedEvents(run.events);
       expect(blocked.message).toMatch(/"extra"/);
-      expect(blocked.message).toMatch(/report this root listing/);
+      expect(blocked.message).toMatch(/refused on every push until vocgit recognises this course root/);
+      expect(blocked.message).toMatch(/Please report this root listing to the vocgit maintainers\./);
       expect(blocked.message).not.toMatch(/next push checks/);
+      expect(blocked.message).not.toMatch(/this time/);
       expect(run.history?.content_state?.['lab1/part1/asnlib']).toBe(PUSH_INCOMPLETE_MARKER);
     }
   });

@@ -20,7 +20,7 @@ import type {
 } from '../types/state';
 import { VocareumClient } from '../api/client';
 import { listDirectoryBounded } from '../api/content';
-import { resolveCourseRootEvidence, type RootEvidence } from './course-architecture';
+import { resolveCourseRootEvidence, ROOT_LISTING_FAILED, type RootEvidence } from './course-architecture';
 import { getCourse } from '../api/courses';
 import { listAssignments, getAssignment } from '../api/assignments';
 import { listParts, getPart } from '../api/parts';
@@ -196,10 +196,16 @@ async function asnlibRefusal(
     return `${head}: no part of this course existed to check; the next push checks the new part ` +
       'and uploads `asnlib` only if this course is Elite.';
   }
-  return `${head}: ${result.detail}, so vocgit cannot confirm this course is Elite. ` +
-    'On a Container course `asnlib` holds aliases of `docs` and `data`, and uploading it could replace them on Vocareum, ' +
+  const risk = 'On a Container course `asnlib` holds aliases of `docs` and `data`, and uploading it could replace them on Vocareum, ';
+  // A failed listing may be passing (network, overload): the evidence is
+  // cached for this run only, so the next push lists the root again.
+  if (result.detail.startsWith(ROOT_LISTING_FAILED)) {
+    return `${head}: ${result.detail}, so vocgit cannot confirm this course is Elite. ${risk}` +
+      'so it is refused this time. The next push checks the course root again.';
+  }
+  return `${head}: ${result.detail}, so vocgit cannot confirm this course is Elite. ${risk}` +
     'so it is refused on every push until vocgit recognises this course root. ' +
-    'If this is not a passing listing error, please report this root listing to the vocgit maintainers.';
+    'Please report this root listing to the vocgit maintainers.';
 }
 
 /**
