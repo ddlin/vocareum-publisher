@@ -7,7 +7,7 @@
  * CRITICAL: seqnum is a STRING that must be parsed for sorting!
  */
 
-import { VocareumClient, isOverloadError } from './client';
+import { APIError, VocareumClient, isOverloadError, sanitizeLogString } from './client';
 import type {
   VocareumPartResponse,
   PartSettingsPayload,
@@ -141,15 +141,19 @@ export async function updatePart(
       }
       if (txn.state === 'error' || txn.state === 'failed') {
         throw new Error(
-          txn.message ?? `Part update transaction failed (txn=${response.transactionid})`
+          sanitizeLogString(txn.message ?? `Part update transaction failed (txn=${response.transactionid})`)
         );
       }
 
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
 
-    throw new Error(
-      `Timed out after ${maxAttempts * delayMs}ms waiting for part update (txn=${response.transactionid})`
+    // Marked retryable: the settings job is still pending; writing the same
+    // settings again is idempotent. (Push records it per item, so the run
+    // exits 6; the flag is for callers that see the error itself.)
+    throw new APIError(
+      `Timed out after ${maxAttempts * delayMs}ms waiting for part update (txn=${response.transactionid})`,
+      undefined, undefined, true,
     );
   }
 }

@@ -51,6 +51,7 @@ function timestamp(): string {
  */
 export class Logger {
   private level: LogLevel;
+  private jsonMode = false;
 
   constructor(level?: LogLevel) {
     this.level = level ?? getLogLevelFromEnv();
@@ -61,6 +62,41 @@ export class Logger {
    */
   setLevel(level: LogLevel): void {
     this.level = level;
+  }
+
+  /**
+   * While enabled, EVERY level writes to stderr.
+   *
+   * --json gives stdout to the report document alone; a stray info line would
+   * make the document unparseable. Levels are unchanged - only the stream is.
+   */
+  setJsonMode(enabled: boolean): void {
+    this.jsonMode = enabled;
+  }
+
+  /**
+   * Run `body` with JSON mode forced on or off, restoring the previous value
+   * even if it throws.
+   *
+   * setJsonMode alone is sticky: the logger is a module singleton, so a command
+   * that enabled JSON mode and then threw left every later command in the same
+   * process writing its human output to stderr.
+   */
+  async withJsonMode<T>(enabled: boolean, body: () => Promise<T>): Promise<T> {
+    const previous = this.jsonMode;
+    this.jsonMode = enabled;
+    try {
+      return await body();
+    } finally {
+      this.jsonMode = previous;
+    }
+  }
+
+  /**
+   * The stream a normally-stdout line should use right now.
+   */
+  private out(): NodeJS.WriteStream {
+    return this.jsonMode ? process.stderr : process.stdout;
   }
 
   /**
@@ -91,7 +127,7 @@ export class Logger {
    */
   info(message: string): void {
     if (this.level >= LogLevel.INFO) {
-      process.stdout.write(chalk.blue('ℹ ') + message + '\n');
+      this.out().write(chalk.blue('ℹ ') + message + '\n');
     }
   }
 
@@ -100,7 +136,7 @@ export class Logger {
    */
   success(message: string): void {
     if (this.level >= LogLevel.INFO) {
-      process.stdout.write(chalk.green('✓ ') + message + '\n');
+      this.out().write(chalk.green('✓ ') + message + '\n');
     }
   }
 
@@ -109,9 +145,9 @@ export class Logger {
    */
   debug(message: string, meta?: unknown): void {
     if (this.level >= LogLevel.DEBUG) {
-      process.stdout.write(chalk.gray(`[DEBUG ${timestamp()}] `) + message + '\n');
+      this.out().write(chalk.gray(`[DEBUG ${timestamp()}] `) + message + '\n');
       if (meta !== undefined && meta !== null) {
-        process.stdout.write(chalk.gray(JSON.stringify(meta, null, 2)) + '\n');
+        this.out().write(chalk.gray(JSON.stringify(meta, null, 2)) + '\n');
       }
     }
   }
@@ -121,9 +157,9 @@ export class Logger {
    */
   trace(message: string, meta?: unknown): void {
     if (this.level >= LogLevel.TRACE) {
-      process.stdout.write(chalk.gray(`[TRACE ${timestamp()}] `) + message + '\n');
+      this.out().write(chalk.gray(`[TRACE ${timestamp()}] `) + message + '\n');
       if (meta !== undefined && meta !== null) {
-        process.stdout.write(chalk.gray(JSON.stringify(meta, null, 2)) + '\n');
+        this.out().write(chalk.gray(JSON.stringify(meta, null, 2)) + '\n');
       }
     }
   }
@@ -132,14 +168,14 @@ export class Logger {
    * Log plain text (no prefix)
    */
   plain(message: string): void {
-    process.stdout.write(message + '\n');
+    this.out().write(message + '\n');
   }
 
   /**
    * Log a blank line
    */
   newline(): void {
-    process.stdout.write('\n');
+    this.out().write('\n');
   }
 }
 

@@ -45,7 +45,9 @@ import {
   shouldSyncRubrics,
 } from '../../utils/settings-sync';
 import { rubricsEqual, describeRubricChanges, type RubricChangeSummary } from '../../utils/rubrics';
+import { UsageError } from '../../utils/command-failure';
 import { createRubricFetcher, type RubricFetcher } from './rubric-fetcher';
+import { warnEvent, type WarnFn } from '../diagnostics';
 
 // ── Re-exported helpers (used by pull.ts resolver) ──────────────────────────
 
@@ -170,13 +172,13 @@ export function validatePullContentFlags(opts: {
   const assignmentSel = opts.assignment ?? [];
   const partSel = opts.part ?? [];
   if (!opts.content && (assignmentSel.length > 0 || partSel.length > 0)) {
-    throw new Error('--assignment/--part only apply with --content. Add --content or remove the selectors.');
+    throw new UsageError('--assignment/--part only apply with --content. Add --content or remove the selectors.');
   }
   if (partSel.length > 0 && assignmentSel.length === 0) {
-    throw new Error('--part requires --assignment (part selectors are not unique across a course).');
+    throw new UsageError('--part requires --assignment (part selectors are not unique across a course).');
   }
   if (partSel.length > 0 && assignmentSel.length > 1) {
-    throw new Error('--part requires exactly one --assignment (part selectors are not unique across assignments).');
+    throw new UsageError('--part requires exactly one --assignment (part selectors are not unique across assignments).');
   }
 }
 
@@ -193,7 +195,7 @@ export function scopeAssignmentsForContent(
     const match = assignments.find((a) => a.name === sel || a.assignment_id === sel);
     if (!match) {
       const valid = assignments.map((a) => `${a.name} (${a.assignment_id ?? 'no id'})`).join(', ');
-      throw new Error(`Unknown --assignment "${sel}". Valid choices: ${valid || '(none)'}.`);
+      throw new UsageError(`Unknown --assignment "${sel}". Valid choices: ${valid || '(none)'}.`);
     }
     if (!selected.includes(match)) { selected.push(match); }
   }
@@ -205,7 +207,7 @@ export function scopeAssignmentsForContent(
   for (const p of partSelectors) {
     if (!validPartIds.has(p)) {
       const valid = [...validPartIds].join(', ');
-      throw new Error(`Unknown --part "${p}" in assignment "${target.name}". Valid parts: ${valid || '(none)'}.`);
+      throw new UsageError(`Unknown --part "${p}" in assignment "${target.name}". Valid parts: ${valid || '(none)'}.`);
     }
   }
   return { assignments: selected, partIds: new Set(partSelectors) };
@@ -355,6 +357,9 @@ export interface PullInspection {
   /** Assignments whose content drift check was skipped. When non-empty the
    *  drift result is incomplete — never report it as "no sync issues". */
   contentDriftIncomplete?: ContentDriftSkip[];
+  /** Assignments whose settings could not be read. When non-empty the
+   *  settings drift result is incomplete — never report it as "no sync issues". */
+  settingsDriftIncomplete?: ContentDriftSkip[];
 }
 
 export interface PullResult {
@@ -792,9 +797,11 @@ async function detectSettingsDrift(
   },
   client: VocareumClient,
   skipAssignmentIds: Set<string>,
-  warnFn: (msg: string) => void,
+  warnFn: WarnFn,
   reporter?: UnknownFieldReporter,
-  rubricFetcher?: RubricFetcher
+  rubricFetcher?: RubricFetcher,
+  /** Collects assignments whose settings could not be read: unknown, not clean. */
+  skipped?: ContentDriftSkip[],
 ): Promise<AssignmentSettingsDrift[]> {
   const driftList: AssignmentSettingsDrift[] = [];
   const excludedIds = new Set(config.vocareum.excluded_assignments ?? []);
@@ -922,6 +929,11 @@ async function detectSettingsDrift(
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       warnFn(`Could not fetch settings for assignment "${assignment.name}" (ID: ${assignment.assignment_id}): ${message}`);
+      // An unread assignment is unknown, not in sync: the pull must not print
+      // "No sync issues found" or exit 0 over it (an overloaded server made
+      // exactly that happen), and a later push would overwrite a remote change
+      // this check never saw.
+      skipped?.push({ assignmentName: assignment.name, reason: message });
       continue;
     }
   }
@@ -960,7 +972,7 @@ export async function detectContentDrift(
   client: VocareumClient,
   skipAssignmentIds: Set<string>,
   workspaceRoot: string,
-  warnFn: (msg: string) => void,
+  warnFn: WarnFn,
   partIds?: Set<string>,
   /** Receives each assignment whose check was skipped, so the caller can
    *  report the drift result as incomplete rather than clean. */
@@ -1036,7 +1048,8 @@ export async function detectContentDrift(
               // (including locally-deleted directories that need restoring) is
               // still compared. The write side keeps its own confinement, so
               // nothing is ever materialized through the escaping symlink.
-              warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`);
+              warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`,
+                { code: 'symlink_skipped', data: { assignment: assignment.name, path: remotePath, reason: 'escapes_part' } });
               omittedDirs.add(remotePath.split('/')[0]);
               continue;
             }
@@ -1051,7 +1064,8 @@ export async function detectContentDrift(
               localIsSymlink = (await fsp.lstat(localPath)).isSymbolicLink();
             } catch { /* ENOENT (e.g. locally-deleted path) → not a symlink */ }
             if (localIsSymlink) {
-              warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": local path is a symlink and cannot be safely overwritten`);
+              warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": local path is a symlink and cannot be safely overwritten`,
+                { code: 'symlink_skipped', data: { assignment: assignment.name, path: remotePath, reason: 'local_symlink' } });
               omittedDirs.add(remotePath.split('/')[0]);
               continue;
             }
@@ -1082,7 +1096,8 @@ export async function detectContentDrift(
           // 'deleted' diff here would make apply's fs.unlink follow the symlink
           // and remove a file outside the workspace.
           if (!await isPathConfinedToBase(localBaseAbs, localDirPath)) {
-            warnFn(`Skipping "${dir}/" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`);
+            warnFn(`Skipping "${dir}/" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`,
+              { code: 'symlink_skipped', data: { assignment: assignment.name, path: `${dir}/`, reason: 'escapes_part' } });
             continue;
           }
 
@@ -1100,7 +1115,12 @@ export async function detectContentDrift(
               const fullPath = path.join(localDirPath, file);
               // Skip nested entries that resolve outside the part directory
               // (an escaping symlink below a confined dir) for the same reason.
-              if (!await isPathConfinedToBase(localBaseAbs, fullPath)) { continue; }
+              if (!await isPathConfinedToBase(localBaseAbs, fullPath)) {
+                // Not silent: it was the one symlink skip with no warning at all.
+                warnFn(`Skipping "${relativePath}" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`,
+                  { code: 'symlink_skipped', data: { assignment: assignment.name, path: relativePath, reason: 'escapes_part' } });
+                continue;
+              }
               const stat = await fs.stat(fullPath);
               if (stat.isFile() && remoteFiles[relativePath] === undefined) {
                 // Under a Vocareum-managed link the remote content is unreadable,
@@ -1190,7 +1210,7 @@ export async function inspectPull(
   reporter?: UnknownFieldReporter
 ): Promise<PullInspection> {
   const { effectiveConfig: config, client, workspaceRoot, events } = ctx;
-  const warnFn = (msg: string) => events.emit({ level: 'warn', message: msg });
+  const warnFn: WarnFn = (msg, diagnostic) => events.emit(warnEvent(msg, diagnostic));
 
   // Run reconciliation to find orphans and stale assignments.
   // Pass ctx.events so "Fetching current state from Vocareum..." goes through events.
@@ -1203,7 +1223,10 @@ export async function inspectPull(
     shouldSyncRubrics(config),
     warnFn
   );
-  const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds, warnFn, reporter, rubricFetcher);
+  const settingsDriftIncomplete: ContentDriftSkip[] = [];
+  const settingsDrift = await detectSettingsDrift(
+    config, client, staleAssignmentIds, warnFn, reporter, rubricFetcher, settingsDriftIncomplete,
+  );
 
   let contentDrift: AssignmentContentDrift[] = [];
   const contentDriftIncomplete: ContentDriftSkip[] = [];
@@ -1230,6 +1253,7 @@ export async function inspectPull(
     settingsDrift,
     contentDrift,
     contentDriftIncomplete,
+    settingsDriftIncomplete,
   };
 }
 
@@ -1252,7 +1276,7 @@ export async function applyPull(
     client,
     config.vocareum.course_id,
     shouldSyncRubrics(config),
-    (msg: string) => events.emit({ level: 'warn', message: msg })
+    (msg, diagnostic) => events.emit(warnEvent(msg, diagnostic))
   );
 
   const result: PullResult = {

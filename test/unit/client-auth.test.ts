@@ -706,3 +706,18 @@ describe('sanitizeLogString stays linear', () => {
     expect(sanitizeLogString('see https://host/p?token=abc).')).toBe('see https://host/p?[REDACTED]).');
   });
 });
+
+describe('sanitizeLogString: CLI flag form', () => {
+  it.each([
+    ['unknown option \'--token=FLAG_SECRET\'', 'FLAG_SECRET'],
+    ['--client-secret=CS_SECRET given', 'CS_SECRET'],
+    ['bad --api-key=AK_SECRET', 'AK_SECRET'],
+    ['password=PW_SECRET', 'PW_SECRET'],
+  ])('%s', (text, secret) => {
+    expect(sanitizeLogString(text)).not.toContain(secret);
+  });
+
+  it('leaves ordinary flags alone', () => {
+    expect(sanitizeLogString("unknown option '--config=x.yaml'")).toBe("unknown option '--config=x.yaml'");
+  });
+});

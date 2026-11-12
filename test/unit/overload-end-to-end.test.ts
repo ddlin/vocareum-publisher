@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { VocareumClient, isOverloadError } from '../../src/api/client';
 import type { AuthProvider } from '../../src/api/auth/auth-provider';
-import { listFiles, waitForPartUpdateTransaction } from '../../src/api/content';
+import { deleteFile, listFiles, waitForPartUpdateTransaction } from '../../src/api/content';
 import { waitForAssignmentObjId } from '../../src/api/assignments';
 import { updatePart } from '../../src/api/parts';
 
@@ -153,4 +153,55 @@ describe('transaction polls ride out an overloaded sample', () => {
     const { client } = clientWith(() => ({ status: 'success', state: 'failed', message: 'unzip failed' }));
     await expect(waitForPartUpdateTransaction(client, 't1', { maxAttempts: 5, delayMs: 1 })).rejects.toThrow(/unzip failed/);
   });
+});
+
+describe('a sync-delete the overloaded server refuses is not a deletion', () => {
+  it('deleteFile reports false with delete_sync_failed after the retries run out', async () => {
+    const { client, calls } = clientWith(() => THROTTLE_BODY);
+    const events: Array<{ code?: string }> = [];
+    (client as unknown as { events: { emit: (e: { code?: string }) => void } }).events = { emit: (e) => { events.push(e); } };
+    await expect(deleteFile(client, 'c', 'a', 'p', 'startercode', 'old.py', 'container')).resolves.toBe(false);
+    expect(calls()).toBe(3);
+    expect(events.some((e) => e.code === 'delete_sync_failed')).toBe(true);
+  }, 15_000);
+});
+
+describe('a failed job\'s server message is redacted before it becomes an error', () => {
+  // The message travels into push's payload.applied.failed[].error on stdout.
+  const signed = 'fetch failed https://bucket.test/f.zip?X-Amz-Signature=SIGSECRET&X-Amz-Credential=CREDSECRET';
+  it('part update poll', async () => {
+    const { client } = clientWith(() => ({ status: 'success', state: 'failed', message: signed }));
+    const err = await waitForPartUpdateTransaction(client, 't1', { maxAttempts: 2, delayMs: 1 }).catch((e: unknown) => e as Error);
+    expect(err.message).toMatch(/fetch failed/);
+    expect(err.message).not.toMatch(/SIGSECRET|CREDSECRET/);
+  });
+  it('assignment copy poll', async () => {
+    const { client } = clientWith(() => ({ status: 'success', state: 'failed', message: signed }));
+    const err = await waitForAssignmentObjId(client, 't1', { maxAttempts: 2, delayMs: 1, timeoutMs: 60_000 }).catch((e: unknown) => e as Error);
+    expect(err.message).not.toMatch(/SIGSECRET|CREDSECRET/);
+  });
+});
+
+describe('a transient failure keeps its "retry later" category', () => {
+  it('a part-update poll that times out is a retryable error (classified transient; push records it per item)', async () => {
+    const { classifyFailure } = await import('../../src/utils/failure-classifier');
+    const { client } = clientWith(() => THROTTLE_BODY);
+    const err = await waitForPartUpdateTransaction(client, 't1', { maxAttempts: 1, delayMs: 1 }).catch((e: unknown) => e);
+    expect(classifyFailure(err)).toBe('transient');
+  });
+
+  it('a strict walk rethrows the listing\'s own overload, not a generic error', async () => {
+    const { downloadContent } = await import('../../src/api/content');
+    const { classifyFailure } = await import('../../src/utils/failure-classifier');
+    // Root lists one entry; fetching it as a file says "not a file"; listing it overloads.
+    const { client } = clientWith((req) => {
+      const dir = req.params?.dir as string | undefined;
+      if (dir === '/voc/startercode') { return req.params?.page === undefined ? { files: ['sub'] } : { files: [] }; }
+      if (dir === '/voc/startercode/sub') { return THROTTLE_BODY; }
+      return { status: 'error', files: [{ download_url: 'specified file does not exist' }] };
+    });
+    const err = await downloadContent(client, 'c', 'a', 'p', ['startercode'], 'container', { strict: true }).catch((e: unknown) => e);
+    expect(isOverloadError(err)).toBe(true);
+    expect(classifyFailure(err)).toBe('transient');
+  }, 20_000);
 });

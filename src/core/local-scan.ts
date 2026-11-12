@@ -115,6 +115,18 @@ export function directoriesForPart(config: Config, part: Part): DirectoryType[] 
  */
 export const INCOMPLETE_PULL_MARKER = 'incomplete-pull';
 
+/**
+ * Stored in `content_state` (in place of a hash) for a directory whose last
+ * push failed: an upload, a deletion, or the --sync-deletes pass. Keeping the
+ * previous hash instead was not enough: after `push --force-all --sync-deletes`
+ * whose delete pass failed, that hash already equalled the local directory, so
+ * the next push saw no change and never retried. This marker never equals a
+ * hash, so the next push re-plans the directory (a full replay is safe: the
+ * upload resets the directory first). Unlike INCOMPLETE_PULL_MARKER it does
+ * not block push; `status` shows the directory as needs_publish.
+ */
+export const PUSH_INCOMPLETE_MARKER = 'push-incomplete';
+
 export interface ChangedDirectoriesResult {
   changedDirs: DirectoryType[];
   /** Hash computed for every directory in the input set (changed or not). */

@@ -37,6 +37,7 @@ vi.mock('../../src/core/config', async (importOriginal) => {
 // Mock the rest of the stack so no real network calls happen
 vi.mock('../../src/utils/logger', () => ({
   logger: {
+    withJsonMode: async (_enabled: boolean, body: () => Promise<unknown>) => body(),
     info: vi.fn(), success: vi.fn(), error: vi.fn(), warn: vi.fn(),
     debug: vi.fn(), newline: vi.fn(), plain: vi.fn(),
   },

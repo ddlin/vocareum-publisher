@@ -11,8 +11,13 @@ import { loadDotEnvIfPresent, isCI, getCIProvider, getAuthModeEnv, getOAuthClien
 import { isAllowlistedBaseUrl } from '../api/client';
 import { INVALID_URL_LABEL, canonicalBaseUrl, displayHost, hasUnsafeBaseUrlChars, normalizeApiBaseUrl, regionForBaseUrl, resolveV2ApiBaseUrl } from '../api/regions';
 import { CommandFailureError } from '../utils/command-failure';
+import { commandFailureFromError } from '../utils/failure-classifier';
+import { logger } from '../utils/logger';
 import { LoggerEventSink } from '../utils/logger-event-sink';
-import { InteractivePrompter } from '../core/services/context';
+import { CollectingEventSink } from '../core/services/event-sink';
+import { TeeEventSink } from '../utils/tee-event-sink';
+import { buildReport, writeReport } from '../core/report';
+import { InteractivePrompter, NonInteractivePrompter } from '../core/services/context';
 import { inspectStatus, renderStatusHuman } from '../core/services/status-service';
 import { INCOMPLETE_PULL_MARKER } from '../core/local-scan';
 import type { ApiTargetFacts, RuntimeFacts } from '../core/services/context';
@@ -24,6 +29,8 @@ export interface StatusCommandOptions {
   verbose?: boolean;
   /** Emit a machine-readable JSON report on stdout (consumed by the VS Code extension). */
   json?: boolean;
+  /** Internal collector supplied by the CLI wrapper for --json failure envelopes. */
+  eventCollector?: CollectingEventSink;
 }
 
 /**
@@ -62,6 +69,10 @@ function resolveApiTarget(authMode: 'token' | 'oauth', configBaseUrl: string | u
  * Execute the status command
  */
 export async function statusCommand(options: StatusCommandOptions): Promise<void> {
+  return logger.withJsonMode(options.json === true, () => statusCommandWithMode(options));
+}
+
+async function statusCommandWithMode(options: StatusCommandOptions): Promise<void> {
   const { configPath, workspaceRoot } = resolveWorkspaceContext({
     config: options.config,
     root: options.root,
@@ -88,24 +99,32 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
       api: resolveApiTarget(authMode, config.vocareum.api_base_url),
     };
 
-    const events = new LoggerEventSink();
+    const collector = options.eventCollector ?? new CollectingEventSink();
+    const events = options.json === true
+      ? new TeeEventSink([collector, new LoggerEventSink()])
+      : new LoggerEventSink();
     const ctx = {
       persistedConfig: config,
       effectiveConfig: config,
       configPath,
       workspaceRoot,
       events,
-      prompter: new InteractivePrompter(),
+      // A NonInteractivePrompter under --json makes the documented promise
+      // ("--json never prompts") structural rather than incidental. Neither
+      // service prompts today, so this changes no behavior -- but if one ever
+      // gains a prompt, an automated caller would hang forever waiting on
+      // stdin. It now fails fast with UnresolvedDecisionError, which the
+      // classifier turns into a reported failure instead of a hang.
+      prompter: options.json === true ? new NonInteractivePrompter() : new InteractivePrompter(),
       runtime,
     };
 
     const report = await inspectStatus(ctx, { scanContent: options.json === true });
 
     if (options.json === true) {
-      // Pure JSON on stdout — consumers parse this; human output goes nowhere else.
-      // Emit exactly the fields that match today's schema (no extra service fields).
-      const jsonDoc = {
-        schema_version: report.schema_version,
+      // stdout carries the envelope alone; anything human goes to stderr.
+      const payload = {
+        payload_schema_version: report.schema_version,
         scope: report.scope,
         generated_at: report.generated_at,
         config_path: report.config_path,
@@ -118,7 +137,17 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
         assignments: report.assignments,
         summary: report.summary,
       };
-      process.stdout.write(JSON.stringify(jsonDoc) + '\n');
+      const ok = writeReport(buildReport({
+        command: 'status',
+        result: 'reported',
+        payload,
+        events: collector.drain(),
+      }));
+      if (!ok) {
+        // writeReport already wrote its fallback envelope: reportWritten, or the
+        // entrypoint writes a second document (AGENTS.md constraint 19).
+        throw new CommandFailureError('Status report serialization failed', 'internal', true);
+      }
       return;
     }
 
@@ -177,8 +206,8 @@ export async function statusCommand(options: StatusCommandOptions): Promise<void
     });
   } catch (error) {
     if (error instanceof CommandFailureError) { throw error; }
-    const { logger } = await import('../utils/logger');
-    logger.error(`Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    throw new CommandFailureError(`Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 1);
+    const msg = `Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+    logger.error(msg);
+    throw commandFailureFromError(msg, error);
   }
 }

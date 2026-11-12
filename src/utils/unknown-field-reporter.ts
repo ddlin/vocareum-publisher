@@ -20,7 +20,12 @@ export interface UnknownFieldRecord {
 }
 
 export interface MinimalLogger {
-  warn: (msg: string) => void;
+  /**
+   * `diagnostic` is optional so the legacy/test MinimalLogger path stays
+   * source-compatible; only the EventSink adapter uses it, to attach the
+   * unknown_settings code.
+   */
+  warn: (msg: string, diagnostic?: { code: string; data?: Record<string, unknown> }) => void;
   plain: (msg: string) => void;
 }
 
@@ -33,7 +38,15 @@ export interface MinimalLogger {
  */
 function makeMinimalLoggerFromSink(sink: EventSink): MinimalLogger {
   return {
-    warn: (msg: string): void => { sink.emit({ level: 'warn', message: msg }); },
+    // The optional second argument carries the diagnostic. Without it the
+    // unknown_settings code was registered but had no emit path, so a machine
+    // consumer could not see a warning the human output showed -- the exact
+    // "registered code that never fires" gap the registry exists to prevent.
+    warn: (msg: string, diagnostic?: { code: string; data?: Record<string, unknown> }): void => {
+      sink.emit(diagnostic !== undefined
+        ? { level: 'warn', message: msg, code: diagnostic.code, data: diagnostic.data }
+        : { level: 'warn', message: msg });
+    },
     plain: (msg: string): void => { sink.emit({ level: 'plain', message: msg }); },
   };
 }
@@ -103,7 +116,8 @@ export class UnknownFieldReporter {
       firstResourceId: resourceId,
     });
     this.logger.warn(
-      `Vocareum returned unknown ${scope} setting "${field}" (preserved under _unknown_settings)`
+      `Vocareum returned unknown ${scope} setting "${field}" (preserved under _unknown_settings)`,
+      { code: 'unknown_settings', data: { scope, field, resource_id: resourceId ?? null } },
     );
   }
 

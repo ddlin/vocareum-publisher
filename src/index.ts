@@ -6,8 +6,11 @@
  * from GitHub repositories to Vocareum.
  */
 
-import { Command, Option } from 'commander';
-import { readFileSync } from 'fs';
+import { Command, CommanderError, Option } from 'commander';
+import { CAPABILITIES, readBuildInfo } from './core/capabilities';
+import { writeJsonDocument } from './core/report';
+import { sanitizeLogString } from './api/client';
+import { readFileSync, realpathSync } from 'fs';
 import { join } from 'path';
 
 // Read version from package.json
@@ -21,7 +24,71 @@ function getVersion(): string {
   }
 }
 
+// --version --json: intercepted before Commander handles --version itself.
+// Routed through report.ts's writeJsonDocument so stdout keeps exactly one
+// writer (the purity guard allows only that file).
+if (process.argv.includes('--version') && process.argv.includes('--json')) {
+  const info = readBuildInfo();
+  writeJsonDocument({
+    version: getVersion(),
+    ...info,
+    resolved_from: ((): string | null => {
+      // realpath throws if argv[1] is missing or unreadable; the version query
+      // must still answer.
+      try { return realpathSync(process.argv[1] ?? ''); } catch { return null; }
+    })(),
+    capabilities: CAPABILITIES,
+  });
+  process.exit(0);
+}
+
 const program = new Command();
+
+// Without this, Commander prints its own error and calls process.exit() before
+// any of our handling runs: an unknown flag exited 1 with empty stdout, so
+// `--json` callers got nothing and the documented usage code (2) was
+// unreachable for the most common malformed invocation there is.
+program.exitOverride();
+
+// `status` is registered { isDefault: true }, so Commander routes an
+// unrecognised first argument INTO status as a positional rather than
+// rejecting it. `vocgit bogus` therefore printed a status page and exited 0 --
+// and `vocgit pus --json` (a typo for push) made automation report success
+// while pushing nothing. Silent success on a typo is the exact failure this
+// whole feature exists to eliminate.
+//
+// Checked here rather than by dropping isDefault, so bare `vocgit` still shows
+// status. Only a non-flag first argument that is not a known command is
+// rejected.
+// `help` is Commander's built-in command (`vocgit help push`): not registered
+// with .command(), but listed by `vocgit --help`, so it must pass the guard.
+const KNOWN_COMMANDS = new Set(['init', 'new', 'validate', 'fix', 'pull', 'status', 'push', 'help']);
+const firstArg = process.argv[2];
+if (firstArg !== undefined && !firstArg.startsWith('-') && !KNOWN_COMMANDS.has(firstArg)) {
+  const message = `unknown command '${firstArg}'`;
+  if (process.argv.includes('--json')) {
+    writeJsonDocument({
+      schema_version: '1.0',
+      // null, not 'status': no command ran, and naming one would tell an agent
+      // that `status` failed when the typo was for `push`.
+      command: null,
+      result: 'failed',
+      generated_at: new Date().toISOString(),
+      retryable: false,
+      payload: { payload_schema_version: 1 },
+      diagnostics: [],
+      error: { code: 'usage', message: sanitizeLogString(message), retryable: false },
+    });
+  } else {
+    // process.stderr directly, not logger: this guard runs at module top level,
+    // before the logger import below has initialized, and using it here crashed
+    // the CLI with "Cannot access 'logger_1' before initialization" for every
+    // unknown argument. stderr is not the guarded channel -- only stdout is --
+    // so writing to it here is legitimate as well as safe.
+    process.stderr.write(`error: ${message}\n`);
+  }
+  process.exit(2);
+}
 
 program
   .name('vocgit')
@@ -121,14 +188,17 @@ Examples:
 
 import { validateCommand } from './commands/validate';
 import { fixCommand } from './commands/fix';
+import { runCommandWithFailureClassification } from './utils/command-runner';
+
 
 // Validate command
 program
   .command('validate')
   .description('Validate vocareum.yaml configuration and local folder structure')
+  .option('--json', 'Emit a machine-readable report on stdout')
   .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
   .option('--root <path>', 'Workspace root that assignment paths resolve against (required when --config is not directly inside the current directory)')
-  .option('--strict', 'Treat warnings as errors (exit code 1)')
+  .option('--strict', 'Treat warnings as errors (exit code 5: findings outstanding)')
   .option('--vocareum', 'Also validate against Vocareum API (checks IDs exist)')
   .addHelpText('after', `
 Description:
@@ -152,50 +222,44 @@ Examples:
   $ vocgit validate --vocareum  # Include API validation
 `)
   .action(async (options: ValidateOptions) => {
-    try {
-      await validateCommand(options);
-    } catch (error) {
-      if (error instanceof CommandFailureError) { throw error; }
-      const msg = `Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      logger.error(msg);
-      throw new CommandFailureError(msg);
-    }
+    await runCommandWithFailureClassification('validate', options, (collector) => validateCommand({ ...options, eventCollector: collector }), 'Validation failed');
   });
 
 // Fix command
 program
   .command('fix')
   .description('Interactively detect and fix configuration or structure issues')
+  .option('--json', 'Emit a machine-readable report on stdout')
   .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
   .option('--root <path>', 'Workspace root that assignment paths resolve against (required when --config is not directly inside the current directory)')
-  .option('--non-interactive', 'Skip all prompts (report issues only)')
+  .option('--non-interactive', 'Apply every fix without prompting (this WRITES)')
   .addHelpText('after', `
 Description:
-  Detects validation issues and offers interactive fixes for each one.
+  Detects validation issues and creates what is missing.
 
-  Issues that can be fixed:
-    - Orphaned folders: Folders on disk without vocareum.yaml entries
-      → Add config entry, or ignore
-    - Missing folders: Config entries pointing to non-existent paths
-      → Create folder structure, or remove config entry
-    - Missing directories: Required directories (startercode, scripts, etc.) not found
-      → Create directory
+  Fixed (created, after a confirmation unless --non-interactive):
+    - Missing folders: assignment or part folders that vocareum.yaml names
+      but that do not exist on disk
+    - Missing directories: declared directories (startercode, scripts, etc.)
+      that do not exist
+  Nested folders are created in one run: a new assignment folder is checked
+  again for missing parts and directories.
 
-  Use --non-interactive to see issues without being prompted for fixes.
+  Reported but not changed:
+    - Orphaned folders (folders on disk with no vocareum.yaml entry): add an
+      entry yourself, or delete the folder
+    - Paths that point outside the workspace, and other config errors
+  fix never edits vocareum.yaml.
+
+  Use --non-interactive to apply every fix without being prompted. It writes;
+  there is no dry-run mode.
 
 Examples:
   $ vocgit fix                  # Interactive mode
-  $ vocgit fix --non-interactive  # Report only, no changes
+  $ vocgit fix --non-interactive  # Apply all fixes without prompting
 `)
   .action(async (options: FixOptions) => {
-    try {
-      await fixCommand(options);
-    } catch (error) {
-      if (error instanceof CommandFailureError) { throw error; }
-      const msg = `Fix failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      logger.error(msg);
-      throw new CommandFailureError(msg);
-    }
+    await runCommandWithFailureClassification('fix', options, (collector) => fixCommand({ ...options, eventCollector: collector }), 'Fix failed');
   });
 
 const collectFlag = (value: string, acc: string[]): string[] => { acc.push(value); return acc; };
@@ -208,6 +272,7 @@ const pullCmd = program
   .option('--root <path>', 'Workspace root that assignment paths resolve against (required when --config is not directly inside the current directory)')
   .option('--non-interactive', 'Skip all prompts (no changes made)')
   .option('--batch', 'Apply sensible defaults without prompting (import orphans, pull drift, skip stale)')
+  .option('--json', 'Emit a machine-readable report on stdout (implies --non-interactive)')
   .option('--skip-content', 'Reuse existing local content for orphan imports instead of re-downloading (recovers from failed pulls)')
   .option('--content', 'Detect content drift (downloads remote files to diff them; off by default)')
   .option('--assignment <name|id>', 'Limit --content drift to assignment(s); repeatable', collectFlag, [])
@@ -283,14 +348,7 @@ Examples:
   $ vocgit pull --content --assignment lab1 --part <part_id>   # scope to one part
 `)
   .action(async (options: PullOptions) => {
-    try {
-      await pullCommand(options);
-    } catch (error) {
-      if (error instanceof CommandFailureError) { throw error; }
-      const msg = `Pull failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      logger.error(msg);
-      throw new CommandFailureError(msg);
-    }
+    await runCommandWithFailureClassification('pull', options, (collector) => pullCommand({ ...options, eventCollector: collector }), 'Pull failed');
   });
 
 // Status command (default action)
@@ -328,14 +386,7 @@ Examples:
   $ vocgit status --json
 `)
   .action(async (options: StatusCommandOptions) => {
-    try {
-      await statusCommand(options);
-    } catch (error) {
-      if (error instanceof CommandFailureError) { throw error; }
-      const msg = `Status failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      logger.error(msg);
-      throw new CommandFailureError(msg);
-    }
+    await runCommandWithFailureClassification('status', options, (collector) => statusCommand({ ...options, eventCollector: collector }), 'Status failed', 2);
   });
 
 // Push command
@@ -350,6 +401,7 @@ const pushCmd = program
   .option('--on-missing-id <mode>', 'When assignment_id is null: skip or abort', 'skip')
   .option('--abort-on-error', 'Stop immediately on first error')
   .option('--auto-commit', 'Auto-commit vocareum.yaml changes (local use only)')
+  .option('--json', 'Emit a machine-readable report on stdout (implies --non-interactive)')
   .option('--non-interactive', 'Skip confirmation prompts')
   .option('--verbose', 'Show detailed logging')
   .option('--config <path>', 'Path to vocareum.yaml', 'vocareum.yaml')
@@ -402,22 +454,81 @@ Examples:
   $ vocgit push --non-interactive  # CI/CD mode (no prompts)
 `)
   .action(async (options: PublishCommandOptions) => {
-    try {
-      await publishCommand(options);
-    } catch (error) {
-      if (error instanceof CommandFailureError) { throw error; }
-      // logger.error handled in publishCommand mostly, but top level catch safety
-      const msg = `Unhandled error: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      logger.error(msg);
-      throw new CommandFailureError(msg);
-    }
+    await runCommandWithFailureClassification('push', options, (collector) => publishCommand({ ...options, eventCollector: collector }), 'Push failed');
   });
 
-program.parseAsync().catch((error) => {
-  if (error instanceof CommandFailureError) {
-    process.exitCode = error.exitCode;   // command already rendered its error
-  } else {
+/** The five commands that emit an envelope; used to label a pre-dispatch usage error. */
+const JSON_COMMANDS = new Set(['pull', 'push', 'status', 'validate', 'fix']);
+
+/**
+ * The failure document for an invocation that never reached a command. `command`
+ * names the intended command when argv shows one, and is null otherwise: an
+ * agent that asked for --json gets a document either way, never empty stdout,
+ * and never a document that names a command that did not run.
+ */
+function writeUsageEnvelope(message: string): void {
+  const requested = process.argv.slice(2).find((a) => JSON_COMMANDS.has(a)) ?? null;
+  writeJsonDocument({
+    schema_version: '1.0',
+    command: requested,
+    result: 'failed',
+    generated_at: new Date().toISOString(),
+    retryable: false,
+    payload: { payload_schema_version: 1 },
+    diagnostics: [],
+    error: { code: 'usage', message: sanitizeLogString(message), retryable: false },
+  });
+}
+
+/**
+ * `vocgit status --config --json`: Commander takes `--json` as the VALUE of
+ * --config, so the command runs without JSON mode and a failure writes no
+ * document. Reject it as a usage error before parsing.
+ */
+function jsonSwallowedByOption(): string | undefined {
+  const valueFlags = new Set<string>();
+  for (const cmd of [program, ...program.commands]) {
+    for (const opt of cmd.options) {
+      if (opt.required || opt.optional) {
+        if (opt.long !== undefined) { valueFlags.add(opt.long); }
+        if (opt.short !== undefined) { valueFlags.add(opt.short); }
+      }
+    }
+  }
+  const argv = process.argv.slice(2);
+  const i = argv.findIndex((a, idx) => a === '--json' && idx > 0 && valueFlags.has(argv[idx - 1]));
+  return i === -1 ? undefined : argv[i - 1];
+}
+
+const swallowedBy = jsonSwallowedByOption();
+if (swallowedBy !== undefined) {
+  const message = `option '${swallowedBy}' needs a value; '--json' was taken as its value`;
+  writeUsageEnvelope(message);
+  process.stderr.write(`error: ${message}\n`);
+  process.exitCode = 2;
+} else {
+  void program.parseAsync().catch((error) => {
+    if (error instanceof CommandFailureError) {
+      process.exitCode = error.exitCode;   // command already rendered its error
+      return;
+    }
+
+    // Commander throws for --help and --version too; those are successful exits
+    // and must not be dressed up as failures.
+    if (error instanceof CommanderError) {
+      if (error.exitCode === 0) { process.exitCode = 0; return; }
+
+      // A malformed invocation is a usage error (exit 2), not an internal one.
+      // With --json it still gets its one document: `command` names the intended
+      // command when argv shows one and is null otherwise (never invented).
+      if (process.argv.includes('--json')) {
+        writeUsageEnvelope(error.message);
+      }
+      process.exitCode = 2;
+      return;
+    }
+
     logger.error(error instanceof Error ? error.message : 'Unknown error');
     process.exitCode = 1;
-  }
-});
+  });
+}

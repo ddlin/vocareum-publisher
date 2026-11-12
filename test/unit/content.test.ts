@@ -553,6 +553,11 @@ describe('listFiles', () => {
 
     expect(result).toEqual([]);
     expect(requestMock).toHaveBeenCalledTimes(1);
+    expect(mockClient.events.emit).toHaveBeenCalledWith(expect.objectContaining({
+      level: 'warn',
+      code: 'directory_unreachable',
+      data: { part_id: 'p1', api_path: '/voc/startercode', directory: 'startercode' },
+    }));
   });
 
   it('should throw 400 errors that do not reference the requested directory', async () => {
@@ -597,8 +602,9 @@ describe('deleteFile', () => {
     const error = new VocareumError('Not found', 'NOT_FOUND', 404);
     requestMock.mockRejectedValueOnce(error);
 
-    // Should not throw
-    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'docs', 'missing.txt')).resolves.toBeUndefined();
+    // 404 == already absent, which is the end state a delete wants, so this
+    // reports true. It previously returned void and the caller could not tell.
+    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'docs', 'missing.txt')).resolves.toBe(true);
   });
 
   it('should handle 405 gracefully (method not allowed)', async () => {
@@ -606,7 +612,7 @@ describe('deleteFile', () => {
     requestMock.mockRejectedValueOnce(error);
 
     // Should not throw
-    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'scripts', 'file.sh')).resolves.toBeUndefined();
+    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'scripts', 'file.sh')).resolves.toBe(false);
   });
 
   it('should handle non-404/405 VocareumErrors gracefully', async () => {
@@ -614,14 +620,14 @@ describe('deleteFile', () => {
     requestMock.mockRejectedValueOnce(error);
 
     // Should not throw - just logs and continues
-    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'data', 'file.csv')).resolves.toBeUndefined();
+    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'data', 'file.csv')).resolves.toBe(false);
   });
 
   it('should handle non-VocareumError errors gracefully', async () => {
     requestMock.mockRejectedValueOnce(new Error('Connection failed'));
 
     // Should not throw - just logs and continues
-    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'startercode', 'file.py')).resolves.toBeUndefined();
+    await expect(deleteFile(mockClient, 'c1', 'a1', 'p1', 'startercode', 'file.py')).resolves.toBe(false);
   });
 });
 
@@ -747,6 +753,11 @@ describe('downloadContent', () => {
 
     const result = await downloadContent(mockClient, 'c1', 'a1', 'p1');
     expect(result).toEqual({});
+    expect(mockClient.events.emit).toHaveBeenCalledWith(expect.objectContaining({
+      level: 'warn',
+      code: 'download_failed',
+      data: { part_id: 'p1', file: 'startercode/file.txt' },
+    }));
   });
 
   it('should return empty when S3 download fails', async () => {

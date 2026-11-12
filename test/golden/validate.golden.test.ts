@@ -22,6 +22,9 @@ vi.mock('../../src/utils/logger', () => {
   const e = (s: unknown = '') => err.push(String(s));
   return {
     logger: {
+      // validateCommand wraps itself in withJsonMode, like pull/status/push.
+      // These golden runs are not --json, so it is a pass-through.
+      withJsonMode: async (_enabled: boolean, body: () => Promise<unknown>) => body(),
       info: o,
       success: o,
       plain: o,

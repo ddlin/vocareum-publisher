@@ -5,7 +5,7 @@
  * CRITICAL: All IDs are strings!
  */
 
-import { VocareumClient, isOverloadError } from './client';
+import { VocareumClient, isOverloadError, sanitizeLogString } from './client';
 import type {
   VocareumAssignmentResponse,
   AssignmentCopyResponse,
@@ -210,7 +210,7 @@ export async function waitForAssignmentObjId(
     }
     if (txn.state === 'error' || txn.state === 'failed') {
       throw new Error(
-        txn.message ?? `Copy assignment transaction failed (txn=${transactionId})`
+        sanitizeLogString(txn.message ?? `Copy assignment transaction failed (txn=${transactionId})`)
       );
     }
 

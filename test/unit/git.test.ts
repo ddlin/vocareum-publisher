@@ -22,6 +22,7 @@ import {
 // Mock the logger module
 vi.mock('../../src/utils/logger', () => ({
   logger: {
+    withJsonMode: async (_enabled: boolean, body: () => Promise<unknown>) => body(),
     success: vi.fn(),
     error: vi.fn(),
     warn: vi.fn(),

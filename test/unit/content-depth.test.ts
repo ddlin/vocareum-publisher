@@ -145,6 +145,15 @@ describe('downloadContent depth (AWS Academy locale-nested assets)', () => {
     // Silent truncation is the actual defect here: without this the pull
     // reports success while dropping every file below the cap.
     expect(warnings).toHaveLength(1);
+    expect(warnings[0].code).toBe('download_truncated');
+    expect(warnings[0].data).toEqual({
+      part_id: 'p1',
+      path: expect.stringMatching(/^asnlib\//),
+      // The CAP, not the depth the fixture happens to nest to: the plan
+      // specifies depth: MAX_DOWNLOAD_DEPTH so a consumer can report the limit
+      // without hardcoding it.
+      depth: 10,
+    });
     expect(warnings[0].message).toContain('were NOT downloaded');
   });
 });

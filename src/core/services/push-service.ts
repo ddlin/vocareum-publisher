@@ -24,7 +24,7 @@ import type {
 import type { HistorySettingChange, HistoryFileChange, HistoryRubricChange, AssignmentSettings } from '../../types/config';
 import type { PublishResult, ReconciliationPlan } from '../../types/state';
 import { reconcile, displayPlan } from '../reconciler';
-import { assertConfinedToWorkspace, publishExcludePatterns } from '../local-scan';
+import { assertConfinedToWorkspace, publishExcludePatterns, PUSH_INCOMPLETE_MARKER } from '../local-scan';
 import { calculateDirectoryHash, readFile as readTextFile } from '../../utils/files';
 import { copyAssignment, getAssignment, updateAssignment } from '../../api/assignments';
 import { updateCourse } from '../../api/courses';
@@ -33,6 +33,7 @@ import { createRubrics, updateRubrics } from '../../api/rubrics';
 import { projectedPoints } from '../../utils/rubrics';
 import { PEER_REVIEW_DATE_KEYS } from '../../utils/known-settings';
 import { ForbiddenError } from '../../api/client';
+import { UsageError } from '../../utils/command-failure';
 import { mapParts } from '../mapper';
 import { readDirectory as readLocalDirectory, syncDirectory } from '../uploader';
 import { listFiles } from '../../api/content';
@@ -232,7 +233,7 @@ export async function planPush(
   // unrelated assignments. pull enforces the identical rule for the same
   // reason (pull-service.ts) — mirror it here so both commands read consistently.
   if (partFilters.length > 0 && assignmentFilters.length !== 1) {
-    throw new Error(
+    throw new UsageError(
       '--part requires exactly one --assignment (part selectors are not unique across assignments).'
     );
   }
@@ -328,7 +329,8 @@ export async function planPush(
     const yamlText = await readTextFile(configPath);
     configDigest = createHash('sha256').update(yamlText).digest('hex');
   } catch (err) {
-    throw new Error(
+    // A config the tool cannot read is the caller's to fix, not a bug to file.
+    throw new UsageError(
       `Cannot compute push preconditions: failed to read config file "${configPath}": ${err instanceof Error ? err.message : String(err)}`
     );
   }
@@ -715,6 +717,13 @@ export async function executePush(
     if (shouldAbort) { break assignmentLoop; }
 
     let currentUpdateEntry: { type: 'assignment'; id: string; parts: string[] } | null = null;
+    /**
+     * Did anything at ASSIGNMENT level actually land (metadata write, id
+     * discovery)? An `updated` entry with no parts is legitimate when only
+     * assignment metadata changed, so the phantom entry can only be pruned when
+     * nothing landed at either level.
+     */
+    let assignmentLevelApplied = false;
 
     if (action.type === 'error') {
       result.failed.push({
@@ -825,9 +834,11 @@ export async function executePush(
       }
 
       currentUpdateEntry = { type: 'assignment', id: updateId, parts: [] };
+      assignmentLevelApplied = false;
       result.updated.push(currentUpdateEntry);
 
       if (action.idDiscoveredByName === true || action.partIdsDiscovered === true) {
+        assignmentLevelApplied = true;
         configUpdates.push(action.assignment);
         configChanged = true;
       }
@@ -930,6 +941,7 @@ export async function executePush(
               knownAssignmentPayload,
             );
           }
+          assignmentLevelApplied = true;
           events.emit({ level: 'success', message: `Updated assignment metadata: ${action.assignment.name}` });
         } catch (error) {
           events.emit({ level: 'error', message: `Failed to update assignment metadata for ${action.assignment.name}`, data: { error } });
@@ -1060,14 +1072,37 @@ export async function executePush(
             partSettings,
             fullPayload,
             events,
+            partId,
           );
           if (writeResult.outcome === 'none') {
+            // `none` is the ladder's fall-through: every rung, down to
+            // name-only, was attempted and rejected. Nothing was written.
+            //
+            // This was filed as `skipped`, which reads as "nothing to do" --
+            // so a push that dropped the user's settings entirely still
+            // reported success (exit 0 under --json, "Push completed
+            // successfully!" without it). A green push that silently applied
+            // none of the requested settings is the failure this whole area
+            // exists to prevent; the adjacent catch block already treats a
+            // throw this way, and this is the same outcome by a quieter route.
             metadataUpdated = false;
-            result.skipped.push({
-              type: 'part',
-              id: partId,
-              reason: 'Settings update rejected by Vocareum API (400)',
+            const message =
+              `Part settings for ${partName} were rejected by Vocareum at every ` +
+              `fallback level; nothing was applied`;
+            events.emit({
+              level: 'error',
+              code: 'part_settings_rejected',
+              data: {
+                part_id: partId,
+                part_name: partName,
+                phase: 'exhausted',
+                dropped_fields: writeResult.dropped,
+              },
+              message,
             });
+            result.failed.push({ type: 'part', id: partId, error: message });
+            result.success = false;
+            if (abortOnError) { shouldAbort = true; break assignmentLoop; }
           }
           if (metadataUpdated) {
             events.emit({ level: 'success', message: `Updated part ${partName}` });
@@ -1104,7 +1139,8 @@ export async function executePush(
         // wasn't lost, but that must not read as success here. A green push that silently
         // migrated no points is exactly the failure this feature exists to prevent.
         const message = `Could not read rubrics for "${partAction.part.name ?? partAction.part.path}": ${partIntent.rubricReadFailed}`;
-        events.emit({ level: 'error', message });
+        events.emit({ level: 'error', code: 'rubric_read_failed',
+          data: { part_id: partId, reason: String(partIntent.rubricReadFailed) }, message });
         result.failed.push({ type: 'part', id: partId, error: message });
         result.success = false;
         rubricChanges.push({
@@ -1128,7 +1164,7 @@ export async function executePush(
         // skip; recording it here would report a failure that never occurred. It passes
         // through silently, exactly as it would have without the 403.
         const message = `Rubrics not pushed for "${partAction.part.name ?? partAction.part.path}": token lacks rubric write permission.`;
-        events.emit({ level: 'warn', message });
+        events.emit({ level: 'error', code: 'rubric_write_forbidden', data: { part_id: partId }, message });
         result.failed.push({ type: 'part', id: partId, error: message });
         result.success = false;
         rubricChanges.push({
@@ -1145,7 +1181,8 @@ export async function executePush(
         const courseId = workingConfig.vocareum.course_id;
         const assignmentId = action.assignment.assignment_id;
         if (assignmentId === null || assignmentId === '') {
-          events.emit({ level: 'warn', message: `Skipping rubrics for "${partLabel}": assignment has no id yet.` });
+          events.emit({ level: 'warn', code: 'rubric_write_skipped', data: { part_id: partAction.part.part_id ?? null },
+            message: `Skipping rubrics for "${partLabel}": assignment has no id yet.` });
         } else {
           if (rubricPlan.duplicateNames.length > 0) {
             // Name matching is undefined against duplicates; guessing risks updating the
@@ -1213,6 +1250,11 @@ export async function executePush(
                 rubricsAvailable = false;
                 events.emit({
                   level: 'error',
+                  // The part that actually hit the 403. Only the parts skipped
+                  // afterwards carried the code, so a single-part assignment
+                  // never emitted it at all.
+                  code: 'rubric_write_forbidden',
+                  data: { part_id: partId },
                   message:
                     'Rubric writes are not permitted with this API token; rubric sync is ' +
                     'disabled for the rest of this run. Regenerate the token with the rubrics ' +
@@ -1334,6 +1376,10 @@ export async function executePush(
 
             if (uploadRes.failed.length > 0) {
               events.emit({ level: 'warn', message: `Some files failed to upload in ${dir}` });
+              // Never leave the previous hash: it may already equal the local
+              // directory (a --force-all push), and then the next push would
+              // never retry what failed here. See PUSH_INCOMPLETE_MARKER.
+              result.contentState[dirKey] = PUSH_INCOMPLETE_MARKER;
               for (const failedFile of uploadRes.failed) {
                 result.failed.push({
                   type: 'file',
@@ -1379,6 +1425,9 @@ export async function executePush(
             }
           } catch (error) {
             events.emit({ level: 'error', message: `Failed to upload ${dir} for part ${partId}`, data: { error } });
+            // A throw (e.g. a partial multi-chunk upload) leaves the directory in
+            // an unknown state: mark it so the next push re-plans it.
+            result.contentState[path.join(action.assignment.path, partAction.part.path, dir)] = PUSH_INCOMPLETE_MARKER;
             result.failed.push({ type: 'file', id: `${partId}/${dir}`, error });
             result.success = false;
             if (abortOnError) { shouldAbort = true; break assignmentLoop; }
@@ -1389,6 +1438,22 @@ export async function executePush(
       if (partWasUpdated && currentUpdateEntry && !currentUpdateEntry.parts.includes(partId)) {
         currentUpdateEntry.parts.push(partId);
       }
+    }
+
+    // The entry is pushed when the assignment starts processing, before anything
+    // is attempted. If nothing landed at either level -- no parts updated, no
+    // metadata write, no id discovery -- it is a claim that a write happened
+    // when none did: `push --json` reported counts.updated: 1 with parts: []
+    // for a run whose only planned change was a settings update the API
+    // rejected at every level.
+    if (
+      currentUpdateEntry !== null &&
+      currentUpdateEntry.parts.length === 0 &&
+      !assignmentLevelApplied
+    ) {
+      const phantomIndex = result.updated.indexOf(currentUpdateEntry);
+      if (phantomIndex !== -1) { result.updated.splice(phantomIndex, 1); }
+      currentUpdateEntry = null;
     }
   }
 
@@ -1453,6 +1518,8 @@ export async function executePush(
     } catch (error) {
       events.emit({
         level: 'warn',
+        code: 'auto_commit_failed',
+        data: { reason: error instanceof Error ? error.message : String(error) },
         message: `Failed to auto-commit config changes: ${error instanceof Error ? error.message : String(error)}`,
       });
     }

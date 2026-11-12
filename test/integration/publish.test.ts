@@ -15,6 +15,7 @@ vi.mock('../../src/core/config', () => ({
 // Mock logger
 vi.mock('../../src/utils/logger', () => ({
     logger: {
+    withJsonMode: async (_enabled: boolean, body: () => Promise<unknown>) => body(),
         info: vi.fn(),
         success: vi.fn(),
         error: vi.fn(),

@@ -590,15 +590,20 @@ export async function waitForPartUpdateTransaction(
     }
     if (txn.state === 'error' || txn.state === 'failed') {
       throw new APIError(
-        txn.message ?? `Part update transaction failed (txn=${transactionId})`
+        sanitizeLogString(txn.message ?? `Part update transaction failed (txn=${transactionId})`)
       );
     }
 
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
 
+  // Marked retryable: the job is still pending, and replaying the upload is
+  // safe because its first chunk resets the directory. (Push records it as a
+  // per-item failure, so the run exits 6; the flag is for callers that see
+  // the error itself.)
   throw new APIError(
-    `Timed out after ${maxAttempts * delayMs}ms waiting for part update (txn=${transactionId})`
+    `Timed out after ${maxAttempts * delayMs}ms waiting for part update (txn=${transactionId})`,
+    undefined, undefined, true,
   );
 }
 
@@ -636,6 +641,9 @@ export class PartialUploadError extends APIError {
       `so a full replay is safe.`,
       undefined,
       cause,
+      // A replay is safe; whether it can help depends on why the chunk failed
+      // (an overload or timeout: yes; an invalid target: no).
+      cause instanceof APIError && cause.retryable,
     );
     this.name = 'PartialUploadError';
   }
@@ -742,7 +750,7 @@ export async function uploadContent(
         });
       } else if (response.state === 'error' || response.state === 'failed') {
         throw new APIError(
-          response.message ?? `Part update failed (part=${partId}, dir=${directory})`
+          sanitizeLogString(response.message ?? `Part update failed (part=${partId}, dir=${directory})`)
         );
       } else if (isChunkedUpload && !missingTransactionWarned) {
         // No transactionid means we cannot confirm this chunk actually landed
@@ -782,6 +790,17 @@ export async function uploadContent(
       // up either as it was or as the new content, never a mix. Leave that
       // unwrapped so today's error surface is unchanged.
       if (chunks.length > 1) {
+        // Emitted here, at the real partial state, and deliberately NOT on the
+        // pre-upload "directory will be incomplete during the sequence"
+        // warning: that one fires before every chunked upload including the
+        // ones that then succeed, so coding it would report data loss on a
+        // healthy push and teach consumers to ignore the code.
+        client.events.emit({
+          level: 'error',
+          code: 'upload_incomplete',
+          data: { part_id: partId, directory, chunk: i, chunks: chunks.length },
+          message: `Upload of ${directory} left the remote directory incomplete at chunk ${i + 1}/${chunks.length}`,
+        });
         throw new PartialUploadError(i, chunks.length, directory, partId, error);
       }
       throw error;
@@ -911,12 +930,12 @@ export function downloadContent(
         // them — see INCOMPLETE_PULL_MARKER).
         recordDownloadFailure(
           client, budget, strict, directory,
-          `${error.message}; the rest of this directory was NOT downloaded`
+          `${error.message}; the rest of this directory was NOT downloaded`, partId
         );
         for (const notReached of dirs.slice(i + 1)) {
           recordDownloadFailure(
             client, budget, strict, notReached,
-            'NOT downloaded: the download limit was reached earlier in this part'
+            'NOT downloaded: the download limit was reached earlier in this part', partId
           );
         }
         break;
@@ -954,7 +973,7 @@ async function downloadDirectoryTree(
   // Only the part's own declared directory is worth warning about; deeper
   // levels are paths we discovered, so their absence is not a config problem.
   const entries = preListed ?? await listFilesByApiPath(
-    client, courseId, assignmentId, partId, apiDirPath, relativePath === ''
+    client, courseId, assignmentId, partId, apiDirPath, relativePath === '', directory
   );
 
   for (const entry of entries) {
@@ -984,7 +1003,7 @@ async function downloadDirectoryTree(
         recordDownloadFailure(
           client, budget, strict, filemapKey,
           `directory nesting exceeds the ${MAX_DOWNLOAD_DEPTH}-level download limit; ` +
-          `it and anything below it were NOT downloaded`
+          `it and anything below it were NOT downloaded`, partId, 'truncated'
         );
         return;
       }
@@ -1020,7 +1039,7 @@ async function downloadDirectoryTree(
     } catch (error) {
       if (error instanceof DownloadLimitError) {
         if (error.scope === 'file' && !strict) {
-          recordDownloadFailure(client, budget, strict, filemapKey, error.message);
+          recordDownloadFailure(client, budget, strict, filemapKey, error.message, partId);
           continue;
         }
         throw error;
@@ -1035,10 +1054,13 @@ async function downloadDirectoryTree(
             client, courseId, assignmentId, partId, `${baseApiPath}/${entryRelPath}`, false
           );
         } catch (listError) {
+          // Strict mode: throw the listing's own error, so its category (an
+          // overload is transient, exit 4) survives instead of a generic wrap.
+          if (strict) { throw listError; }
           // One unlistable subdirectory must not abort the rest of the part.
           recordDownloadFailure(
             client, budget, strict, filemapKey,
-            `could not be listed as a directory: ${listError instanceof Error ? listError.message : 'Unknown'}`
+            `could not be listed as a directory: ${listError instanceof Error ? listError.message : 'Unknown'}`, partId
           );
           continue;
         }
@@ -1053,7 +1075,7 @@ async function downloadDirectoryTree(
           }
           recordDownloadFailure(
             client, budget, strict, filemapKey,
-            'not downloadable as a file and not listable as a directory'
+            'not downloadable as a file and not listable as a directory', partId
           );
           continue;
         }
@@ -1064,7 +1086,7 @@ async function downloadDirectoryTree(
         throw error;
       }
       recordDownloadFailure(
-        client, budget, strict, filemapKey, error instanceof Error ? error.message : 'Unknown'
+        client, budget, strict, filemapKey, error instanceof Error ? error.message : 'Unknown', partId
       );
     }
   }
@@ -1116,17 +1138,39 @@ function isVocareumManagedLink(directory: DirectoryType, relativePath: string, n
  * incomplete. A strict walk (drift detection) throws instead: a silently
  * incomplete remote map would make the missing files look deleted remotely.
  */
+/**
+ * Every way a non-strict walk can come back short goes through here, so this
+ * is where the machine-readable diagnostic is emitted: `download_truncated`
+ * for the depth cut (data: part_id, path, depth = the cap), `download_failed`
+ * for everything else (data: part_id, file).
+ */
 function recordDownloadFailure(
   client: VocareumClient,
   budget: DownloadBudget,
   strict: boolean,
   filemapKey: string,
-  reason: string
+  reason: string,
+  partId: string,
+  kind: 'failed' | 'truncated' = 'failed'
 ): void {
   if (strict) {
     throw new APIError(`Could not download ${filemapKey}: ${reason}`);
   }
-  client.events.emit({ level: 'warn', message: `Failed to download ${filemapKey}: ${reason}` });
+  if (kind === 'truncated') {
+    client.events.emit({
+      level: 'warn',
+      code: 'download_truncated',
+      message: `Failed to download ${filemapKey}: ${reason}`,
+      data: { part_id: partId, path: filemapKey, depth: MAX_DOWNLOAD_DEPTH },
+    });
+  } else {
+    client.events.emit({
+      level: 'warn',
+      code: 'download_failed',
+      message: `Failed to download ${filemapKey}: ${reason}`,
+      data: { part_id: partId, file: filemapKey },
+    });
+  }
   budget.failures?.push({ path: filemapKey, reason });
 }
 
@@ -1232,7 +1276,7 @@ export async function listFiles(
   architecture?: 'elite' | 'container'
 ): Promise<FileInfo[]> {
   return listFilesByApiPath(
-    client, courseId, assignmentId, partId, toApiDirPath(directory, architecture), true
+    client, courseId, assignmentId, partId, toApiDirPath(directory, architecture), true, directory
   );
 }
 
@@ -1243,8 +1287,9 @@ async function listFilesByApiPath(
   partId: string,
   apiDirPath: string,
   warnIfAbsent = false,
+  directory?: DirectoryType,
 ): Promise<FileInfo[]> {
-  return (await listDirectory(client, courseId, assignmentId, partId, apiDirPath, warnIfAbsent)).entries;
+  return (await listDirectory(client, courseId, assignmentId, partId, apiDirPath, warnIfAbsent, directory)).entries;
 }
 
 /**
@@ -1272,6 +1317,8 @@ async function listDirectory(
    * expected to miss constantly. Warning on them would bury the real signal.
    */
   warnIfAbsent: boolean,
+  /** The declared directory, for the `directory_unreachable` diagnostic. */
+  directory?: DirectoryType,
 ): Promise<{ entries: FileInfo[]; absent: boolean }> {
   const url = `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
 
@@ -1342,12 +1389,14 @@ async function listDirectory(
         // a wrong prefix.
         if (warnIfAbsent) {
           client.events.emit({
-          level: 'warn',
-          message:
-            `Directory "${apiDirPath}" does not exist on part ${partId} — treated as empty. ` +
-            `If you expected content here, the directory may live at a different path for ` +
-            `this lab type (Elite workspaces keep everything under /resource; Container ` +
-            `workspaces keep scripts, startercode, docs, data and private under /voc).`,
+            level: 'warn',
+            code: 'directory_unreachable',
+            message:
+              `Directory "${apiDirPath}" does not exist on part ${partId} — treated as empty. ` +
+              `If you expected content here, the directory may live at a different path for ` +
+              `this lab type (Elite workspaces keep everything under /resource; Container ` +
+              `workspaces keep scripts, startercode, docs, data and private under /voc).`,
+            data: { part_id: partId, api_path: apiDirPath, directory },
           });
         }
         return { entries: [], absent: true };
@@ -1386,7 +1435,7 @@ export async function deleteFile(
   directory: DirectoryType,
   filePath: string,
   architecture?: 'elite' | 'container'
-): Promise<void> {
+): Promise<boolean> {
   const apiDirPath = toApiDirPath(directory, architecture);
   try {
     await client.request({
@@ -1397,15 +1446,40 @@ export async function deleteFile(
         filename: filePath,
       },
     });
+    return true;
   } catch (error: unknown) {
-    // Handle errors gracefully - deletion may not be supported
+    // Deletion stays non-fatal (AGENTS.md #6: the API may not support it, and a
+    // push must not fail over that). What changed is that it no longer claims
+    // success: this returned void, so the caller recorded every attempt in
+    // `deleted` and reported "Deleted N files" even when the API had refused
+    // every one of them.
     if (error instanceof VocareumError) {
-      if (error.statusCode === 400 || error.statusCode === 404 || error.statusCode === 405) {
-        client.events.emit({ level: 'debug', message: `File deletion not supported or file not found: ${filePath}` });
-        return;
+      // 404 is the desired end state reached by another route -- the file is
+      // already absent -- so it counts as deleted. 400/405 mean the API refused
+      // and the file is STILL THERE, which is the case that was being reported
+      // as a successful deletion.
+      if (error.statusCode === 404) {
+        client.events.emit({ level: 'debug', message: `File already absent: ${filePath}` });
+        return true;
+      }
+      if (error.statusCode === 400 || error.statusCode === 405) {
+        client.events.emit({
+          level: 'warn',
+          code: 'delete_sync_failed',
+          data: { part_id: partId, path: filePath, status_code: error.statusCode },
+          message:
+            `Could not delete ${filePath}: the API rejected it (HTTP ${error.statusCode}). ` +
+            `The file is still present remotely.`,
+        });
+        return false;
       }
     }
-    // For other errors, just log and continue (don't fail the operation)
-    client.events.emit({ level: 'warn', message: `Failed to delete ${filePath}: ${error instanceof Error ? error.message : 'Unknown'}` });
+    client.events.emit({
+      level: 'warn',
+      code: 'delete_sync_failed',
+      data: { part_id: partId, path: filePath },
+      message: `Failed to delete ${filePath}: ${error instanceof Error ? error.message : 'Unknown'}`,
+    });
+    return false;
   }
 }

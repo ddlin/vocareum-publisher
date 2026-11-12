@@ -76,30 +76,36 @@ describe('statusCommand --json', () => {
     stdoutSpy.mockRestore();
   });
 
-  it('emits a single parseable JSON document on stdout with schema_version 1', async () => {
+  it('emits a single parseable JSON envelope on stdout', async () => {
     await statusCommand({ json: true });
 
     expect(stdoutWrites).toHaveLength(1);
-    const doc = JSON.parse(stdoutWrites[0]) as Record<string, unknown>;
-    expect(doc.schema_version).toBe(1);
-    expect(doc.course).toEqual({ org_id: '1', course_id: '201303' });
+    const doc = JSON.parse(stdoutWrites[0]) as {
+      schema_version: string;
+      command: string;
+      payload: Record<string, unknown>;
+    };
+    expect(doc.schema_version).toBe('1.0');
+    expect(doc.command).toBe('status');
+    expect(doc.payload.payload_schema_version).toBe(2);
+    expect(doc.payload.course).toEqual({ org_id: '1', course_id: '201303' });
     // Statuses cover CONTENT changes only — settings drift needs the API.
-    expect(doc.scope).toBe('content');
+    expect(doc.payload.scope).toBe('content');
   });
 
   it('includes per-assignment local scan statuses', async () => {
     await statusCommand({ json: true });
 
-    const doc = JSON.parse(stdoutWrites[0]) as {
+    const doc = JSON.parse(stdoutWrites[0]) as { payload: {
       assignments: Array<{ path: string; status: string; parts: Array<{ path: string; status: string }> }>;
       summary: Record<string, number>;
-    };
+    } };
 
     // No publish history in the fixture → everything is unknown
-    expect(doc.assignments).toHaveLength(1);
-    expect(doc.assignments[0]).toMatchObject({ path: 'lab1', status: 'unknown' });
-    expect(doc.assignments[0].parts[0]).toMatchObject({ path: 'part1', status: 'unknown' });
-    expect(doc.summary.unknown).toBe(1);
+    expect(doc.payload.assignments).toHaveLength(1);
+    expect(doc.payload.assignments[0]).toMatchObject({ path: 'lab1', status: 'unknown' });
+    expect(doc.payload.assignments[0].parts[0]).toMatchObject({ path: 'part1', status: 'unknown' });
+    expect(doc.payload.summary.unknown).toBe(1);
   });
 
   it('reports auth mode and configured flag', async () => {
@@ -110,8 +116,8 @@ describe('statusCommand --json', () => {
       delete process.env.VOCAREUM_API_KEY;
     }
 
-    const doc = JSON.parse(stdoutWrites[0]) as { auth: { mode: string; configured: boolean } };
-    expect(doc.auth).toEqual({ mode: 'token', configured: true });
+    const doc = JSON.parse(stdoutWrites[0]) as { payload: { auth: { mode: string; configured: boolean } } };
+    expect(doc.payload.auth).toEqual({ mode: 'token', configured: true });
   });
 
   it('keeps stdout pure JSON (no human banner) in json mode', async () => {
@@ -145,8 +151,8 @@ describe('statusCommand --json', () => {
 
     await statusCommand({ json: true });
 
-    const doc = JSON.parse(stdoutWrites[0]) as { last_push: { commit_sha: string } };
-    expect(doc.last_push.commit_sha).toBe('old');
+    const doc = JSON.parse(stdoutWrites[0]) as { payload: { last_push: { commit_sha: string } } };
+    expect(doc.payload.last_push.commit_sha).toBe('old');
   });
 
   it('still prints the human report without --json', async () => {
@@ -189,8 +195,8 @@ describe('statusCommand — API host / region', () => {
   it('--json reports the NA host from vocareum.yaml', async () => {
     loadConfigMock.mockResolvedValue(makeConfig());
     await statusCommand({ json: true });
-    const doc = JSON.parse(stdoutWrites[0]) as { api: ApiField };
-    expect(doc.api).toEqual({
+    const doc = JSON.parse(stdoutWrites[0]) as { payload: { api: ApiField } };
+    expect(doc.payload.api).toEqual({
       base_url: 'https://api.vocareum.com/api/v2',
       host: 'api.vocareum.com',
       region: 'na',
@@ -203,23 +209,23 @@ describe('statusCommand — API host / region', () => {
   it('--json reports the EU host from vocareum.yaml', async () => {
     loadConfigMock.mockResolvedValue(configWithHost('https://api.eu.vocareum.com'));
     await statusCommand({ json: true });
-    const doc = JSON.parse(stdoutWrites[0]) as { api: ApiField };
-    expect(doc.api).toMatchObject({ host: 'api.eu.vocareum.com', region: 'eu', source: 'config', allowlisted: true });
+    const doc = JSON.parse(stdoutWrites[0]) as { payload: { api: ApiField } };
+    expect(doc.payload.api).toMatchObject({ host: 'api.eu.vocareum.com', region: 'eu', source: 'config', allowlisted: true });
   });
 
   it('--json shows VOCAREUM_API_BASE_URL winning over vocareum.yaml', async () => {
     loadConfigMock.mockResolvedValue(makeConfig()); // NA in yaml
     vi.mocked(getApiBaseUrlEnv).mockReturnValue('https://api.eu.vocareum.com');
     await statusCommand({ json: true });
-    const doc = JSON.parse(stdoutWrites[0]) as { api: ApiField };
-    expect(doc.api).toMatchObject({ region: 'eu', source: 'env' });
+    const doc = JSON.parse(stdoutWrites[0]) as { payload: { api: ApiField } };
+    expect(doc.payload.api).toMatchObject({ region: 'eu', source: 'env' });
   });
 
   it('--json flags an unallowlisted host instead of throwing', async () => {
     loadConfigMock.mockResolvedValue(configWithHost('https://staging.example.com'));
     await statusCommand({ json: true });
-    const doc = JSON.parse(stdoutWrites[0]) as { api: ApiField };
-    expect(doc.api).toMatchObject({ host: 'staging.example.com', region: null, allowlisted: false });
+    const doc = JSON.parse(stdoutWrites[0]) as { payload: { api: ApiField } };
+    expect(doc.payload.api).toMatchObject({ host: 'staging.example.com', region: null, allowlisted: false });
   });
 
   it('human output names the EU host, region, and source', async () => {
@@ -240,10 +246,10 @@ describe('statusCommand — API host / region', () => {
     await statusCommand({ json: true });
     await statusCommand({});
     expect(stdoutWrites.join('')).not.toContain(secret);
-    const doc = JSON.parse(stdoutWrites[0]) as { api: ApiField };
-    expect(doc.api.base_url).toBe('https://api.eu.vocareum.com/api/v2');
+    const doc = JSON.parse(stdoutWrites[0]) as { payload: { api: ApiField } };
+    expect(doc.payload.api.base_url).toBe('https://api.eu.vocareum.com/api/v2');
     // ...and it is reported as refused, not as a usable EU host.
-    expect(doc.api).toMatchObject({ allowlisted: false, malformed: true, region: null });
+    expect(doc.payload.api).toMatchObject({ allowlisted: false, malformed: true, region: null });
     expect(stdoutWrites.join('')).toMatch(/API host: api\.eu\.vocareum\.com \(custom host, from vocareum\.yaml\) — MALFORMED/);
   });
 
@@ -252,8 +258,8 @@ describe('statusCommand — API host / region', () => {
     await statusCommand({ json: true });
     await statusCommand({});
     expect(stdoutWrites.join('')).not.toContain('secret-token-456');
-    const doc = JSON.parse(stdoutWrites[0]) as { api: ApiField };
-    expect(doc.api).toMatchObject({ base_url: '<invalid URL>', host: '<invalid URL>', allowlisted: false });
+    const doc = JSON.parse(stdoutWrites[0]) as { payload: { api: ApiField } };
+    expect(doc.payload.api).toMatchObject({ base_url: '<invalid URL>', host: '<invalid URL>', allowlisted: false });
   });
 
   it('OAuth human output names VOCAREUM_API_V3_BASE_URL, not the v2 variable', async () => {
@@ -294,7 +300,7 @@ describe('statusCommand — API host / region', () => {
     loadConfigMock.mockResolvedValue(configWithHost('https://api.eu.vocareum.com'));
     vi.mocked(getAuthModeEnv).mockReturnValue('oauth');
     await statusCommand({ json: true });
-    const doc = JSON.parse(stdoutWrites[0]) as { api: ApiField };
-    expect(doc.api).toMatchObject({ host: 'labs.vocareum.com', region: 'na', allowlisted: true });
+    const doc = JSON.parse(stdoutWrites[0]) as { payload: { api: ApiField } };
+    expect(doc.payload.api).toMatchObject({ host: 'labs.vocareum.com', region: 'na', allowlisted: true });
   });
 });

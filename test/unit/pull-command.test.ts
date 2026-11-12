@@ -106,6 +106,7 @@ vi.mock('../../src/utils/logger', () => ({
     debug: vi.fn(),
     plain: vi.fn(),
     newline: vi.fn(),
+    withJsonMode: async (_enabled: boolean, body: () => Promise<unknown>) => body(),
   },
 }));
 
@@ -206,7 +207,8 @@ describe('pullCommand settings drift behavior', () => {
   it('should warn when settings fetch fails for an assignment', async () => {
     getAssignmentMock.mockRejectedValue(new Error('network error'));
 
-    await pullCommand({ nonInteractive: true });
+    // Unknown is not clean: the pull warns AND fails as partial (exit 6).
+    await expect(pullCommand({ nonInteractive: true })).rejects.toMatchObject({ exitCode: 6 });
 
     expect(loggerWarnMock).toHaveBeenCalledWith(
       'Could not fetch settings for assignment "Lab 1" (ID: asn-1): network error'
@@ -514,9 +516,14 @@ describe('pullCommand content-drift gating', () => {
     vi.clearAllMocks();
     process.env.VOCAREUM_API_KEY = 'token';
     isCIMock.mockReturnValue(false);
-    loadConfigMock.mockResolvedValue(twoAssignmentConfig);
+    // Settings drift is out of scope here. Skip it the honest way: a settings
+    // read that FAILS now makes the pull incomplete (exit 6), as it should.
+    loadConfigMock.mockResolvedValue({
+      ...twoAssignmentConfig,
+      publish_options: { ...twoAssignmentConfig.publish_options, sync_settings: false },
+    });
     updateConfigMock.mockResolvedValue(undefined);
-    getAssignmentMock.mockRejectedValue(new Error('skip settings drift'));
+    getAssignmentMock.mockRejectedValue(new Error('settings are not read in these tests'));
     reconcileMock.mockResolvedValue({
       config: twoAssignmentConfig, course: { type: 'skip' }, assignments: [],
       summary: { coursesToUpdate: 0, assignmentsToCreate: 0, assignmentsToUpdate: 0, assignmentsWithDiscoveredIds: 0, assignmentsToSkip: 0, partsToCreate: 0, partsToUpdate: 0, estimatedApiCalls: 0 },
@@ -564,16 +571,94 @@ describe('pullCommand content-drift gating', () => {
 
       // The escaping symlink file is skipped (never read/compared/restored) with a
       // targeted per-file warning — the rest of the drift check is NOT aborted.
+      // The warning carries the symlink_skipped diagnostic's data as metadata.
       expect(loggerWarnMock).toHaveBeenCalledWith(
         expect.stringContaining('Skipping "startercode/secret.txt" in content drift check'),
+        expect.objectContaining({ path: 'startercode/secret.txt', reason: 'escapes_part' }),
       );
       expect(loggerWarnMock).toHaveBeenCalledWith(
         expect.stringContaining('path escapes the local part directory through a symlink'),
+        expect.anything(),
       );
     } finally {
       await fs.rm(workspace, { recursive: true, force: true });
       await fs.rm(outside, { recursive: true, force: true });
     }
+  });
+});
+
+describe('pullCommand --json', () => {
+  const emptyConfig: Config = {
+    version: '1.0',
+    vocareum: {
+      org_id: '1',
+      course_id: '201303',
+      api_base_url: 'https://api.vocareum.com',
+      excluded_assignments: [],
+    },
+    assignments: [],
+    publish_options: {
+      on_missing_id: 'skip',
+      auto_commit: false,
+      abort_on_error: false,
+      sync_deletes: false,
+      exclude_patterns: [],
+    },
+    publish_history: [],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VOCAREUM_API_KEY = 'token';
+    isCIMock.mockReturnValue(false);
+    loadConfigMock.mockResolvedValue(emptyConfig);
+    updateConfigMock.mockResolvedValue(undefined);
+    reconcileMock.mockResolvedValue({
+      config: emptyConfig,
+      course: { type: 'skip' },
+      assignments: [],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 0,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 0,
+        estimatedApiCalls: 0,
+      },
+      orphanedInVocareum: [],
+      staleInConfig: [],
+    });
+  });
+
+  it('writes one pull envelope for a no-op pull', async () => {
+    const chunks: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      chunks.push(String(chunk));
+      return true;
+    });
+    try {
+      await pullCommand({ json: true });
+    } finally {
+      stdoutSpy.mockRestore();
+    }
+
+    expect(chunks).toHaveLength(1);
+    const doc = JSON.parse(chunks[0]) as {
+      schema_version: string;
+      command: string;
+      result: string;
+      payload: { payload_schema_version: number; applied: { importsFailed: number; filesNotDownloaded: number } };
+      error: unknown;
+    };
+    expect(doc.schema_version).toBe('1.0');
+    expect(doc.command).toBe('pull');
+    expect(doc.result).toBe('no-op');
+    expect(doc.payload.payload_schema_version).toBe(1);
+    expect(doc.payload.applied.importsFailed).toBe(0);
+    expect(doc.payload.applied.filesNotDownloaded).toBe(0);
+    expect(doc.error).toBeNull();
   });
 });
 
@@ -608,19 +693,33 @@ describe('pullCommand — incomplete content drift check', () => {
     });
   });
 
-  it('a skipped check exits 1 and never prints "No sync issues found"', async () => {
+  it('a skipped check exits 6 (partial) and never prints "No sync issues found"', async () => {
     vi.mocked(downloadContent).mockRejectedValue(new Error('specified file does not exist startercode.0/py3.10-exercises'));
     const { logger } = await import('../../src/utils/logger');
 
     const run = pullCommand({ nonInteractive: true, content: true });
     await expect(run).rejects.toMatchObject({
       name: 'CommandFailureError',
-      exitCode: 1,
+      // Per-item failure: partial (exit 6), the same code --json gives.
+      exitCode: 6,
       message: expect.stringMatching(/Pull incomplete: content drift check skipped for 1 assignment\(s\): "lab1"/),
     });
     expect(loggerSuccessMock).not.toHaveBeenCalledWith('No sync issues found.');
     // Logged once by the command (AGENTS.md #14); the entrypoint does not re-log.
     expect(vi.mocked(logger.error)).toHaveBeenCalledTimes(1);
+  });
+
+  it('an assignment whose settings cannot be read is unknown, not clean: exit 6, no "No sync issues"', async () => {
+    // Before: the settings read failed (e.g. Vocareum overloaded past the
+    // retries), the pull warned, printed "No sync issues found." and exited 0.
+    getAssignmentMock.mockRejectedValue(new Error('Vocareum is overloaded: VOCAREUM-ERROR: heavy traffic'));
+    const run = pullCommand({ nonInteractive: true });
+    await expect(run).rejects.toMatchObject({
+      name: 'CommandFailureError',
+      exitCode: 6,
+      message: expect.stringMatching(/settings could not be read for 1 assignment\(s\): "lab1"/),
+    });
+    expect(loggerSuccessMock).not.toHaveBeenCalledWith('No sync issues found.');
   });
 
   it('a check that completes with no drift is still clean and exits 0', async () => {
@@ -631,7 +730,7 @@ describe('pullCommand — incomplete content drift check', () => {
 });
 
 describe('pullCommand --batch — import that could not download every file', () => {
-  it('keeps the import, prints "Not downloaded", and exits 1', async () => {
+  it('keeps the import, prints "Not downloaded", and exits 6 (partial)', async () => {
     vi.clearAllMocks();
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-pull-incomplete-'));
     try {
@@ -665,7 +764,7 @@ describe('pullCommand --batch — import that could not download every file', ()
       const { logger } = await import('../../src/utils/logger');
 
       await expect(pullCommand({ batch: true, root: workspace, config: path.join(workspace, 'vocareum.yaml') }))
-        .rejects.toMatchObject({ exitCode: 1, message: expect.stringMatching(/1 file\(s\) could not be downloaded/) });
+        .rejects.toMatchObject({ exitCode: 6, message: expect.stringMatching(/1 file\(s\) could not be downloaded/) });
 
       expect(vi.mocked(logger.plain)).toHaveBeenCalledWith('  Not downloaded:  1');
       // What did arrive is written and the assignment is saved to config.
@@ -678,7 +777,7 @@ describe('pullCommand --batch — import that could not download every file', ()
 });
 
 describe('pullCommand --batch — import that fails outright', () => {
-  it('prints "Import failed" and exits 1 instead of 0', async () => {
+  it('prints "Import failed" and exits 6 (partial) instead of 0', async () => {
     vi.clearAllMocks();
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-pull-failed-'));
     try {
@@ -707,7 +806,7 @@ describe('pullCommand --batch — import that fails outright', () => {
       const { logger } = await import('../../src/utils/logger');
 
       await expect(pullCommand({ batch: true, root: workspace, config: path.join(workspace, 'vocareum.yaml') }))
-        .rejects.toMatchObject({ exitCode: 1, message: expect.stringMatching(/1 import\(s\) failed/) });
+        .rejects.toMatchObject({ exitCode: 6, message: expect.stringMatching(/1 import\(s\) failed/) });
       expect(vi.mocked(logger.plain)).toHaveBeenCalledWith('  Import failed:   1');
     } finally {
       await fs.rm(workspace, { recursive: true, force: true });

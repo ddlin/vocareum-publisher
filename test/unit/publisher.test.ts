@@ -10,6 +10,7 @@ import type { PushPlan } from '../../src/core/services/types';
 import type { LockedSession } from '../../src/core/session';
 import { CollectingEventSink } from '../../src/core/services/event-sink';
 import { NonInteractivePrompter } from '../../src/core/services/context';
+import { PUSH_INCOMPLETE_MARKER } from '../../src/core/local-scan';
 
 const {
   reconcileMock,
@@ -586,7 +587,7 @@ describe('publish', () => {
     expect(updatePartMock).toHaveBeenCalledTimes(2);
   });
 
-  it('should skip metadata failure when all payload retries return 400', async () => {
+  it('reports a failure when every payload retry returns 400 — nothing was applied', async () => {
     const assignment = {
       ...config.assignments[0],
       assignment_id: 'asn-1',
@@ -648,8 +649,230 @@ describe('publish', () => {
 
     expect(updatePartMock).toHaveBeenCalledTimes(3);
     expect(updatePartMock.mock.calls[2][4]).toEqual({ name: 'Part 1' });
-    expect(result.failed).toHaveLength(0);
-    expect(result.success).toBe(true);
+
+    // CHANGED DELIBERATELY. This asserted failed=[] and success=true, i.e. it
+    // encoded the defect as the contract: every rung of the ladder was rejected,
+    // nothing was written, and push still reported success (exit 0 under --json).
+    // The ladder ending at `none` means the user's settings were not applied at
+    // all, which is a failure by any reading -- and the neighbouring code path,
+    // where the same write throws instead of 400-ing, has always recorded it as
+    // one.
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0].id).toBe('part-1');
+    expect(result.success).toBe(false);
+
+    // And it must not claim a write it did not make. The `updated` entry is
+    // pushed when the assignment starts processing, before anything is
+    // attempted; nothing removed it when every rung was rejected, so
+    // `push --json` reported counts.updated: 1 with parts: [] for a run that
+    // applied nothing at all. Asserting only `failed`/`success` above proved
+    // the old green result wrong without proving this stopped.
+    expect(result.updated).toHaveLength(0);
+  });
+
+  it('a directory whose push failed is marked push-incomplete, so the next push retries it', async () => {
+    // Before: a failure kept the previous hash. After `push --force-all
+    // --sync-deletes` whose delete pass failed, that hash already equalled the
+    // local directory, so the next push saw no change and never retried.
+    const withHistory: Config = {
+      ...config,
+      publish_history: [
+        {
+          timestamp: '2026-02-13T00:00:00.000Z',
+          commit_sha: 'old',
+          published_by: 'tester',
+          status: 'success',
+          content_state: {
+            'lab1/part1/docs': 'oldhash',
+          },
+          file_size_state: {
+            'lab1/part1/docs/readme.md': 2,
+          },
+        },
+      ],
+    };
+    const assignment = {
+      ...withHistory.assignments[0],
+      assignment_id: 'asn-1',
+      name: 'Lab 1 Updated',
+      settings: { description: 'new description' },
+      parts: [
+        {
+          part_id: 'part-1',
+          path: 'part1',
+          name: 'Part 1',
+          settings: { session_length: '60' },
+        },
+      ],
+    };
+
+    const plan: ReconciliationPlan = {
+      config: withHistory,
+      course: { type: 'skip' },
+      assignments: [
+        {
+          type: 'update',
+          assignment,
+          parts: [
+            {
+              type: 'update',
+              part: assignment.parts[0],
+              contentChanged: true,
+              changedDirectories: ['docs'],
+              metadataChanged: true,
+              reason: 'Content and settings changed',
+            },
+          ],
+          assignmentMetadataChanged: true,
+        },
+      ],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 1,
+        estimatedApiCalls: 2,
+      },
+      orphanedInVocareum: [],
+      staleInConfig: [],
+    };
+
+    reconcileMock.mockResolvedValue(plan);
+    getAssignmentMock.mockResolvedValue({
+      id: 'asn-1',
+      name: 'Lab 1',
+      deleted: '0',
+      courseid: '201303',
+      description: 'old description',
+    });
+    getPartMock.mockResolvedValue({
+      id: 'part-1',
+      seqnum: '0',
+      name: 'Part 1',
+      deleted: '0',
+      courseid: '201303',
+      assignmentid: 'asn-1',
+      session_length: '30',
+    });
+    readDirectoryMock.mockResolvedValue({
+      'readme.md': Buffer.from('hello'),
+    });
+    syncDirectoryMock.mockResolvedValue({
+      succeeded: ['readme.md'],
+      failed: [{ path: '', error: 'docs: deletions were not synced (overloaded)' }],
+      directoryHash: 'newhash',
+      deleted: [],
+    });
+
+    const result = await publish(withHistory, client, baseOptions);
+
+    expect(result.success).toBe(false);
+    const historyArg = updateConfigMock.mock.calls[0][1].publish_history[0];
+    expect(historyArg.status).toBe('failed');
+    expect(historyArg.content_state['lab1/part1/docs']).toBe(PUSH_INCOMPLETE_MARKER);
+  });
+
+  it('a directory whose upload THREW is marked push-incomplete too', async () => {
+    // Before: a failure kept the previous hash. After `push --force-all
+    // --sync-deletes` whose delete pass failed, that hash already equalled the
+    // local directory, so the next push saw no change and never retried.
+    const withHistory: Config = {
+      ...config,
+      publish_history: [
+        {
+          timestamp: '2026-02-13T00:00:00.000Z',
+          commit_sha: 'old',
+          published_by: 'tester',
+          status: 'success',
+          content_state: {
+            'lab1/part1/docs': 'oldhash',
+          },
+          file_size_state: {
+            'lab1/part1/docs/readme.md': 2,
+          },
+        },
+      ],
+    };
+    const assignment = {
+      ...withHistory.assignments[0],
+      assignment_id: 'asn-1',
+      name: 'Lab 1 Updated',
+      settings: { description: 'new description' },
+      parts: [
+        {
+          part_id: 'part-1',
+          path: 'part1',
+          name: 'Part 1',
+          settings: { session_length: '60' },
+        },
+      ],
+    };
+
+    const plan: ReconciliationPlan = {
+      config: withHistory,
+      course: { type: 'skip' },
+      assignments: [
+        {
+          type: 'update',
+          assignment,
+          parts: [
+            {
+              type: 'update',
+              part: assignment.parts[0],
+              contentChanged: true,
+              changedDirectories: ['docs'],
+              metadataChanged: true,
+              reason: 'Content and settings changed',
+            },
+          ],
+          assignmentMetadataChanged: true,
+        },
+      ],
+      summary: {
+        coursesToUpdate: 0,
+        assignmentsToCreate: 0,
+        assignmentsToUpdate: 1,
+        assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0,
+        partsToCreate: 0,
+        partsToUpdate: 1,
+        estimatedApiCalls: 2,
+      },
+      orphanedInVocareum: [],
+      staleInConfig: [],
+    };
+
+    reconcileMock.mockResolvedValue(plan);
+    getAssignmentMock.mockResolvedValue({
+      id: 'asn-1',
+      name: 'Lab 1',
+      deleted: '0',
+      courseid: '201303',
+      description: 'old description',
+    });
+    getPartMock.mockResolvedValue({
+      id: 'part-1',
+      seqnum: '0',
+      name: 'Part 1',
+      deleted: '0',
+      courseid: '201303',
+      assignmentid: 'asn-1',
+      session_length: '30',
+    });
+    readDirectoryMock.mockResolvedValue({
+      'readme.md': Buffer.from('hello'),
+    });
+    syncDirectoryMock.mockRejectedValue(new Error('chunk 2 of 3 failed'));
+
+    const result = await publish(withHistory, client, baseOptions);
+
+    expect(result.success).toBe(false);
+    const historyArg = updateConfigMock.mock.calls[0][1].publish_history[0];
+    expect(historyArg.status).toBe('failed');
+    expect(historyArg.content_state['lab1/part1/docs']).toBe(PUSH_INCOMPLETE_MARKER);
   });
 
   it('should persist detailed settings and file size deltas in publish history', async () => {

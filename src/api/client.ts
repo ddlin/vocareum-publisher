@@ -36,7 +36,12 @@ export class VocareumError extends Error {
  * Error for general API failures
  */
 export class APIError extends VocareumError {
-  constructor(message: string, statusCode?: number, details?: unknown) {
+  constructor(
+    message: string,
+    statusCode?: number,
+    details?: unknown,
+    public readonly retryable = statusCode !== undefined && statusCode >= 500 && statusCode < 600,
+  ) {
     super(message, 'API_ERROR', statusCode, details);
     this.name = 'APIError';
   }
@@ -193,13 +198,15 @@ export function assertAllowedBaseUrl(baseUrl: string, events?: EventSink): void 
     if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
     // Non-HTTPS is only reachable with the explicit override; skip the path
     // allowlist check since TLS is already absent (dev/test escape hatch).
-    sink.emit({ level: 'warn', message: `WARNING: Using non-HTTPS API URL: ${baseUrl}` });
+    sink.emit({ level: 'warn', code: 'insecure_base_url', data: { base_url: baseUrl, reason: 'non-https' },
+      message: `WARNING: Using non-HTTPS API URL: ${baseUrl}` });
     return;
   }
   const canonical = `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, '')}`;
   if (!ALLOWED_BASE_URLS.has(canonical)) {
     if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
-    sink.emit({ level: 'warn', message: `WARNING: Using non-standard API base URL: ${canonical}. Your credentials will be sent to this host.` });
+    sink.emit({ level: 'warn', code: 'insecure_base_url', data: { base_url: canonical },
+      message: `WARNING: Using non-standard API base URL: ${canonical}. Your credentials will be sent to this host.` });
   }
 }
 
@@ -226,13 +233,15 @@ export function assertBaseUrlForVersion(baseUrl: string, version: 'v2' | 'v3', e
   try { parsed = new URL(baseUrl); } catch { throw new InsecureBaseUrlError(baseUrl); }
   if (parsed.protocol !== 'https:') {
     if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
-    sink.emit({ level: 'warn', message: `WARNING: Using non-HTTPS API URL: ${baseUrl}` });
+    sink.emit({ level: 'warn', code: 'insecure_base_url', data: { base_url: baseUrl, reason: 'non-https' },
+      message: `WARNING: Using non-HTTPS API URL: ${baseUrl}` });
     return;
   }
   const canonical = `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/, '')}`;
   if (!allowed.has(canonical)) {
     if (!allowCustom) { throw new InsecureBaseUrlError(baseUrl); }
-    sink.emit({ level: 'warn', message: `WARNING: Using non-standard ${version} API base URL: ${canonical}. Your credentials will be sent to this host.` });
+    sink.emit({ level: 'warn', code: 'insecure_base_url', data: { base_url: canonical, version },
+      message: `WARNING: Using non-standard ${version} API base URL: ${canonical}. Your credentials will be sent to this host.` });
   }
 }
 
@@ -429,9 +438,11 @@ function trailingPunctuation(text: string): string {
  * or line break that ended the URL match early, or in a protocol-relative or
  * otherwise unrecognised URL. Names: S3 (`X-Amz-*`, `AWSAccessKeyId`,
  * `Signature`), CloudFront (`Signature`, `Policy`, `Key-Pair-Id`), generic
- * (`sig`, `signature`, `token`).
+ * (`sig`, `signature`, `token`). Also the CLI-flag form (`--token=…`,
+ * `--client-secret=…`), which reached a --json usage document verbatim when
+ * passed as an unknown option.
  */
-const SIGNED_URL_PARAM = /((?:^|[?&\s"'\\])(?:X-Amz-[A-Za-z-]+|AWSAccessKeyId|Signature|Policy|Key-Pair-Id|sig|token)=)[^&\s"'\\]*/gi;
+const SIGNED_URL_PARAM = /((?:^|[?&\s"'\\]|--)(?:X-Amz-[A-Za-z-]+|AWSAccessKeyId|Signature|Policy|Key-Pair-Id|sig|token|password|client[-_]secret|api[-_]key)=)[^&\s"'\\]*/gi;
 
 /**
  * Redact one absolute URL: drop user-info (`user:pass@`) and the whole query
@@ -461,15 +472,27 @@ export function sanitizeLogString(text: string): string {
  */
 export function sanitizeForLog(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
   if (typeof value === 'string') { return sanitizeLogString(value); }
-  if (Array.isArray(value)) { return value.map((v) => sanitizeForLog(v, seen)); }
-  if (value && typeof value === 'object') {
+  if (Array.isArray(value)) {
     if (seen.has(value)) { return '[Circular]'; }
     seen.add(value);
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = REDACT_KEY.test(k) ? '[REDACTED]' : sanitizeForLog(v, seen);
+    try { return value.map((v) => sanitizeForLog(v, seen)); } finally { seen.delete(value); }
+  }
+  if (value && typeof value === 'object') {
+    // `seen` holds the ANCESTORS of this node only (removed on the way out), so
+    // a real cycle is caught but the same object referenced twice -- e.g. one
+    // settings object in two places of a --json payload -- is printed twice
+    // rather than as "[Circular]".
+    if (seen.has(value)) { return '[Circular]'; }
+    seen.add(value);
+    try {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = REDACT_KEY.test(k) ? '[REDACTED]' : sanitizeForLog(v, seen);
+      }
+      return out;
+    } finally {
+      seen.delete(value);
     }
-    return out;
   }
   return value;
 }
@@ -483,6 +506,31 @@ export function sanitizeForLog(value: unknown, seen: WeakSet<object> = new WeakS
  * - Rate limiting and backoff
  * - Request/response logging (with credential redaction)
  */
+/**
+ * Vocareum reports a bad or absent token as HTTP **400** with an in-band
+ * message, not the 401 an HTTP-status-based classifier expects. Recorded from
+ * the live API on 2026-09-08:
+ *
+ *   invalid token      -> 400 { error: { message: "Invalid Token" } }
+ *   missing token      -> 400 { error: { message: "Missing Token" } }
+ *   nonexistent course -> 400 { error: { message: "Invalid course" } }
+ *
+ * That third row is why this matches specific messages instead of treating
+ * every 400 as an auth failure: 400 is overloaded, and misclassifying a bad
+ * course id as "fix your credentials" sends the caller after the wrong problem.
+ * Matching is exact (case-insensitively) rather than /token/i for the same
+ * reason -- an unrelated 400 that happens to mention a token must stay a
+ * generic APIError.
+ *
+ * Without this, `pull` with an invalid token exited 1 (internal error) instead
+ * of 3 (auth), and the user never saw the token hint AuthenticationError adds.
+ */
+const IN_BAND_AUTH_MESSAGES = new Set(['invalid token', 'missing token']);
+
+function isInBandAuthFailure(message: string): boolean {
+  return IN_BAND_AUTH_MESSAGES.has(message.trim().toLowerCase());
+}
+
 export class VocareumClient {
   private axios: AxiosInstance;
   private authProvider: AuthProvider;
@@ -592,7 +640,23 @@ export class VocareumClient {
       const url = error.config?.url ?? '';
       const resourceType = this.detectResourceType(url);
 
+      // Hoisted so the 400 branch below can return exactly what `default`
+      // would, without duplicating the predicate.
+      const retryableTransport =
+        (status !== undefined && status >= 500 && status < 600) ||
+        (error.code !== undefined && RETRYABLE_NETWORK_CODES.has(error.code));
+
       switch (status) {
+        case 400:
+          // See IN_BAND_AUTH_MESSAGES: a bad token arrives here, not at 401.
+          if (isInBandAuthFailure(message)) {
+            return new AuthenticationError(
+              message + '\n\n' + (this.authProvider.unauthorizedHint ??
+                'Your API token may be invalid or expired. ' +
+                'Generate a new token at: Profile > Settings > Personal Access Tokens')
+            );
+          }
+          return new APIError(message, status, sanitizeForLog(data), retryableTransport);
         case 401:
           return new AuthenticationError(
             message + '\n\n' + (this.authProvider.unauthorizedHint ??
@@ -608,7 +672,7 @@ export class VocareumClient {
             retryAfterFromAxiosError(error)
           );
         default:
-          return new APIError(message, status, sanitizeForLog(data));
+          return new APIError(message, status, sanitizeForLog(data), retryableTransport);
       }
     }
 

@@ -32,6 +32,17 @@ export class CollectingEventSink implements EventSink {
     this.events.push(event);
   }
 
+  /**
+   * Read the buffered events without consuming them.
+   *
+   * Returns a copy: the JSON report holds this array for the lifetime of the
+   * command, and a caller mutating it must not corrupt the sink (or a later
+   * flushTo, which stays valid after a drain).
+   */
+  drain(): readonly ServiceEvent[] {
+    return [...this.events];
+  }
+
   flushTo(sink: EventSink): void {
     for (const event of this.events) {
       sink.emit(event);

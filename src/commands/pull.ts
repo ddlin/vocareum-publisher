@@ -16,8 +16,10 @@ import { loadDotEnvIfPresent, isCI } from '../utils/env';
 import { prompt, promptChoice } from '../utils/prompts';
 import { UnknownFieldReporter } from '../utils/unknown-field-reporter';
 import { withSession } from '../core/session';
-import { CommandFailureError } from '../utils/command-failure';
 import { LoggerEventSink } from '../utils/logger-event-sink';
+import { CollectingEventSink } from '../core/services/event-sink';
+import { TeeEventSink } from '../utils/tee-event-sink';
+import { buildReport, writeReport } from '../core/report';
 import { InteractivePrompter, NonInteractivePrompter } from '../core/services/context';
 import type { PullContext } from '../core/services/context';
 import type { PullRequest } from '../core/services/types';
@@ -28,6 +30,8 @@ import {
   validatePullContentFlags,
 } from '../core/services/pull-service';
 import type {
+  PullResult,
+  PullInspection,
   PullResolver,
   PullIssueOrphan,
   PullIssueStale,
@@ -38,6 +42,7 @@ import type {
   SettingsDriftAction,
   ContentDriftAction,
 } from '../core/services/pull-service';
+import { CommandFailureError, type FailureCategory } from '../utils/command-failure';
 
 // Re-export helpers that tests/other code may import from pull.ts
 export {
@@ -51,11 +56,66 @@ export {
   scopeAssignmentsForContent,
 } from '../core/services/pull-service';
 
+/**
+ * Map a completed pull onto an envelope result and an exit category.
+ *
+ * Findings that were resolved are not findings: a batch pull that applies
+ * settings drift is success, while non-interactive mode reporting the same
+ * drift exits 5 because work remains for the caller.
+ */
+export function pullResultToOutcome(
+  applied: PullResult,
+  state: { hasFindings: boolean; failures: number }
+): { result: 'applied' | 'partial' | 'reported' | 'no-op'; category: FailureCategory | undefined } {
+  const changed =
+    applied.imported + applied.excluded + applied.removed +
+    applied.reset + applied.settingsPulled + applied.contentPulled;
+
+  if (state.failures > 0) { return { result: 'partial', category: 'partial' }; }
+  if (state.hasFindings) { return { result: 'reported', category: 'findings' }; }
+  if (changed > 0) { return { result: 'applied', category: undefined }; }
+  return { result: 'no-op', category: undefined };
+}
+
+const EMPTY_PULL_RESULT: PullResult = {
+  imported: 0,
+  excluded: 0,
+  skipped: 0,
+  removed: 0,
+  reset: 0,
+  settingsPulled: 0,
+  contentPulled: 0,
+  filesNotDownloaded: 0,
+  importsFailed: 0,
+};
+
+/**
+ * The public shape of a pull inspection (spec section 3.3: an explicit
+ * projection, never an internal type). The inspection carries every
+ * downloaded remote file (`remoteFiles`, Buffers) so apply can write them;
+ * serialized raw, `pull --content --json` put the course's files on stdout.
+ * The document keeps the diff (paths and statuses) and a count.
+ */
+export function serializePullInspection(inspection: PullInspection): unknown {
+  return {
+    ...inspection,
+    contentDrift: inspection.contentDrift.map((assignment) => ({
+      ...assignment,
+      partsDrift: assignment.partsDrift.map(({ remoteFiles, ...part }) => ({
+        ...part,
+        remoteFileCount: Object.keys(remoteFiles).length,
+      })),
+    })),
+  };
+}
+
 export interface PullOptions {
   config?: string;
   /** Explicit workspace root (required when --config is not directly inside cwd) */
   root?: string;
   nonInteractive?: boolean;
+  /** Emit a machine-readable report on stdout. Implies nonInteractive. */
+  json?: boolean;
   /** Batch mode: apply sensible defaults without prompting (import orphans, pull drift, skip stale) */
   batch?: boolean;
   verbose?: boolean;
@@ -73,6 +133,8 @@ export interface PullOptions {
   auth?: string;
   clientId?: string;
   clientSecret?: string;
+  /** Internal collector supplied by the CLI wrapper for --json failure envelopes. */
+  eventCollector?: CollectingEventSink;
 }
 
 /**
@@ -84,18 +146,25 @@ export interface PullOptions {
  * CONFIG_LOCKED if the lock file already exists).
  */
 export async function pullCommand(options: PullOptions): Promise<void> {
-  const ctx = resolveWorkspaceContext({ config: options.config, root: options.root });
-  await pullCommandLocked(ctx, options);
+  return logger.withJsonMode(options.json === true, async () => {
+    const ctx = resolveWorkspaceContext({ config: options.config, root: options.root });
+    await pullCommandLocked(ctx, options);
+  });
 }
 
 async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): Promise<void> {
   const { configPath, workspaceRoot } = ctx;
   const batch = options.batch ?? false;
-  const nonInteractive = !batch && (options.nonInteractive ?? isCI());
+  // --json never prompts: prompt output would corrupt stdout and a blocked
+  // prompt would hang an automated caller.
+  const nonInteractive = options.json === true || (!batch && (options.nonInteractive ?? isCI()));
   const verbose = options.verbose ?? false;
   // Shared event sink: reporter output joins the same stream as service events,
   // preventing interleaving when Stage 1b processes courses concurrently.
-  const events = new LoggerEventSink();
+  const collector = options.eventCollector ?? new CollectingEventSink();
+  const events = options.json === true
+    ? new TeeEventSink([collector, new LoggerEventSink()])
+    : new LoggerEventSink();
   const reporter = new UnknownFieldReporter(events);
 
   // Set inside the session; acted on after it closes so imports already
@@ -138,7 +207,7 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
 
     logger.info('Scanning for assignment sync issues...');
 
-    await withSession(configPath, async (session) => {
+    const sessionOutcome = await withSession(configPath, async (session) => {
       const inspection = await inspectPull(pullCtx, req, reporter);
 
       if (!options.content) {
@@ -149,13 +218,21 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
       const hasStale = inspection.stale.length > 0;
       const hasSettingsDrift = inspection.settingsDrift.length > 0;
       const hasContentDrift = inspection.contentDrift.length > 0;
-      const driftSkipped = inspection.contentDriftIncomplete ?? [];
-      if (driftSkipped.length > 0) {
+      const contentSkipped = inspection.contentDriftIncomplete ?? [];
+      if (contentSkipped.length > 0) {
         incomplete.push(
-          `content drift check skipped for ${driftSkipped.length} assignment(s): ` +
-          driftSkipped.map(d => `"${d.assignmentName}"`).join(', ')
+          `content drift check skipped for ${contentSkipped.length} assignment(s): ` +
+          contentSkipped.map(d => `"${d.assignmentName}"`).join(', ')
         );
       }
+      const settingsSkipped = inspection.settingsDriftIncomplete ?? [];
+      if (settingsSkipped.length > 0) {
+        incomplete.push(
+          `settings could not be read for ${settingsSkipped.length} assignment(s): ` +
+          settingsSkipped.map(d => `"${d.assignmentName}"`).join(', ')
+        );
+      }
+      const driftSkipped = [...contentSkipped, ...settingsSkipped];
 
       if (!hasOrphans && !hasStale && !hasSettingsDrift && !hasContentDrift) {
         // A skipped drift check is "unknown", not "clean": this line once
@@ -163,7 +240,7 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
         if (driftSkipped.length === 0) {
           logger.success('No sync issues found.');
         }
-        return;
+        return { inspection, pullResult: EMPTY_PULL_RESULT };
       }
 
       const resolver: PullResolver = {
@@ -270,14 +347,56 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
         logger.plain(`  Not downloaded:  ${pullResult.filesNotDownloaded}`);
         incomplete.push(`${pullResult.filesNotDownloaded} file(s) could not be downloaded`);
       }
+
+      return { inspection, pullResult };
     });
+
+    if (options.json === true) {
+      const { inspection, pullResult } = sessionOutcome;
+      // hasFindings must mean "something is STILL outstanding", not "something
+      // was found". Reading it off the pre-apply inspection made
+      // `pull --batch --json` report result "reported" / exit 5 after
+      // successfully applying every one of those findings -- precisely the case
+      // spec §5.1 exists to rule out ("findings that were resolved are not
+      // findings"), and the reason exit 5 stays meaningful.
+      //
+      // `skipped` is the honest signal: whatever the resolver declined to
+      // apply. Non-interactive skips everything, so findings stand. Batch
+      // applies orphans and drift but skips stale by design, so a run with
+      // stale entries still reports them -- correctly, since a stale entry IS
+      // work left for the operator.
+      const outcome = pullResultToOutcome(pullResult, {
+        hasFindings: pullResult.skipped > 0,
+        // Each entry is a per-item failure: a failed import, files that did
+        // not download, or a drift check that was skipped (unknown, not
+        // clean). Any of them makes the run partial, never success.
+        failures: incomplete.length,
+      });
+      const ok = writeReport(buildReport({
+        command: 'pull',
+        result: outcome.result,
+        payload: { payload_schema_version: 1, inspection: serializePullInspection(inspection), applied: pullResult },
+        events: collector.drain(),
+      }));
+      // reportWritten: true on both throws -- a document is already on stdout
+      // (the fallback envelope in the !ok case), so the entrypoint must not
+      // write a second one.
+      if (!ok) {
+        throw new CommandFailureError('Pull report serialization failed', 'internal', true);
+      }
+      if (outcome.category !== undefined) {
+        throw new CommandFailureError(`Pull finished with ${outcome.result}`, outcome.category, true);
+      }
+      return;
+    }
   } finally {
     reporter.printSummary();
   }
 
   if (incomplete.length > 0) {
+    // Per-item failures: partial (exit 6), the same code --json gives.
     const msg = `Pull incomplete: ${incomplete.join('; ')}. See the warnings above.`;
     logger.error(msg);
-    throw new CommandFailureError(msg);
+    throw new CommandFailureError(msg, 'partial');
   }
 }

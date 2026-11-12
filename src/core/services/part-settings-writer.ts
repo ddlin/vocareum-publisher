@@ -72,6 +72,8 @@ export async function writePartSettingsWithFallback(
   partSettings: PartSettings | undefined,
   fullPayload: PartSettingsPayload,
   events: EventSink,
+  /** For the part_settings_fallback diagnostic; the writer only had a name. */
+  partId?: string,
 ): Promise<PartSettingsWriteResult> {
   const rungs: Array<{ outcome: PartSettingsWriteOutcome; payload: PartSettingsPayload }> = [
     { outcome: 'full', payload: fullPayload },
@@ -95,8 +97,15 @@ export async function writePartSettingsWithFallback(
       await update(payload);
       const dropped = describeDroppedPartSettings(fullPayload, payload);
       if (dropped.length > 0) {
+        // The signal that settings were silently discarded: a green "Updated
+        // part" that dropped max_points, lab_interface or tags.
         events.emit({
           level: 'warn',
+          code: 'part_settings_fallback',
+          // Every part_settings_fallback emit carries the same keys: the
+          // registry declares dropped_fields, and a consumer branching on the
+          // code must not have to discover which variant it received.
+          data: { part_id: partId ?? null, part_name: partName, phase: 'degraded', outcome, dropped_fields: dropped },
           message:
             `Part ${partName} was updated WITHOUT these settings, which the API rejected: ` +
             `${dropped.join(', ')}. They remain as Vocareum has them.`,
@@ -116,6 +125,12 @@ export async function writePartSettingsWithFallback(
       const next = nextIndex < rungs.length ? rungs[nextIndex] : undefined;
       events.emit({
         level: 'warn',
+        code: 'part_settings_fallback',
+        data: {
+          part_id: partId ?? null, part_name: partName, phase: 'rejected',
+          rejected_outcome: outcome, next_outcome: next?.outcome ?? null,
+          dropped_fields: describeDroppedPartSettings(fullPayload, payload),
+        },
         message:
           `Part settings update rejected (400) for ${partName} ` +
           `[API: ${describeApiError(error)}]` +

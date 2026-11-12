@@ -68,13 +68,21 @@ describe('detectContentDrift — escaping symlink must not abort the whole assig
     } as unknown as Assignment;
 
     const warnings: string[] = [];
+    const codes: Array<{ code: string; data: Record<string, unknown> }> = [];
     const drift = await detectContentDrift(
       { assignments: [assignment], vocareum: { course_id: 'C1', architecture: 'container' } },
       {} as never,
       new Set<string>(),
       workspaceRoot,
-      (m) => warnings.push(m),
+      (m, d) => { warnings.push(m); if (d !== undefined) { codes.push(d); } },
     );
+
+    // The skip is machine-readable too: `symlink_skipped` was registered and
+    // documented but never emitted, so --json consumers never saw it.
+    expect(codes).toContainEqual({
+      code: 'symlink_skipped',
+      data: { assignment: 'Databricks Simple', path: 'docs/README.html', reason: 'escapes_part' },
+    });
 
     // The whole-assignment abort must NOT fire.
     expect(warnings.some((w) => w.startsWith('Skipping content drift check for'))).toBe(false);

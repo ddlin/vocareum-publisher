@@ -92,11 +92,11 @@ publish_history:
 
     expect(result.code).toBe(0);
     const doc = JSON.parse(result.stdout) as {
-      assignments: Array<{ path: string; status: string }>;
+      payload: { assignments: Array<{ path: string; status: string }> };
     };
     // With cwd-based resolution this would be needs_publish (dir looks empty);
     // root-based resolution finds the content and matches the recorded hash.
-    expect(doc.assignments[0].status).toBe('synced');
+    expect(doc.payload.assignments[0].status).toBe('synced');
   });
 
   it('runs unchanged from the workspace root without any flags', async () => {
@@ -104,9 +104,9 @@ publish_history:
 
     expect(result.code).toBe(0);
     const doc = JSON.parse(result.stdout) as {
-      assignments: Array<{ status: string }>;
+      payload: { assignments: Array<{ status: string }> };
     };
-    expect(doc.assignments[0].status).toBe('synced');
+    expect(doc.payload.assignments[0].status).toBe('synced');
   });
 
   it('supports --root . for a nested config, preserving cwd-relative paths', async () => {
@@ -129,8 +129,8 @@ publish_history:
     );
     expect(withRoot.code).toBe(0);
     const doc = JSON.parse(withRoot.stdout) as {
-      assignments: Array<{ status: string }>;
+      payload: { assignments: Array<{ status: string }> };
     };
-    expect(doc.assignments[0].status).toBe('synced');
+    expect(doc.payload.assignments[0].status).toBe('synced');
   });
 });

@@ -70,6 +70,42 @@ test('parseStatusReport accepts a schema_version 1 document', () => {
   assert.equal(report.assignments.length, 2);
 });
 
+// vocareum-publisher 1.5.0 wraps `status --json` in the shared envelope:
+// schema_version "1.0" at the top, the report under `payload` with
+// payload_schema_version 2. The extension must read both, or every badge
+// shows "bad-schema" the day the CLI ships.
+function envelope(payloadOverrides = {}, envelopeOverrides = {}) {
+  const { schema_version: _v1, ...report } = sampleReport();
+  return {
+    schema_version: '1.0',
+    command: 'status',
+    result: 'reported',
+    generated_at: '2026-11-11T00:00:00.000Z',
+    retryable: false,
+    payload: { payload_schema_version: 2, ...report, ...payloadOverrides },
+    diagnostics: [],
+    error: null,
+    ...envelopeOverrides,
+  };
+}
+
+test('parseStatusReport accepts the 1.5.0 envelope (payload_schema_version 2)', () => {
+  const report = parseStatusReport(JSON.stringify(envelope()));
+  assert.equal(report.assignments.length, 2);
+  assert.equal(report.last_push.timestamp, '2026-06-10T12:00:00Z');
+  const snapshot = mapReportToSnapshot(report);
+  assert.equal(snapshot.assignmentStatuses.get('lab1'), 'needs_publish');
+});
+
+test('parseStatusReport rejects an envelope from another command or a failed status', () => {
+  assert.throws(() => parseStatusReport(JSON.stringify(envelope({}, { command: 'pull' }))));
+  assert.throws(() => parseStatusReport(JSON.stringify(envelope({}, { result: 'failed', payload: { payload_schema_version: 2 } }))));
+});
+
+test('parseStatusReport rejects an envelope with an unknown payload version', () => {
+  assert.throws(() => parseStatusReport(JSON.stringify(envelope({ payload_schema_version: 99 }))));
+});
+
 test('parseStatusReport rejects unknown schema versions', () => {
   assert.throws(() => parseStatusReport(JSON.stringify(sampleReport({ schema_version: 99 }))));
 });

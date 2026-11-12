@@ -307,8 +307,8 @@ vocgit status --json    # Machine-readable content sync status (for tooling)
 `vocgit status` shows the API host and region (NA/EU) that `pull` and `push`
 will target, and where the host came from (`vocareum.yaml` or
 `VOCAREUM_API_BASE_URL`). Check it before pushing if you work with repos on
-both tenants. `status --json` reports this in an `api` object:
-`{ base_url, host, region, source, allowlisted }`.
+both tenants. `status --json` reports this in `payload.api`:
+`{ base_url, host, region, source, allowlisted, malformed }`.
 
 ### Workspace Root (`--root`)
 
@@ -382,15 +382,16 @@ arrived, and reports the rest as not downloaded. Courses that ship Python
 environments under `data/` can list tens of thousands of files; raise the cap
 for those, for example `VOCAREUM_MAX_DOWNLOAD_FILES=50000 vocgit pull --batch`.
 
-**An incomplete pull exits 1.** If an import cannot download some remote files,
-vocgit still writes the files that did arrive and saves the assignment to
-`vocareum.yaml`, but it marks the import `INCOMPLETE`, adds a `Not downloaded`
-count to the summary, records the run in `publish_history` as `failed` (listing
-the missed paths), and exits 1. An import that fails outright is not saved, is
-counted under `Import failed`, and also exits 1. If `--content` cannot finish
-the drift check for an assignment, vocgit names it and exits 1; it never
-reports "No sync issues found" for a check it skipped. The warnings above the
-summary name each file and the reason.
+**An incomplete pull exits 6 (partial).** If an import cannot download some
+remote files, vocgit still writes the files that did arrive and saves the
+assignment to `vocareum.yaml`, but it marks the import `INCOMPLETE`, adds a
+`Not downloaded` count to the summary, records the run in `publish_history` as
+`failed` (listing the missed paths), and exits 6. An import that fails outright
+is not saved, is counted under `Import failed`, and also exits 6. If vocgit
+cannot read an assignment's settings, or `--content` cannot finish the drift
+check for one, it names the assignment and exits 6; it never reports "No sync
+issues found" for a check it could not do. The warnings above the summary name
+each file and the reason.
 
 **Push refuses a directory an incomplete pull left behind.** Push uploads a
 changed directory by first clearing it on Vocareum, so uploading a partial copy
@@ -400,7 +401,7 @@ hash, and `vocgit push` (even with `--force-all`) reports it as failed and
 leaves it untouched until a complete pull replaces the marker. `vocgit status`
 lists such directories, and `status --json` reports them as `error`. If a
 remote file still cannot be written locally (for example because the local path
-is a symlink), the marker stays and the pull exits 1 until that is resolved.
+is a symlink), the marker stays and the pull exits 6 until that is resolved.
 
 To complete an incomplete import once the cause is fixed (for example after
 raising `VOCAREUM_MAX_DOWNLOAD_FILES`), use content drift. The assignment is
@@ -807,6 +808,92 @@ export VOCAREUM_AUTH_MODE=oauth
 vocgit pull
 vocgit push
 ```
+
+## Machine-readable output
+
+Every agent-facing command accepts `--json`. stdout carries exactly **one** JSON
+document; all human output moves to stderr, so `2>/dev/null` is safe.
+
+```bash
+vocgit pull --batch --json 2>/dev/null | jq .result
+vocgit --version --json | jq .resolved_from     # which binary am I running?
+```
+
+`--json` implies `--non-interactive`: it never prompts.
+
+### Envelope
+
+| field | notes |
+|---|---|
+| `schema_version` | **string**, versions the envelope (`"1.0"`) |
+| `command` | `pull` · `push` · `status` · `validate` · `fix`; `null` when the invocation named no command vocgit recognises |
+| `generated_at` | ISO-8601 timestamp, always present |
+| `result` | `applied` · `partial` · `reported` · `no-op` · `failed` |
+| `retryable` | true only for transient API failures |
+| `payload` | per-command; carries its own **numeric** `payload_schema_version` |
+| `diagnostics` | coded warnings, deduplicated with a `count` |
+| `error` | populated when `result` is `failed` or `partial` |
+
+The two version fields are independent, and their types tell them apart: a
+string `schema_version` at the top level is the envelope, a number inside
+`payload` is that command's own shape.
+
+### Exit codes
+
+| code | meaning | what to do |
+|---|---|---|
+| 0 | success, nothing outstanding | continue |
+| 1 | internal error | file a bug |
+| 2 | usage or config error | fix the input; do not retry |
+| 3 | auth failure | fix credentials |
+| 4 | transient API failure | **retry with backoff** |
+| 5 | findings outstanding | act on `diagnostics` / the payload |
+| 6 | partial success | inspect the per-item failures |
+
+**Findings that were applied are not findings.** `pull --batch --json` that
+applies drift exits 0; `pull --non-interactive --json` that reports the same
+drift exits 5. The code answers "is anything left for you to do?", which is what
+keeps it worth branching on. A stale assignment (in `vocareum.yaml`, gone from
+Vocareum) is work left: `pull --batch` skips it by design, so `pull --batch
+--json` exits 5 until you resolve it.
+
+**Exit 5 for outstanding findings needs `--json`, except for `validate`.**
+Without `--json`, `pull`, `push --dry-run` and `fix` exit 0 when the only thing
+left is findings, as they did before 1.5, so existing CI checks keep passing.
+`validate` exits 5 for errors in both modes (it exited 1 before). Failures do
+not depend on `--json`: an incomplete pull, a fix that could not create a
+folder, or a push with failed items exits 6 either way.
+
+A failure still prints an envelope. A non-zero exit with empty stdout would tell
+a caller nothing, so `result: "failed"` plus a structured `error` is written even
+when the run dies early.
+
+### Diagnostics
+
+`diagnostics[]` entries carry a stable `code` — branch on that, never on
+`message`, which is free to be reworded. Identical `(code, data)` pairs collapse
+into one entry with a `count`.
+
+Codes are additive within a major `schema_version`; **removing one, or changing
+its severity, is a major bump**. Treat an unknown `code`, `result` or `command`
+as "not success" rather than crashing.
+
+Severity never sets the exit code. A `warn` diagnostic is visible without being
+fatal — Elite courses legitimately declare a `docs` directory that cannot exist
+there, so `directory_unreachable` fires on nearly every Elite pull and must not
+fail it.
+
+### Which build am I running?
+
+```bash
+vocgit --version --json
+```
+
+Reports the version, the **resolved binary path** (a global npm install and a
+local `dist/` build are otherwise indistinguishable), git provenance, and a
+capability list you can assert against instead of parsing a version number.
+Provenance degrades to `"unavailable"` rather than failing when the build stamp
+is absent.
 
 #### CI / GitHub Actions example
 

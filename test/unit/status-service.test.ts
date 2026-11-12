@@ -142,13 +142,13 @@ describe('inspectStatus', () => {
     expect(report.course).toEqual({ org_id: 'org-1', course_id: 'crs-42' });
   });
 
-  it('schema_version is 1 and scope is content', async () => {
+  it('schema_version is 2 and scope is content', async () => {
     const config = makeFixtureConfig();
     const ctx = makeContext(config);
 
     const report = await inspectStatus(ctx);
 
-    expect(report.schema_version).toBe(1);
+    expect(report.schema_version).toBe(2);
     expect(report.scope).toBe('content');
   });
 

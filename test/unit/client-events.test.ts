@@ -18,6 +18,7 @@ import { TokenAuthProvider } from '../../src/api/auth/token-auth-provider';
 const { loggerWarn } = vi.hoisted(() => ({ loggerWarn: vi.fn() }));
 vi.mock('../../src/utils/logger', () => ({
   logger: {
+    withJsonMode: async (_enabled: boolean, body: () => Promise<unknown>) => body(),
     debug: vi.fn(),
     info: vi.fn(),
     warn: loggerWarn,

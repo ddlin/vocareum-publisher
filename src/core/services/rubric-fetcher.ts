@@ -23,6 +23,7 @@ import { ForbiddenError } from '../../api/client';
 import { listRubrics } from '../../api/rubrics';
 import { mapRubrics } from '../../utils/rubrics';
 import type { Rubric } from '../../types/config';
+import type { WarnFn } from '../diagnostics';
 
 export interface RubricFetcher {
   /** Rubrics for the part, or undefined when they could not be read. */
@@ -33,7 +34,7 @@ export function createRubricFetcher(
   client: VocareumClient,
   courseId: string,
   enabled: boolean,
-  warnFn: (msg: string) => void
+  warnFn: WarnFn
 ): RubricFetcher {
   let available = enabled;
 
@@ -50,12 +51,14 @@ export function createRubricFetcher(
             'Rubrics could not be read with this API token. Rubric changes will not be ' +
             'reported for the rest of this run. If this course uses rubrics, regenerate ' +
             'the token with the rubrics GET permission enabled (it is optional at token ' +
-            'creation) and pull again.'
+            'creation) and pull again.',
+            { code: 'rubric_read_failed', data: { part_id: partId, reason: 'forbidden' } },
           );
           return undefined;
         }
         const message = error instanceof Error ? error.message : 'Unknown error';
-        warnFn(`Could not fetch rubrics for part ${partId}: ${message}`);
+        warnFn(`Could not fetch rubrics for part ${partId}: ${message}`,
+          { code: 'rubric_read_failed', data: { part_id: partId, reason: message } });
         return undefined;
       }
     },
