@@ -1597,14 +1597,10 @@ export async function applyPull(
           await assertConfinedToWorkspace(workspaceRoot, localBasePath);
           const localBaseAbs = path.resolve(workspaceRoot, localBasePath);
 
-          await writeFilesToDirectory(
-            path.resolve(workspaceRoot, drift.assignmentPath),
-            partDrift.partPath,
-            partDrift.remoteFiles,
-            verbose,
-            events
-          );
-
+          // Deletions first: when a remote file became a directory of the
+          // same name (x → x/y), the local file x must go before x/y can be
+          // written, or the write fails and the pull aborts. A deleted path is
+          // never one of the remote files, so the order changes nothing else.
           for (const fileDiff of partDrift.fileDiffs) {
             if (fileDiff.status === 'deleted') {
               const localFilePath = path.join(localBaseAbs, fileDiff.filePath);
@@ -1619,6 +1615,14 @@ export async function applyPull(
               }
             }
           }
+
+          await writeFilesToDirectory(
+            path.resolve(workspaceRoot, drift.assignmentPath),
+            partDrift.partPath,
+            partDrift.remoteFiles,
+            verbose,
+            events
+          );
 
           // Scaffold the part's configured directories (parity with import): any
           // declared directory that is empty on the remote — so it received no
