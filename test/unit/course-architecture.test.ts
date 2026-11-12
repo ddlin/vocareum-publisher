@@ -96,3 +96,29 @@ describe('resolveCourseRootEvidence', () => {
     expect(list).not.toHaveBeenCalled();
   });
 });
+
+describe('unknown root detail (review: Codex F2)', () => {
+  const detailOf = (pages: unknown[][]): string => {
+    const r = classifyCourseRoot(pages, true);
+    if (r.kind !== 'unknown') { throw new Error(`expected unknown, got ${r.kind}`); }
+    return r.detail;
+  };
+
+  it('a signed URL among the root names never reaches the detail', () => {
+    const detail = detailOf([['resource', 'work', 'https://bucket.s3.amazonaws.com/a?X-Amz-Signature=TEST_SECRET']]);
+    expect(detail).not.toContain('TEST_SECRET');
+    expect(detail).toContain('https://bucket.s3.amazonaws.com/a?[REDACTED]');
+  });
+
+  it('a token=... name is redacted', () => {
+    const detail = detailOf([['resource', 'work', 'token=TEST_SECRET']]);
+    expect(detail).not.toContain('TEST_SECRET');
+  });
+
+  it('each displayed name is capped at 80 characters', () => {
+    const long = 'x'.repeat(500);
+    const detail = detailOf([['resource', long]]);
+    expect(detail).toContain(`"${'x'.repeat(80)}..."`);
+    expect(detail).not.toContain('x'.repeat(81));
+  });
+});

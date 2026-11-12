@@ -51,6 +51,19 @@ function elementName(el: unknown): { name: string } | { reason: string } {
   return { name: selected };
 }
 
+/** A displayed root name is cut to this many characters. */
+const MAX_DISPLAYED_NAME = 80;
+
+/**
+ * A root name as the refusal shows it. The detail reaches events and stderr,
+ * so a name that is really a signed URL or `token=...` must be redacted
+ * before it is quoted, and a long one cut so it cannot flood the message.
+ */
+function displayName(name: string): string {
+  const clean = sanitizeLogString(name);
+  return clean.length > MAX_DISPLAYED_NAME ? `${clean.slice(0, MAX_DISPLAYED_NAME)}...` : clean;
+}
+
 const ELITE = ['resource', 'work'];
 const CONTAINER = ['resource', 'voc', 'work'];
 
@@ -84,7 +97,7 @@ export function classifyCourseRoot(rawPages: unknown[][], complete: boolean): Ro
   const sameSet = (want: string[]): boolean => names.size === want.length && want.every((n) => names.has(n));
   if (sameSet(ELITE)) { return { kind: 'elite' }; }
   if (sameSet(CONTAINER)) { return { kind: 'container' }; }
-  const shown = [...names].slice(0, 10).map((n) => JSON.stringify(n)).join(', ');
+  const shown = [...names].slice(0, 10).map((n) => JSON.stringify(displayName(n))).join(', ');
   return unknown(`the course root lists [${shown}${names.size > 10 ? ', ...' : ''}], which matches neither a known Elite nor Container root`);
 }
 
