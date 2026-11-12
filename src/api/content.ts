@@ -190,11 +190,10 @@ function describeBody(response: unknown): string {
   return typeof response;
 }
 
-function parseFileListResponse(response: unknown): ParsedFileEntry[] {
-  let rawFiles: unknown[];
-  if (Array.isArray(response)) {
-    rawFiles = response;
-  } else if (response !== null && typeof response === 'object') {
+/** The entries array of a listing body, or `NotAFileListingError`. */
+function extractRawEntries(response: unknown): unknown[] {
+  if (Array.isArray(response)) { return response; }
+  if (response !== null && typeof response === 'object') {
     const obj = response as {
       files?: unknown;
       data?: unknown;
@@ -202,10 +201,13 @@ function parseFileListResponse(response: unknown): ParsedFileEntry[] {
     };
     const list = obj.files ?? obj.data ?? obj.items;
     if (!Array.isArray(list)) { throw new NotAFileListingError(describeBody(response)); }
-    rawFiles = list;
-  } else {
-    throw new NotAFileListingError(describeBody(response));
+    return list;
   }
+  throw new NotAFileListingError(describeBody(response));
+}
+
+function parseFileListResponse(response: unknown): ParsedFileEntry[] {
+  const rawFiles = extractRawEntries(response);
 
   const parsed: ParsedFileEntry[] = [];
   for (const entry of rawFiles) {
@@ -1300,6 +1302,21 @@ async function listFilesByApiPath(
  */
 const MAX_LIST_PAGES = 10_000;
 
+/** One listing page: the single request shape `listDirectory` and the bounded collector share. */
+async function fetchListPage(
+  client: VocareumClient,
+  url: string,
+  apiDirPath: string,
+  page: number,
+): Promise<{ parsed: ParsedFileEntry[]; raw: unknown[] }> {
+  const response = await client.request<unknown>({
+    method: 'GET',
+    url,
+    params: page === 0 ? { dir: apiDirPath, list: true } : { dir: apiDirPath, list: true, page },
+  });
+  return { parsed: parseFileListResponse(response), raw: extractRawEntries(response) };
+}
+
 /**
  * List a directory, distinguishing "absent" from "empty" — the walk needs the
  * difference to tell a real (empty) subdirectory from an entry that is not
@@ -1348,12 +1365,7 @@ async function listDirectory(
           `stopping rather than reading it as complete`
         );
       }
-      const response = await client.request<unknown>({
-        method: 'GET',
-        url,
-        params: page === 0 ? { dir: apiDirPath, list: true } : { dir: apiDirPath, list: true, page },
-      });
-      const batch = parseFileListResponse(response);
+      const { parsed: batch } = await fetchListPage(client, url, apiDirPath, page);
       if (batch.length === 0) { break; }
       let added = 0;
       for (const entry of batch) {
@@ -1411,6 +1423,62 @@ async function listDirectory(
       message: `Failed to list files for part=${partId}, dir=${apiDirPath}: ${error instanceof Error ? error.message : 'Unknown'}`,
     });
     throw error;
+  }
+}
+
+/**
+ * Collect a directory's names for the zip path, stopping once a shared name
+ * budget is spent. Pages exactly like `listDirectory` (until an empty page,
+ * never on a short one) but keeps no per-entry detail beyond sizes, and does
+ * not read past the budget, so one huge listing cannot be held in memory.
+ *
+ * Errors, including a "doesn't exist" answer and `NotAFileListingError`,
+ * propagate: the caller decides what an absent or unreadable listing means.
+ * Names are returned as parsed (trailing slashes intact).
+ *
+ * @param counter - Shared budget; `remaining` drops by one per name read. Once it
+ *   goes below 0 the collector stops and returns `complete: false`.
+ * @returns The names, whether the listing was read to its end, the raw page
+ *   bodies' entries (for the root guard), and each name's listed size.
+ */
+export async function listDirectoryBounded(
+  client: VocareumClient,
+  courseId: string,
+  assignmentId: string,
+  partId: string,
+  apiDirPath: string,
+  counter: { remaining: number },
+): Promise<{ names: string[]; complete: boolean; rawPages: unknown[][]; sizes: Map<string, number> }> {
+  const url = `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
+  const names: string[] = [];
+  const sizes = new Map<string, number>();
+  const rawPages: unknown[][] = [];
+  const seen = new Set<string>();
+  for (let page = 0; ; page++) {
+    if (page > MAX_LIST_PAGES) {
+      throw new APIError(
+        `Listing ${apiDirPath} was still returning names after ${MAX_LIST_PAGES} pages; ` +
+        `stopping rather than reading it as complete`
+      );
+    }
+    const { parsed: batch, raw } = await fetchListPage(client, url, apiDirPath, page);
+    if (batch.length === 0) { return { names, complete: true, rawPages, sizes }; }
+    rawPages.push(raw);
+    let added = 0;
+    for (const entry of batch) {
+      counter.remaining -= 1;
+      if (counter.remaining < 0) { return { names, complete: false, rawPages, sizes }; }
+      if (!seen.has(entry.path)) { seen.add(entry.path); added += 1; }
+      names.push(entry.path);
+      sizes.set(entry.path, entry.size);
+    }
+    if (page > 0 && added === 0) {
+      // The server ignored `page` and repeated an earlier one; same refusal as listDirectory.
+      throw new APIError(
+        `Listing ${apiDirPath}: page ${page} repeated names already read; ` +
+        `cannot page through it, so the directory cannot be listed completely`
+      );
+    }
   }
 }
 
