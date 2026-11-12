@@ -11,41 +11,15 @@ import type { EventSink } from '../core/services/event-sink';
 import { LoggerEventSink } from '../utils/logger-event-sink';
 import type { AuthProvider } from './auth/auth-provider';
 import { RequestScheduler } from './scheduler';
+import { VocareumError, APIError } from './errors';
+import { DeadlineError, abortableSleep, type Deadline } from './deadline';
 import { DEFAULT_THROTTLE, type ResolvedThrottle } from './throttle';
 import {
   REGION_HOSTS, VOCAREUM_REGIONS, canonicalBaseUrl, hasUnsafeBaseUrlChars, normalizeApiBaseUrl,
   redactUrlForDisplay,
 } from './regions';
 
-/**
- * Base error class for Vocareum API errors
- */
-export class VocareumError extends Error {
-  constructor(
-    message: string,
-    public code: string,
-    public statusCode?: number,
-    public details?: unknown
-  ) {
-    super(message);
-    this.name = 'VocareumError';
-  }
-}
-
-/**
- * Error for general API failures
- */
-export class APIError extends VocareumError {
-  constructor(
-    message: string,
-    statusCode?: number,
-    details?: unknown,
-    public readonly retryable = statusCode !== undefined && statusCode >= 500 && statusCode < 600,
-  ) {
-    super(message, 'API_ERROR', statusCode, details);
-    this.name = 'APIError';
-  }
-}
+export { VocareumError, APIError };
 
 /**
  * Error for authentication failures
@@ -258,6 +232,77 @@ interface RetryOptions {
    * multiply the poll's run time. Other errors are still retried.
    */
   retryOverload?: boolean;
+  /**
+   * The zip pull's per-directory deadline (spec step 2). Every wait (token,
+   * scheduler slot, retry sleep, 401 refresh) races its signal; no attempt
+   * starts with no time left; each attempt's timeout is
+   * `min(30 s, time left)`; and a failure caused by the deadline is a
+   * `DeadlineError`, never retried.
+   */
+  deadline?: Deadline;
+  /** No refresh-and-replay after an API 401: the request is not repeatable (the zip start). */
+  noAuthReplay?: boolean;
+  /**
+   * Obtain the Authorization header BEFORE taking a scheduler slot, racing the
+   * deadline, and tell the interceptor not to fetch it again. The interceptor
+   * runs inside the slot, and axios never settles an interceptor on abort, so
+   * a token exchange there could hold the slot past the deadline.
+   */
+  zipAuth?: boolean;
+}
+
+/** The per-attempt timeout: the client's own, and the cap under a deadline. */
+const ATTEMPT_TIMEOUT_MS = 30_000;
+
+/**
+ * Set on a request config whose Authorization header the client already
+ * placed (zipAuth): the interceptor must not call getAuthorizationHeader,
+ * which could start a token exchange inside the scheduler slot.
+ */
+type PresetAuthFlag = { vocgitPresetAuth?: boolean };
+
+/** Fail with a DeadlineError when no time is left. */
+function assertTimeLeft(deadline: Deadline): void {
+  if (deadline.remainingMs() <= 0) { throw new DeadlineError(); }
+}
+
+/**
+ * Await `start()`, giving up when `signal` aborts (rejecting with its
+ * reason). Giving up abandons only OUR wait: the underlying promise -- e.g. the
+ * OAuth provider's shared in-flight exchange -- keeps running for everyone
+ * else awaiting it, under its own timeout.
+ */
+function raceSignal<T>(start: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) { return start(); }
+  if (signal.aborted) {
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+    return Promise.reject(signal.reason);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      reject(signal.reason);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    start().then(resolve, reject).finally(() => { signal.removeEventListener('abort', onAbort); });
+  });
+}
+
+/**
+ * The deadline failure behind `error`, or undefined. Decided BEFORE
+ * isRetryable: a timeout or cancel caused by the deadline would otherwise read
+ * as a retryable network error. `clamped` says this attempt's timeout was cut
+ * to the time left, so its expiry is the deadline's; an unclamped 30 s timeout
+ * is an ordinary, retryable one.
+ */
+function deadlineFailure(error: unknown, clamped: boolean): DeadlineError | undefined {
+  if (error instanceof DeadlineError) { return error; }
+  if (!(error instanceof AxiosError)) { return undefined; }
+  if (error.code === 'ERR_CANCELED') { return new DeadlineError('Deadline exceeded: request aborted'); }
+  if (clamped && (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT')) {
+    return new DeadlineError('Deadline exceeded: request timed out at the deadline');
+  }
+  return undefined;
 }
 
 const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set([
@@ -403,13 +448,6 @@ function overloadError(data: unknown, headers: unknown): OverloadError | undefin
  */
 const OVERLOAD_MAX_RETRY_AFTER_S = 60;
 
-/**
- * Sleep for a given number of milliseconds
- */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 const REDACT_KEY = /^(authorization|client_secret|access_token|refresh_token|id_token|password|secret|token)$/i;
 const REDACT_FORM_PARAM = /((?:^|&)(?:authorization|client_secret|access_token|refresh_token|id_token|password|secret|token)=)[^&]*/gi;
 /**
@@ -547,11 +585,13 @@ export class VocareumClient {
     this.scheduler = scheduler ?? new RequestScheduler(throttle);
     this.axios = axios.create({
       baseURL: authProvider.apiBaseUrl,
-      timeout: 30000,
+      timeout: ATTEMPT_TIMEOUT_MS,
       headers: { 'Content-Type': 'application/json' },
     });
     this.axios.interceptors.request.use(async (config) => {
-      config.headers.set('Authorization', await this.authProvider.getAuthorizationHeader());
+      if ((config as PresetAuthFlag).vocgitPresetAuth !== true) {
+        config.headers.set('Authorization', await this.authProvider.getAuthorizationHeader());
+      }
       return config;
     });
   }
@@ -572,10 +612,16 @@ export class VocareumClient {
       return await this.attempt<T>(config, options);
     } catch (err) {
       const apiUnauthorized = (err as ApiUnauthorizedFlag).isApiResponseUnauthorized === true;
-      if (apiUnauthorized && this.authProvider.refreshAfterUnauthorized) {
-        await this.authProvider.refreshAfterUnauthorized();
+      // Replayed only when the provider can refresh (OAuth): under token auth
+      // a 401 is terminal, and a replay would only repeat it.
+      if (apiUnauthorized && this.authProvider.refreshAfterUnauthorized && options.noAuthReplay !== true) {
+        const deadline = options.deadline;
+        if (deadline) { assertTimeLeft(deadline); }
+        // Outside any scheduler slot, racing the deadline.
+        await raceSignal(() => this.authProvider.refreshAfterUnauthorized!(), deadline?.signal);
         // The post-refresh attempt uses the normal retry budget (429/5xx/network);
         // the 401-refresh itself happens at most once per request() call.
+        // Under zipAuth that attempt reads the new header before schedule().
         return await this.attempt<T>(config, options);   // exactly one refresh+retry
       }
       throw err;
@@ -591,16 +637,46 @@ export class VocareumClient {
     const maxRetries = options.maxRetries ?? 3;
     const backoff = options.backoff ?? 1000;
     const method = (config.method ?? 'GET').toUpperCase();
+    const deadline = options.deadline;
 
     for (let a = 0; a < maxRetries; a++) {
+      // Whether this attempt's timeout was cut to the time left; see deadlineFailure.
+      let clamped = false;
       try {
+        // An attempt never starts with no time left; checked after every wait.
+        if (deadline) { assertTimeLeft(deadline); }
+        const presetAuth = options.zipAuth === true
+          ? await raceSignal(() => this.authProvider.getAuthorizationHeader(), deadline?.signal)
+          : undefined;
+        if (deadline) { assertTimeLeft(deadline); }
         this.events.emit({ level: 'debug', message: 'API request', data: sanitizeForLog(config) });
-        const response = await this.scheduler.schedule(() => this.axios.request<T>(config));
+        const response = await this.scheduler.schedule(() => {
+          let sent: AxiosRequestConfig = config;
+          if (deadline) {
+            // Floored: axios parses the timeout as an integer, and a timeout
+            // of 0 means "no timeout", so under 1 ms left there is no attempt.
+            const left = Math.floor(deadline.remainingMs());
+            if (left < 1) { throw new DeadlineError(); }
+            clamped = left < ATTEMPT_TIMEOUT_MS;
+            sent = { ...sent, timeout: Math.min(ATTEMPT_TIMEOUT_MS, left), signal: deadline.signal };
+          }
+          if (presetAuth !== undefined) {
+            const preset: AxiosRequestConfig & PresetAuthFlag = {
+              ...sent, headers: { ...sent.headers, Authorization: presetAuth }, vocgitPresetAuth: true,
+            };
+            sent = preset;
+          }
+          return this.axios.request<T>(sent);
+        }, deadline?.signal);
         this.events.emit({ level: 'debug', message: `API response: ${response.status}`, data: sanitizeForLog({ data: response.data }) });
         const overloaded = overloadError(response.data, response.headers);
         if (overloaded !== undefined) { throw overloaded; }
         return response.data;
       } catch (error) {
+        if (deadline) {
+          const expired = deadlineFailure(error, clamped);
+          if (expired !== undefined) { throw expired; }
+        }
         const wrapped = this.wrapError(error);
         if (isRawApiResponse401(error)) {
           (wrapped as VocareumError & ApiUnauthorizedFlag).isApiResponseUnauthorized = true;
@@ -612,7 +688,15 @@ export class VocareumClient {
         const retryAfter = retryAfterFromAxiosError(error) ??
           (wrapped instanceof RateLimitError || wrapped instanceof OverloadError ? wrapped.retryAfter : undefined);
         const retryAfterMs = retryAfter !== undefined ? retryAfter * 1000 : undefined;
-        await sleep(retryAfterMs ?? backoff * Math.pow(2, a));
+        const delayMs = retryAfterMs ?? backoff * Math.pow(2, a);
+        // A delay that reaches the deadline leaves no time for the attempt
+        // after it, so fail now instead of sleeping. An HTTP-date Retry-After
+        // was already turned into a delay wall-against-wall (parseRetryAfter);
+        // only that delay meets the monotonic remainder here.
+        if (deadline && delayMs >= deadline.remainingMs()) {
+          throw new DeadlineError(`Deadline exceeded: the next retry is ${delayMs} ms away`);
+        }
+        await abortableSleep(delayMs, deadline?.signal);
       }
     }
 
