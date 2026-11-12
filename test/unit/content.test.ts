@@ -493,12 +493,12 @@ describe('listFiles', () => {
     expect(result).toEqual(mockFiles);
   });
 
-  it('should return empty array when files field is missing', async () => {
+  it('throws when the files field is missing (an empty directory answers `files: []`)', async () => {
+    // Reading a body with no listing as "no names" made a directory look
+    // empty, and drift planned its files as remote deletions.
     requestMock.mockResolvedValueOnce({});
 
-    const result = await listFiles(mockClient, 'c1', 'a1', 'p1', 'docs');
-
-    expect(result).toEqual([]);
+    await expect(listFiles(mockClient, 'c1', 'a1', 'p1', 'docs')).rejects.toThrow(/not a file listing/);
   });
 
   it('should support direct array response from API', async () => {

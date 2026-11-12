@@ -7,7 +7,7 @@
  * CRITICAL: seqnum is a STRING that must be parsed for sorting!
  */
 
-import { VocareumClient } from './client';
+import { VocareumClient, isOverloadError } from './client';
 import type {
   VocareumPartResponse,
   PartSettingsPayload,
@@ -123,14 +123,18 @@ export async function updatePart(
     const maxAttempts = 15;
     const delayMs = 2000;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const txn = await client.request<{
-        status: 'success';
-        state: 'pending' | 'success' | 'error' | 'failed';
-        message?: string;
-      }>({
-        method: 'GET',
-        url: `/transaction/${response.transactionid}`,
-      });
+      let txn: { status: 'success'; state: 'pending' | 'success' | 'error' | 'failed'; message?: string };
+      try {
+        txn = await client.request<typeof txn>({
+          method: 'GET',
+          url: `/transaction/${response.transactionid}`,
+        }, { retryOverload: false });
+      } catch (error) {
+        // An overloaded sample says nothing about the update: keep polling.
+        if (!isOverloadError(error)) { throw error; }
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
+      }
 
       if (txn.state === 'success') {
         return;

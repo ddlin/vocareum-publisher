@@ -242,6 +242,13 @@ export function assertBaseUrlForVersion(baseUrl: string, version: 'v2' | 'v3', e
 interface RetryOptions {
   maxRetries?: number;
   backoff?: number;
+  /**
+   * false: an overload answer is thrown at once instead of retried. Pollers
+   * pass this: they treat an overloaded sample as "no news" and sample again
+   * after their own delay, so a retry cycle inside each sample would only
+   * multiply the poll's run time. Other errors are still retried.
+   */
+  retryOverload?: boolean;
 }
 
 const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set([
@@ -327,6 +334,67 @@ function retryAfterFromAxiosError(error: unknown): number | undefined {
 }
 
 /**
+ * Vocareum's overload answer: HTTP 200 with a plain-text body such as
+ * "VOCAREUM-ERROR: Sorry, your access to Vocareum is temporarily unavailable
+ * due to heavy traffic, …" (probed 2026-11-11 on courses 215500 and 240788:
+ * 5 of 24 listing requests). Returned as data, a listing read it as an empty
+ * page: a directory looked empty, or a paged listing ended early, and drift
+ * read the lost names as remote deletions. It is an error.
+ */
+const OVERLOAD_BODY = /^\s*VOCAREUM-ERROR:/;
+
+/**
+ * Vocareum answered "temporarily unavailable" with an HTTP 200 text body.
+ * Status 503 is what it means, so the ordinary retry rules apply: retried for
+ * idempotent methods, not for a POST that may have landed. Pollers treat it
+ * as a sample that said nothing and keep polling.
+ */
+export class OverloadError extends APIError {
+  constructor(message: string, public retryAfter?: number) {
+    super(message, 503);
+    this.name = 'OverloadError';
+  }
+}
+
+/** True for the overload answer, however many retries it went through. */
+export function isOverloadError(error: unknown): error is OverloadError {
+  return error instanceof OverloadError;
+}
+
+function retryAfterFromHeaders(headers: unknown): number | undefined {
+  if (headers === undefined || headers === null || typeof headers !== 'object') { return undefined; }
+  const accessor = headers as { get?: (name: string) => unknown };
+  const value: unknown = typeof accessor.get === 'function'
+    ? accessor.get('retry-after')
+    : Object.entries(headers).find(([key]) => key.toLowerCase() === 'retry-after')?.[1];
+  return parseRetryAfter(value);
+}
+
+/**
+ * The overload error for a response, or undefined when the body is a real
+ * answer. The server text is redacted like any other error text: it is not
+ * debug-gated, and it can end up in warnings and publish_history.
+ */
+function overloadError(data: unknown, headers: unknown): OverloadError | undefined {
+  if (typeof data !== 'string' || !OVERLOAD_BODY.test(data)) { return undefined; }
+  // Redact first, then shorten: a cut inside "https://user:secret@host"
+  // would leave a fragment the URL redaction no longer recognises.
+  const retryAfter = retryAfterFromHeaders(headers);
+  return new OverloadError(
+    `Vocareum is overloaded: ${sanitizeLogString(data.trim()).slice(0, 300)}`,
+    retryAfter === undefined ? undefined : Math.min(retryAfter, OVERLOAD_MAX_RETRY_AFTER_S),
+  );
+}
+
+/**
+ * A server-sent Retry-After on the overload answer is honoured up to this
+ * many seconds. The retry budget is three attempts, so an uncapped value
+ * could hold a command for days; a longer outage fails after the budget and
+ * the user re-runs.
+ */
+const OVERLOAD_MAX_RETRY_AFTER_S = 60;
+
+/**
  * Sleep for a given number of milliseconds
  */
 function sleep(ms: number): Promise<void> {
@@ -342,7 +410,20 @@ const REDACT_FORM_PARAM = /((?:^|&)(?:authorization|client_secret|access_token|r
  */
 const ABSOLUTE_URL = /https?:(?:\/\/|\\\/\\\/)[^\s"'<>]*/gi;
 /** Punctuation that usually ends a sentence rather than a URL. */
-const URL_TRAILING_PUNCTUATION = /[.,;:!)\]}]+$/;
+const URL_TRAILING_PUNCTUATION = new Set(['.', ',', ';', ':', '!', ')', ']', '}']);
+
+/**
+ * The run of sentence punctuation at the end of `text`. A scan from the end,
+ * not the regex `/[.,;:!)\]}]+$/`: unanchored at the start, that regex
+ * retried at every character of a long punctuation run that does not reach
+ * the end, so redacting a URL followed by 200,000 dots and a letter took
+ * 23 s. Error text from the server is scrubbed whole, so this must be linear.
+ */
+function trailingPunctuation(text: string): string {
+  let i = text.length;
+  while (i > 0 && URL_TRAILING_PUNCTUATION.has(text[i - 1])) { i -= 1; }
+  return text.slice(i);
+}
 /**
  * Credential parameters of signed URLs, wherever they appear — after a quote
  * or line break that ended the URL match early, or in a protocol-relative or
@@ -359,7 +440,7 @@ const SIGNED_URL_PARAM = /((?:^|[?&\s"'\\])(?:X-Amz-[A-Za-z-]+|AWSAccessKeyId|Si
  * and the parameter names vary by issuer, so the whole query goes.
  */
 function redactUrl(match: string): string {
-  const trailing = URL_TRAILING_PUNCTUATION.exec(match)?.[0] ?? '';
+  const trailing = trailingPunctuation(match);
   let url = trailing.length > 0 ? match.slice(0, -trailing.length) : match;
   url = url.replace(/^(https?:(?:\/\/|\\\/\\\/))[^/\\@]*@/i, '$1[REDACTED]@');
   const q = url.indexOf('?');
@@ -468,17 +549,20 @@ export class VocareumClient {
         this.events.emit({ level: 'debug', message: 'API request', data: sanitizeForLog(config) });
         const response = await this.scheduler.schedule(() => this.axios.request<T>(config));
         this.events.emit({ level: 'debug', message: `API response: ${response.status}`, data: sanitizeForLog({ data: response.data }) });
+        const overloaded = overloadError(response.data, response.headers);
+        if (overloaded !== undefined) { throw overloaded; }
         return response.data;
       } catch (error) {
         const wrapped = this.wrapError(error);
         if (isRawApiResponse401(error)) {
           (wrapped as VocareumError & ApiUnauthorizedFlag).isApiResponseUnauthorized = true;
         }
+        if (wrapped instanceof OverloadError && options.retryOverload === false) { throw wrapped; }
         const retryable = isRetryable(wrapped, method) || isRetryable(error, method);
         if (a === maxRetries - 1 || !retryable) { throw wrapped; }
         // A server-provided Retry-After takes precedence over exponential backoff.
         const retryAfter = retryAfterFromAxiosError(error) ??
-          (wrapped instanceof RateLimitError ? wrapped.retryAfter : undefined);
+          (wrapped instanceof RateLimitError || wrapped instanceof OverloadError ? wrapped.retryAfter : undefined);
         const retryAfterMs = retryAfter !== undefined ? retryAfter * 1000 : undefined;
         await sleep(retryAfterMs ?? backoff * Math.pow(2, a));
       }

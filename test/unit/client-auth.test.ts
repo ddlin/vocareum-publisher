@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { vi } from 'vitest';
 import { AxiosError } from 'axios';
-import { normalizeApiBaseUrl, assertAllowedBaseUrl, VocareumClient, sanitizeForLog } from '../../src/api/client';
+import { normalizeApiBaseUrl, assertAllowedBaseUrl, VocareumClient, sanitizeForLog, sanitizeLogString } from '../../src/api/client';
 import { OAuthTokenExchangeError } from '../../src/api/auth/oauth-provider';
 import type { AuthProvider } from '../../src/api/auth/auth-provider';
 
@@ -519,5 +519,190 @@ describe('VocareumClient throttle scheduling', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * Under load Vocareum answers HTTP 200 with a plain-text body instead of JSON
+ * (probed 2026-11-11 on courses 215500 and 240788: 5 of 24 listing requests).
+ * Returned as data, a listing read it as an empty page: a directory looked
+ * empty, or a paged listing ended early, and drift read the lost names as
+ * remote deletions. It must be an error, retried like a 503.
+ */
+const THROTTLE_BODY =
+  'VOCAREUM-ERROR: Sorry, your access to Vocareum is temporarily unavailable due to heavy traffic, ' +
+  'you may re-connect later. If issues persist, please contact Vocareum technical support\n';
+
+describe('a 200 response whose body is a VOCAREUM-ERROR text', () => {
+  it('is retried for a GET, and the retry\'s answer is returned', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    let calls = 0;
+    setAdapter(client, async (config: unknown) => {
+      calls += 1;
+      const data = calls === 1 ? THROTTLE_BODY : { files: ['a.txt'] };
+      return { data, status: 200, statusText: 'OK', headers: {}, config };
+    });
+    const out = await client.request<{ files: string[] }>({ method: 'GET', url: '/x' }, { backoff: 1 });
+    expect(out).toEqual({ files: ['a.txt'] });
+    expect(calls).toBe(2);
+  });
+
+  it('throws a 503 OverloadError (an APIError) naming the overload once retries run out; it is never returned as data', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    let calls = 0;
+    setAdapter(client, async (config: unknown) => {
+      calls += 1;
+      return { data: THROTTLE_BODY, status: 200, statusText: 'OK', headers: {}, config };
+    });
+    await expect(client.request({ method: 'GET', url: '/x' }, { backoff: 1 }))
+      .rejects.toMatchObject({ name: 'OverloadError', statusCode: 503, message: expect.stringMatching(/heavy traffic/) });
+    expect(calls).toBe(3);
+  });
+
+  it('is an error but is not retried for a non-idempotent POST (it may have been applied)', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    let calls = 0;
+    setAdapter(client, async (config: unknown) => {
+      calls += 1;
+      return { data: THROTTLE_BODY, status: 200, statusText: 'OK', headers: {}, config };
+    });
+    await expect(client.request({ method: 'POST', url: '/x', data: {} }, { backoff: 1 }))
+      .rejects.toMatchObject({ statusCode: 503 });
+    expect(calls).toBe(1);
+  });
+
+  it('is recognised with leading whitespace', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    setAdapter(client, async (config: unknown) =>
+      ({ data: `\n  ${THROTTLE_BODY}`, status: 200, statusText: 'OK', headers: {}, config }));
+    await expect(client.request({ method: 'GET', url: '/x' }, { maxRetries: 1 }))
+      .rejects.toMatchObject({ statusCode: 503 });
+  });
+
+  it('leaves other string bodies alone', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    setAdapter(client, async (config: unknown) =>
+      ({ data: 'plain text answer', status: 200, statusText: 'OK', headers: {}, config }));
+    expect(await client.request({ method: 'GET', url: '/x' })).toBe('plain text answer');
+  });
+});
+
+describe('the overload error after review (Retry-After, redaction, type)', () => {
+  it('honours a Retry-After header sent with the 200 text body', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+      let calls = 0;
+      setAdapter(client, async (config: unknown) => {
+        calls += 1;
+        if (calls === 1) {
+          return { data: THROTTLE_BODY, status: 200, statusText: 'OK', headers: { 'retry-after': '5' }, config };
+        }
+        return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config };
+      });
+      const pending = client.request<{ ok: boolean }>({ method: 'GET', url: '/x' }, { backoff: 1 });
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(calls).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toEqual({ ok: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('is an OverloadError, so pollers can tell it from a real failure', async () => {
+    const { isOverloadError } = await import('../../src/api/client');
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    setAdapter(client, async (config: unknown) =>
+      ({ data: THROTTLE_BODY, status: 200, statusText: 'OK', headers: {}, config }));
+    const err = await client.request({ method: 'GET', url: '/x' }, { maxRetries: 1 }).catch((e: unknown) => e);
+    expect(isOverloadError(err)).toBe(true);
+  });
+
+  it('redacts a signed URL or token in the server text before it reaches the message', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    const body = 'VOCAREUM-ERROR: retry at https://bucket.s3.amazonaws.com/u1_p2.zip?X-Amz-Signature=deadbeefsecret&X-Amz-Credential=AKIAEXAMPLE later';
+    setAdapter(client, async (config: unknown) =>
+      ({ data: body, status: 200, statusText: 'OK', headers: {}, config }));
+    const err = await client.request({ method: 'GET', url: '/x' }, { maxRetries: 1 }).catch((e: unknown) => e as Error);
+    expect(err.message).toMatch(/overloaded/);
+    expect(err.message).not.toMatch(/deadbeefsecret|AKIAEXAMPLE/);
+  });
+
+  it('a padded body is retried, not only recognised', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    let calls = 0;
+    setAdapter(client, async (config: unknown) => {
+      calls += 1;
+      const data = calls === 1 ? `\n  ${THROTTLE_BODY}` : { ok: true };
+      return { data, status: 200, statusText: 'OK', headers: {}, config };
+    });
+    expect(await client.request({ method: 'GET', url: '/x' }, { backoff: 1 })).toEqual({ ok: true });
+    expect(calls).toBe(2);
+  });
+});
+
+describe('overload follow-up (focused review of 3cd80d6)', () => {
+  it('caps a huge Retry-After on the overload answer at 60 s', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+      let calls = 0;
+      setAdapter(client, async (config: unknown) => {
+        calls += 1;
+        if (calls === 1) {
+          return { data: THROTTLE_BODY, status: 200, statusText: 'OK', headers: { 'retry-after': '86400' }, config };
+        }
+        return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config };
+      });
+      const pending = client.request<{ ok: boolean }>({ method: 'GET', url: '/x' });
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(calls).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toEqual({ ok: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retryOverload: false throws the overload at once, but still retries other errors', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    let calls = 0;
+    setAdapter(client, async (config: unknown) => {
+      calls += 1;
+      return { data: THROTTLE_BODY, status: 200, statusText: 'OK', headers: {}, config };
+    });
+    await expect(client.request({ method: 'GET', url: '/x' }, { retryOverload: false, backoff: 1 }))
+      .rejects.toMatchObject({ name: 'OverloadError' });
+    expect(calls).toBe(1);
+
+    const other = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    setAdapter(other, mockAdapter([{ status: 500 }, { status: 200, data: { ok: true } }]));
+    expect(await other.request({ method: 'GET', url: '/x' }, { retryOverload: false, backoff: 1 })).toEqual({ ok: true });
+  });
+
+  it('redacts before shortening, so a cut inside user-info cannot leave the password', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    const body = `VOCAREUM-ERROR: https://user:SECRETPW${'x'.repeat(400)}@example.com/path`;
+    setAdapter(client, async (config: unknown) =>
+      ({ data: body, status: 200, statusText: 'OK', headers: {}, config }));
+    const err = await client.request({ method: 'GET', url: '/x' }, { maxRetries: 1 }).catch((e: unknown) => e as Error);
+    expect(err.message).not.toMatch(/SECRETPW/);
+  });
+});
+
+describe('sanitizeLogString stays linear', () => {
+  it('a URL followed by a long run of punctuation and a letter is redacted quickly', () => {
+    // An unanchored trailing-punctuation regex retried at every dot: 80,000
+    // dots took ~3 s, and the overload path scrubs the whole server text.
+    const text = `VOCAREUM-ERROR: https://host/a?token=SECRET${'.'.repeat(200_000)}x`;
+    const started = Date.now();
+    const out = sanitizeLogString(text);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(out).not.toMatch(/SECRET/);
+  });
+
+  it('still keeps sentence punctuation outside the redacted URL', () => {
+    expect(sanitizeLogString('see https://host/p?token=abc).')).toBe('see https://host/p?[REDACTED]).');
   });
 });
