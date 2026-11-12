@@ -228,6 +228,17 @@ function deadlinePassed(deadline: Deadline): boolean {
 }
 
 /**
+ * Whole milliseconds left for an attempt, or undefined when there is no time
+ * for one. Floored as in `client.ts`: axios takes the timeout as an integer,
+ * and a timeout of 0 means "no timeout", so under 1 ms left is no time left.
+ */
+function attemptTimeLeft(deadline: Deadline): number | undefined {
+  if (deadline.signal.aborted) {return undefined;}
+  const left = Math.floor(deadline.remainingMs());
+  return left < 1 ? undefined : left;
+}
+
+/**
  * Pin the object: a ranged GET that must answer 206 with a strong ETag,
  * `Last-Modified`, `Date` and a `Content-Range` total, within a 2 s round trip
  * and without `Age`. A stale object (ETag already seen, or certainly written
@@ -249,8 +260,8 @@ export async function pinObject(url: string, ctx: ZipObjectContext): Promise<{ s
       }
     }
     // Never start an attempt with no time left: axios reads a 0 timeout as "none".
-    const left = ctx.deadline.remainingMs();
-    if (deadlinePassed(ctx.deadline)) {return { reason: 'deadline' };}
+    const left = attemptTimeLeft(ctx.deadline);
+    if (left === undefined) {return { reason: 'deadline' };}
     const probe = await rangedGet(url, ctx.http, ctx.now, ctx.deadline.signal, Math.min(ATTEMPT_TIMEOUT_MS, left));
     switch (probe.kind) {
       case 'aborted':
@@ -285,8 +296,8 @@ export async function pinObject(url: string, ctx: ZipObjectContext): Promise<{ s
  */
 export async function downloadPinned(url: string, sample: HeaderSample, ctx: ZipObjectContext): Promise<Buffer | NotUsed> {
   if (sample.total > ctx.maxBytes) {return { reason: 'zip_over_budget' };}
-  const left = ctx.deadline.remainingMs();
-  if (deadlinePassed(ctx.deadline)) {return { reason: 'deadline' };}
+  const left = attemptTimeLeft(ctx.deadline);
+  if (left === undefined) {return { reason: 'deadline' };}
   const signal = ctx.deadline.signal;
   let res: AxiosResponse;
   try {

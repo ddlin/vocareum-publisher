@@ -622,3 +622,42 @@ describe('S20: the signed URL never leaves the module', () => {
     }
   });
 });
+
+describe('attempt timeouts are whole milliseconds; under 1 ms left is no time left', () => {
+  /** A deadline whose remaining time is a fixed, possibly fractional, value. */
+  function fixedDeadline(remaining: number): Deadline {
+    return { signal: new AbortController().signal, remainingMs: () => remaining };
+  }
+
+  it('pinObject: 0.5 ms left sends nothing and gives deadline', async () => {
+    const s3 = new FakeS3();
+    s3.write(1_100, '"ours"', 'zip');
+    await at(1_200);
+    const ctx = setup(s3, 1_000, 1_200, { deadline: fixedDeadline(0.5) });
+    expect(await run(pinObject(URL_, ctx))).toEqual({ reason: 'deadline' });
+    expect(s3.requests).toEqual([]);
+  });
+
+  it('downloadPinned: 0.5 ms left sends nothing and gives deadline', async () => {
+    const s3 = new FakeS3();
+    s3.write(1_100, '"ours"', 'zip');
+    await at(1_200);
+    const ctx = setup(s3, 1_000, 1_200);
+    const r = await run(pinObject(URL_, ctx));
+    if (!('sample' in r)) throw new Error(`not pinned: ${r.reason}`);
+    const late = { ...ctx, deadline: fixedDeadline(0.5) };
+    expect(await run(downloadPinned(URL_, r.sample, late))).toEqual({ reason: 'deadline' });
+    expect(s3.requests).toHaveLength(1);
+  });
+
+  it('a fractional time left is floored for both requests', async () => {
+    const s3 = new FakeS3();
+    s3.write(1_100, '"ours"', 'zip');
+    await at(1_200);
+    const ctx = setup(s3, 1_000, 1_200, { deadline: fixedDeadline(1_234.7) });
+    const r = await run(pinObject(URL_, ctx));
+    if (!('sample' in r)) throw new Error(`not pinned: ${r.reason}`);
+    await run(downloadPinned(URL_, r.sample, ctx));
+    expect(s3.requests.map((q) => q.timeout)).toEqual([1_234, 1_234]);
+  });
+});
