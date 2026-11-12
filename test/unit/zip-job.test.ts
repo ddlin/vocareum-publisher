@@ -252,6 +252,32 @@ describe('S8: start and poll failures', () => {
     expect(result).toEqual({ url: SIGNED, jobStart: 3_000, success: 3_250 });
   });
 
+  it('S8: an overload Retry-After: 0 cannot spin the start loop: each wait is at least the start backoff', async () => {
+    const sentAt: number[] = [];
+    const { client } = clientWith((config) => {
+      if (!isStart(config)) { return response(config, 200, { state: 'success', message: SIGNED }); }
+      sentAt.push(Date.now());
+      return sentAt.length <= 2
+        ? response(config, 200, OVERLOAD, { 'retry-after': '0' })
+        : response(config, 200, STARTED);
+    });
+    const result = await settle(runZipJob(client, IDS, BASE, createDeadline(60_000, now), now));
+    expect(sentAt).toEqual([0, 1_000, 2_000]);
+    expect(result).toEqual({ url: SIGNED, jobStart: 2_000, success: 2_250 });
+
+    // An endless Retry-After: 0 is bounded by the deadline at one start per second.
+    const forever: number[] = [];
+    const { client: busy } = clientWith((config) => {
+      forever.push(Date.now());
+      return response(config, 200, OVERLOAD, { 'retry-after': '0' });
+    });
+    const t0 = Date.now();
+    const stopped = await settle(runZipJob(busy, IDS, BASE, createDeadline(5_000, now), now));
+    expect(stopped).toEqual({ reason: 'deadline' });
+    expect(forever.length).toBeLessThanOrEqual(5);
+    expect(forever.map((t) => t - t0)).toEqual([0, 1_000, 2_000, 3_000, 4_000].slice(0, forever.length));
+  });
+
   it('S8: after overloads, any other error ends the loop with no replay', async () => {
     const { client, seen } = clientWith((config) => {
       if (seen.length <= 2) { return response(config, 200, OVERLOAD); }

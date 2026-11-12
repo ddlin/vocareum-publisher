@@ -95,8 +95,10 @@ export async function runZipJob(
     } catch (error) {
       if (error instanceof DeadlineError) { return { reason: 'deadline' }; }
       if (!(error instanceof OverloadError)) { return { reason: 'start_failed' }; }
+      // Floored: a `Retry-After: 0` would otherwise restart at once, in a
+      // tight loop of start requests until the deadline.
       const delayMs = error.retryAfter !== undefined
-        ? error.retryAfter * 1_000
+        ? Math.max(error.retryAfter * 1_000, START_BACKOFF_MS)
         : START_BACKOFF_MS * Math.pow(2, attempt);
       // A wait that reaches the deadline leaves no time for the next try.
       if (delayMs >= deadline.remainingMs()) { return { reason: 'deadline' }; }
