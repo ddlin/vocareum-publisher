@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+To be released as 1.5.0. (A `[1.5.0]` section dated 2026-11-09 was written for
+the EU tenant work but never published; it is folded in here.)
+
 ### Added
 - **`--json` on `pull`, `push`, `status`, `validate` and `fix`.** stdout carries
   exactly one versioned envelope; human output moves to stderr. `--json` implies
@@ -43,10 +46,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   downloads (default 5,000, range 1 to 1,000,000). Courses that ship Python
   environments under `data/` list tens of thousands of files.
 
+- **The Vocareum EU tenant is supported out of the box.**
+  `https://api.eu.vocareum.com/api/v2` is now on the v2 allowlist next to the
+  NA host. Previously an EU course needed `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`,
+  which switched the credential-safety allowlist off entirely and printed a
+  "credentials will be sent to this host" warning on every call. It also needed
+  a hand edit of `api_base_url` after `vocgit init`. A user who forgot that edit
+  sent their EU API key to the NA host.
+  The allowlist is now built from a region table (`src/api/regions.ts`), and
+  the token→v2 / OAuth→v3 host binding is unchanged. No EU v3/OAuth host is
+  allowlisted: none is confirmed, so it is a marked TODO in the table, not an
+  entry.
+- **`vocgit init --region <na|eu>` and `--api-base-url <url>`.** `init` writes the
+  chosen tenant's host to `vocareum.api_base_url`. When neither flag is given,
+  `init` prompts for the region before the org ID, with NA as the default.
+  `VOCAREUM_API_BASE_URL` also skips the prompt, whether it comes from the
+  shell or from `.env` (which `init` now loads, as pull and push already do).
+  `--api-base-url` goes through the same HTTPS + allowlist check that pull and
+  push apply, so `init` never writes a host they would refuse.
+- **`VOCAREUM_API_BASE_URL` and `--api-base-url` on `pull`/`push`.** These
+  override the v2 host for one run. Precedence: flag > env > `vocareum.yaml` >
+  NA default. Both still have to pass the allowlist. If an override points
+  somewhere other than the host in `vocareum.yaml`, vocgit warns and names both
+  hosts, so a stray shell export cannot quietly redirect a push to the other
+  tenant. `--api-base-url` with `--auth oauth` is an error, not silently ignored.
+- **`vocgit status` shows the API host, region, and source** (`vocareum.yaml`
+  or `VOCAREUM_API_BASE_URL`). It also flags a host that is not allowlisted.
+  `status --json` reports it in `payload.api`
+  (`base_url`, `host`, `region`, `source`, `allowlisted`, `malformed`).
+
 ### Changed
-- **Exit codes are now categorized.** Every failure previously exited `1`.
-  Callers testing `!= 0` are unaffected; a caller matching `== 1` exactly will
-  now see 2, 3, 4, 5 or 6.
+- **Exit codes are now categorized.** Every failure previously exited `1`; a
+  caller matching `== 1` exactly will now see 2, 3, 4, 5 or 6. A caller testing
+  `!= 0` is unaffected by the recategorization itself, **but some runs that used
+  to exit 0 now fail**, because they were failures reported as success:
+  - a pull that could not read an assignment's settings, or could not finish a
+    `--content` check, exits 6 (it printed "No sync issues found" and exited 0);
+  - a push whose settings update the API rejected at every fallback level, or
+    whose `--sync-deletes` pass did not delete what it had to, exits 6;
+  - `fix` exits 6 when it could not create a folder;
+  - with `--json` only: outstanding findings exit 5, including `pull --batch
+    --json` while a stale assignment (in `vocareum.yaml`, gone from Vocareum)
+    is unresolved, and `push --dry-run --json` with planned changes. Without
+    `--json`, findings still exit 0, as before.
+  The GitHub Action runs `vocgit push` without `--json`, so it fails only on
+  the push failures above: a step that used to pass while deletions or settings
+  were silently not applied now fails.
 - **`status --json` emits the shared envelope.** Its former numeric top-level
   `schema_version: 1` is now `payload.payload_schema_version: 2`, under an
   envelope whose `schema_version` is the string `"1.0"`.
@@ -98,7 +143,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that part's `directories` in `vocareum.yaml`, instead of passing the raw API
   error through.
 
+- **API base URLs must be a plain `https://host[/api/vN]`.** vocgit now refuses
+  a base URL or OAuth token URL that contains a query (`?`), fragment (`#`),
+  credentials (`user@`), a backslash, whitespace or a control character, even
+  with `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`. Before, the URL parser stripped these
+  and the check passed on the clean host, but axios sent the raw string. So
+  `…/api/v2?x=` turned every request path into query data, `#` moved it into a
+  fragment that was never sent, and `user@` carried a credential. This applies
+  to NA configs too; a config without these characters is unaffected.
+- **`InsecureBaseUrlError` no longer echoes the raw URL.** It shows
+  `scheme://host/path` only, so a token pasted into the URL cannot reach the
+  terminal or CI logs.
+
 ### Fixed
+- **A `--sync-deletes` pass that could not run is a failure.** Every CLI push
+  with `--sync-deletes` lists the remote directory to find what to delete. When
+  that listing failed (an overloaded server, a 5xx), push warned and still
+  recorded the directory as synced, so the next push saw no change and never
+  retried the deletions. It is now recorded as failed (exit 6) and retried by
+  the next push. A deletion attempt that errors is recorded the same way.
+- **A pull that could not read an assignment's settings no longer reports "No
+  sync issues found."** It names the assignment and exits 6. A later push could
+  otherwise overwrite a remote change the pull never saw.
+- **`fix` repairs nested folders in one run.** It created a missing assignment
+  folder and stopped, although the part folders and declared directories inside
+  it were missing too; it now checks again after each round. `fix --help` no
+  longer promises to add or remove `vocareum.yaml` entries, which it never did.
 - **`push` no longer reports failures twice.** It logged the error and threw a
   plain `Error`, which the entrypoint logged again as `Unhandled error: …` —
   contrary to AGENTS.md constraint 14.
@@ -224,52 +294,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the run still printed `✓ No sync issues found.` Subdirectories are now
   walked. Any assignment whose check still cannot finish is named, and the pull
   exits 6 (partial): the check is unknown, not clean.
-
-## [1.5.0] — 2026-11-09
-
-### Added
-- **The Vocareum EU tenant is supported out of the box.**
-  `https://api.eu.vocareum.com/api/v2` is now on the v2 allowlist next to the
-  NA host. Previously an EU course needed `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`,
-  which switched the credential-safety allowlist off entirely and printed a
-  "credentials will be sent to this host" warning on every call. It also needed
-  a hand edit of `api_base_url` after `vocgit init`. A user who forgot that edit
-  sent their EU API key to the NA host.
-  The allowlist is now built from a region table (`src/api/regions.ts`), and
-  the token→v2 / OAuth→v3 host binding is unchanged. No EU v3/OAuth host is
-  allowlisted: none is confirmed, so it is a marked TODO in the table, not an
-  entry.
-- **`vocgit init --region <na|eu>` and `--api-base-url <url>`.** `init` writes the
-  chosen tenant's host to `vocareum.api_base_url`. When neither flag is given,
-  `init` prompts for the region before the org ID, with NA as the default.
-  `VOCAREUM_API_BASE_URL` also skips the prompt, whether it comes from the
-  shell or from `.env` (which `init` now loads, as pull and push already do).
-  `--api-base-url` goes through the same HTTPS + allowlist check that pull and
-  push apply, so `init` never writes a host they would refuse.
-- **`VOCAREUM_API_BASE_URL` and `--api-base-url` on `pull`/`push`.** These
-  override the v2 host for one run. Precedence: flag > env > `vocareum.yaml` >
-  NA default. Both still have to pass the allowlist. If an override points
-  somewhere other than the host in `vocareum.yaml`, vocgit warns and names both
-  hosts, so a stray shell export cannot quietly redirect a push to the other
-  tenant. `--api-base-url` with `--auth oauth` is an error, not silently ignored.
-- **`vocgit status` shows the API host, region, and source** (`vocareum.yaml`
-  or `VOCAREUM_API_BASE_URL`). It also flags a host that is not allowlisted.
-  `status --json` gains an additive `api` object
-  (`base_url`, `host`, `region`, `source`, `allowlisted`); `schema_version`
-  stays `1`.
-
-### Changed
-- **API base URLs must be a plain `https://host[/api/vN]`.** vocgit now refuses
-  a base URL or OAuth token URL that contains a query (`?`), fragment (`#`),
-  credentials (`user@`), a backslash, whitespace or a control character, even
-  with `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`. Before, the URL parser stripped these
-  and the check passed on the clean host, but axios sent the raw string. So
-  `…/api/v2?x=` turned every request path into query data, `#` moved it into a
-  fragment that was never sent, and `user@` carried a credential. This applies
-  to NA configs too; a config without these characters is unaffected.
-- **`InsecureBaseUrlError` no longer echoes the raw URL.** It shows
-  `scheme://host/path` only, so a token pasted into the URL cannot reach the
-  terminal or CI logs.
 
 ### Unchanged
 - Existing configs, including ones with no `api_base_url`, still resolve to
