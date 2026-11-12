@@ -596,6 +596,63 @@ async function ensurePartDirectories(
   }
 }
 
+/**
+ * Splits the files a drift apply writes into those that can be written before
+ * any deletion and those a deleted local path blocks.
+ *
+ * A written path `p` is blocked by a deleted path `d` when `d` is a strict
+ * path prefix of `p` (the remote file `x` became the directory `x/`, so the
+ * local file `x` must go before `x/y` can exist), or when the two are equal
+ * ignoring case: on a case-insensitive filesystem `Main.py` and `main.py` are
+ * one file, so writing first and deleting second would remove the bytes just
+ * written. Comparing case-insensitively is conservative on a case-sensitive
+ * filesystem: it only moves a write to after an unrelated unlink.
+ */
+export function splitWritesByDeletion(
+  files: FileMap,
+  deletedPaths: readonly string[]
+): { first: FileMap; blocked: FileMap } {
+  const deleted = deletedPaths.map(d => d.toLowerCase());
+  const first: FileMap = {};
+  const blocked: FileMap = {};
+  for (const [relativePath, content] of Object.entries(files)) {
+    const p = relativePath.toLowerCase();
+    const collides = deleted.some(d => p === d || p.startsWith(d + '/'));
+    (collides ? blocked : first)[relativePath] = content;
+  }
+  return { first, blocked };
+}
+
+/**
+ * Unlinks one file the remote deleted. The path is re-checked against the part
+ * base first: a symlink swapped in since drift detection must not be followed
+ * out of the workspace. A missing file is the end state the delete wants; any
+ * other failure is reported, not swallowed, and the apply continues.
+ */
+async function unlinkDeletedFile(
+  localBaseAbs: string,
+  filePath: string,
+  verbose: boolean,
+  events: EventSink
+): Promise<void> {
+  const localFilePath = path.join(localBaseAbs, filePath);
+  try {
+    if (!await isPathConfinedToBase(localBaseAbs, localFilePath)) {
+      events.emit({ level: 'warn', message: `Not deleting ${filePath} (deleted on remote): it resolves outside ${localBaseAbs}` });
+      return;
+    }
+    const fs = await import('fs/promises');
+    await fs.unlink(localFilePath);
+    if (verbose) {
+      events.emit({ level: 'debug', message: `Deleted ${localFilePath}` });
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') { return; }
+    const message = error instanceof Error ? error.message : String(error);
+    events.emit({ level: 'warn', message: `Could not delete ${filePath} (deleted on remote): ${message}` });
+  }
+}
+
 async function writeFilesToDirectory(
   assignmentPath: string,
   partPath: string,
@@ -1597,32 +1654,26 @@ export async function applyPull(
           await assertConfinedToWorkspace(workspaceRoot, localBasePath);
           const localBaseAbs = path.resolve(workspaceRoot, localBasePath);
 
-          // Deletions first: when a remote file became a directory of the
-          // same name (x → x/y), the local file x must go before x/y can be
-          // written, or the write fails and the pull aborts. A deleted path is
-          // never one of the remote files, so the order changes nothing else.
-          for (const fileDiff of partDrift.fileDiffs) {
-            if (fileDiff.status === 'deleted') {
-              const localFilePath = path.join(localBaseAbs, fileDiff.filePath);
-              try {
-                const fs = await import('fs/promises');
-                await fs.unlink(localFilePath);
-                if (verbose) {
-                  events.emit({ level: 'debug', message: `Deleted ${localFilePath}` });
-                }
-              } catch {
-                // File may already be gone
-              }
-            }
+          // Three phases, so a failed write never costs a local file the
+          // pull did not need to remove first:
+          //   1. write every remote file that no deleted path stands in the way of;
+          //   2. unlink the paths the remote deleted;
+          //   3. write the rest — those a deleted local file blocks.
+          // A throw in phase 1 leaves every deleted file in place (and saves
+          // no content_state), exactly as before delete-first ordering.
+          const deletedPaths = partDrift.fileDiffs
+            .filter(d => d.status === 'deleted')
+            .map(d => d.filePath);
+          const { first, blocked } = splitWritesByDeletion(partDrift.remoteFiles, deletedPaths);
+          const assignmentAbs = path.resolve(workspaceRoot, drift.assignmentPath);
+
+          await writeFilesToDirectory(assignmentAbs, partDrift.partPath, first, verbose, events);
+
+          for (const filePath of deletedPaths) {
+            await unlinkDeletedFile(localBaseAbs, filePath, verbose, events);
           }
 
-          await writeFilesToDirectory(
-            path.resolve(workspaceRoot, drift.assignmentPath),
-            partDrift.partPath,
-            partDrift.remoteFiles,
-            verbose,
-            events
-          );
+          await writeFilesToDirectory(assignmentAbs, partDrift.partPath, blocked, verbose, events);
 
           // Scaffold the part's configured directories (parity with import): any
           // declared directory that is empty on the remote — so it received no

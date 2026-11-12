@@ -687,6 +687,44 @@ describe('S30 round-trip matrix: placeholder and type changes', () => {
     expect(history(run.config)?.status).toBe('success');
   });
 
+  it('apply ordering: a write that fails before any colliding path deletes nothing (writes first, then deletes)', async (ctx) => {
+    // A read-only directory refuses the write; root ignores the mode.
+    if (process.getuid?.() === 0) { ctx.skip(); }
+    const w = await imported(labTree().file('/voc/startercode/old.txt', 'old\n'));
+    w.tree.remove('/voc/startercode/old.txt').file('/voc/startercode/locked/new.txt', 'new\n');
+    // The injected write failure: the remote adds a file under a local empty
+    // directory that cannot be written to (EACCES on open).
+    await fs.mkdir(w.abs('startercode/locked'));
+    await fs.chmod(w.abs('startercode/locked'), 0o555);
+    try {
+      await expect(w.drift(w.zip())).rejects.toThrow(/EACCES|permission/i);
+    } finally {
+      await fs.chmod(w.abs('startercode/locked'), 0o755);
+    }
+    // The failed write left the previous tree intact: old.txt was never unlinked.
+    expect(await w.read('startercode/old.txt')).toBe('old\n');
+    expect(await w.read('startercode/main.py')).toBe('print(1)\n');
+  });
+
+  it('apply ordering: an unlink that fails for a reason other than ENOENT is reported as a warning, not swallowed', async (ctx) => {
+    if (process.getuid?.() === 0) { ctx.skip(); }
+    const w = await imported(labTree().file('/voc/startercode/old.txt', 'old\n'));
+    w.tree.remove('/voc/startercode/old.txt');
+    // Existing files are rewritten in place, which a read-only directory
+    // allows; removing a name from it is refused (EACCES).
+    await fs.chmod(w.abs('startercode'), 0o555);
+    let run: PullRun;
+    try {
+      run = await w.drift(w.zip());
+    } finally {
+      await fs.chmod(w.abs('startercode'), 0o755);
+    }
+    expect(diffs(run)).toEqual([{ filePath: 'startercode/old.txt', status: 'deleted' }]);
+    expect(run.events.filter((e) => e.level === 'warn').map((e) => e.message))
+      .toContainEqual(expect.stringMatching(/^Could not delete startercode\/old\.txt \(deleted on remote\): .*EACCES/));
+    expect(await w.read('startercode/old.txt')).toBe('old\n');
+  });
+
   it.each([
     ['empty' as const, 'name_mismatch'],
     ['400' as const, 'listing_failed'],
