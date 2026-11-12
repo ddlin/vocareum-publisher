@@ -597,8 +597,10 @@ export async function waitForPartUpdateTransaction(
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
 
-  // Retryable (exit 4): the job is still pending, and replaying the upload is
-  // safe because its first chunk resets the directory.
+  // Marked retryable: the job is still pending, and replaying the upload is
+  // safe because its first chunk resets the directory. (Push records it as a
+  // per-item failure, so the run exits 6; the flag is for callers that see
+  // the error itself.)
   throw new APIError(
     `Timed out after ${maxAttempts * delayMs}ms waiting for part update (txn=${transactionId})`,
     undefined, undefined, true,

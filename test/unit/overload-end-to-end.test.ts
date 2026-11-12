@@ -183,7 +183,7 @@ describe('a failed job\'s server message is redacted before it becomes an error'
 });
 
 describe('a transient failure keeps its "retry later" category', () => {
-  it('a part-update poll that times out is retryable (transient, exit 4)', async () => {
+  it('a part-update poll that times out is a retryable error (classified transient; push records it per item)', async () => {
     const { classifyFailure } = await import('../../src/utils/failure-classifier');
     const { client } = clientWith(() => THROTTLE_BODY);
     const err = await waitForPartUpdateTransaction(client, 't1', { maxAttempts: 1, delayMs: 1 }).catch((e: unknown) => e);

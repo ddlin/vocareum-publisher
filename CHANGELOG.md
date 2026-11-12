@@ -89,9 +89,10 @@ the EU tenant work but never published; it is folded in here.)
     --json` while a stale assignment (in `vocareum.yaml`, gone from Vocareum)
     is unresolved, and `push --dry-run --json` with planned changes. Without
     `--json`, findings still exit 0, as before.
-  The GitHub Action runs `vocgit push` without `--json`, so it fails only on
-  the push failures above: a step that used to pass while deletions or settings
-  were silently not applied now fails.
+  The GitHub Action runs `vocgit push` without `--json`, so findings never fail
+  it; it fails on any non-zero exit, as before. What is new is the push
+  failures above: a step that used to pass while deletions or settings were
+  silently not applied now fails.
 - **`status --json` emits the shared envelope.** Its former numeric top-level
   `schema_version: 1` is now `payload.payload_schema_version: 2`, under an
   envelope whose `schema_version` is the string `"1.0"`.

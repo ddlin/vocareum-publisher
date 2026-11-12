@@ -148,8 +148,9 @@ export async function updatePart(
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
 
-    // Retryable (exit 4): the settings job is still pending; writing the same
-    // settings again is idempotent.
+    // Marked retryable: the settings job is still pending; writing the same
+    // settings again is idempotent. (Push records it per item, so the run
+    // exits 6; the flag is for callers that see the error itself.)
     throw new APIError(
       `Timed out after ${maxAttempts * delayMs}ms waiting for part update (txn=${response.transactionid})`,
       undefined, undefined, true,
