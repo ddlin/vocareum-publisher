@@ -79,17 +79,30 @@ export function clockUncertain(s: HeaderSample): boolean {
   return s.arrival - s.send > MAX_ROUND_TRIP_MS || s.age;
 }
 
+/** Round up to the next whole second (ms in, ms out). */
+function ceilToSecond(ms: number): number {
+  return Math.ceil(ms / DATE_RESOLUTION_MS) * DATE_RESOLUTION_MS;
+}
+
 /**
- * Monotonic instant at which the S3 clock has certainly passed `success + 5 s`.
- * `success` on the S3 clock is at most `success + hi`; S3 time at `t` is at
- * least `t + lo`; so `t + lo ≥ success + hi + 5 s`, which is
- * `t ≥ success + 6 s + (arrival − send)`.
+ * Monotonic instant from which a truthful origin's settle `Date` satisfies
+ * `settleDateOk`'s first condition, `Date ≥ R` with
+ * `R = pin.Date + (success − pin.send) + 6 s`.
+ *
+ * S3 time at `t` is at least `t + lo` (`lo = pin.Date − pin.arrival`). Waiting
+ * only for `t + lo ≥ R` (`t ≥ success + 6 s + round trip`) proves S3 has passed
+ * `R`, but `Date` is floored to the second, so a truthful answer could still be
+ * up to 999 ms short of a fractional `R` and be rejected. Waiting for
+ * `t + lo ≥ ceilToSecond(R)` puts a whole second at or past `R` under the S3
+ * clock, so its floored `Date` is ≥ `R` (spec step 4a, implementation
+ * correction 2026-11-12). Costs at most 1 s more.
  *
  * The settle GET must also wait for `pin.arrival + 2 s` (spacing); that bound
  * is applied by the caller.
  */
 export function settleWaitUntil(pin: HeaderSample, success: number): number {
-  return success + WRITE_WINDOW_MS + DATE_RESOLUTION_MS + (pin.arrival - pin.send);
+  const r = pin.dateMs + (success - pin.send) + WRITE_WINDOW_MS + DATE_RESOLUTION_MS;
+  return ceilToSecond(r) - pin.dateMs + pin.arrival;
 }
 
 /**

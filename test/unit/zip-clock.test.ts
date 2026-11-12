@@ -127,9 +127,27 @@ describe('clockUncertain', () => {
 });
 
 describe('settleWaitUntil', () => {
-  it('is success + 5 s + 1 s + round trip', () => {
+  it('with a whole-second R it is success + 5 s + 1 s + round trip', () => {
+    // R = pin.Date + (18_000 − 20_000) + 6_000 = OFFSET + 24_000, a whole second.
     const pin = sample({ send: 20_000, arrival: 21_500 });
     expect(settleWaitUntil(pin, 18_000)).toBe(18_000 + 6_000 + 1_500);
+  });
+
+  it('with a fractional R it waits until t + lo reaches R rounded up to the second', () => {
+    // R = OFFSET + 24_300 → ceil OFFSET + 25_000; lo = OFFSET − 1_500 → t = 26_500.
+    const pin = sample({ send: 20_000, arrival: 21_500 });
+    expect(settleWaitUntil(pin, 18_300)).toBe(26_500);
+  });
+
+  it('boundary: a truthful origin at the lowest offset passes at the wait end, and fails 1 ms before', () => {
+    const pin = sample({ send: 20_000, arrival: 21_500 });
+    const success = 18_300;
+    const lo = offsetInterval(pin).lo;
+    const until = settleWaitUntil(pin, success);
+    // Worst case: S3 time at t is exactly t + lo; its Date is that, floored to the second.
+    const settleAt = (t: number) => sample({ send: t, arrival: t + 100, dateMs: Math.floor((t + lo) / 1_000) * 1_000 });
+    expect(settleDateOk(pin, settleAt(until), success)).toBe(true);
+    expect(settleDateOk(pin, settleAt(until - 1), success)).toBe(false);
   });
 });
 

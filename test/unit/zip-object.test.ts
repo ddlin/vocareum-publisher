@@ -241,7 +241,7 @@ describe('pinObject', () => {
     const r = await run(pinObject(URL_, ctx));
     expect('sample' in r).toBe(true);
     if (!('sample' in r)) return;
-    expect(await run(settleCheck(URL_, r.sample, 1_500, ctx))).toBe(true);
+    expect(await run(settleCheck(URL_, r.sample, ctx))).toBe(true);
   });
 
   it('S10g: a 2.5 s round trip → clock_uncertain', async () => {
@@ -271,6 +271,14 @@ describe('pinObject', () => {
     expect(await run(pinObject(URL_, ctx))).toEqual({ reason: 'object_headers' });
     expect(s3.streams[0].reads()).toBe(0);
     expect(s3.streams[0].stream.destroyed).toBe(true);
+  });
+
+  it('an empty quoted ETag ("") → object_headers', async () => {
+    const s3 = new FakeS3();
+    s3.write(1_100, '""', 'body');
+    await at(1_200);
+    const ctx = setup(s3, 1_000, 1_200);
+    expect(await run(pinObject(URL_, ctx))).toEqual({ reason: 'object_headers' });
   });
 
   it('S10g: a weak ETag → object_headers', async () => {
@@ -442,7 +450,7 @@ describe('settleCheck', () => {
     expect('sample' in r && r.sample.etag).toBe('"pre"');
     if (!('sample' in r)) return;
     s3.write(r.sample.arrival + 1_000, '"ours"', 'our-job');
-    expect(await run(settleCheck(URL_, r.sample, 3_000, ctx))).toEqual({ reason: 'object_settle_changed' });
+    expect(await run(settleCheck(URL_, r.sample, ctx))).toEqual({ reason: 'object_settle_changed' });
     // The pinned ETag is recorded, so the next directory cannot pin it.
     expect(ctx.seen.has('"pre"')).toBe(true);
   });
@@ -457,19 +465,35 @@ describe('settleCheck', () => {
     s3.write(r.sample.arrival + 1_000, '"same"', 'identical');
     const buf = await run(downloadPinned(URL_, r.sample, ctx));
     expect(Buffer.isBuffer(buf) && buf.toString()).toBe('identical');
-    expect(await run(settleCheck(URL_, r.sample, 3_000, ctx))).toBe(true);
+    expect(await run(settleCheck(URL_, r.sample, ctx))).toBe(true);
   });
 
-  it('waits until success + 6 s + round trip on the monotonic clock', async () => {
+  it('with a whole-second R, waits until success + 6 s + round trip on the monotonic clock', async () => {
     const s3 = new FakeS3();
     s3.write(2_500, '"ours"', 'zip');
     await at(3_000);
     const ctx = setup(s3, 1_000, 3_000);
     const r = await run(pinObject(URL_, ctx));
     if (!('sample' in r)) throw new Error('not pinned');
-    expect(await run(settleCheck(URL_, r.sample, 3_000, ctx))).toBe(true);
+    expect(await run(settleCheck(URL_, r.sample, ctx))).toBe(true);
+    // R = pin.Date + (3_000 − 3_000) + 6 s is a whole second, so no rounding applies.
     const settleSend = s3.requests[1].send;
     expect(settleSend).toBe(3_000 + 6_000 + (r.sample.arrival - r.sample.send));
+  });
+
+  it('regression: a fractional R is waited out to the whole second, so a truthful origin passes', async () => {
+    // success 2_500; pin sent at 3_000, 100 ms round trip, Date stamped at 3_050 → OFFSET + 3_000.
+    // R = pin.Date − 500 + 6_000 = OFFSET + 8_500. The unrounded wait (8_600) would get Date
+    // OFFSET + 8_000 < R and reject a truthful origin; the rounded wait is until 9_100.
+    const s3 = new FakeS3();
+    s3.write(2_000, '"ours"', 'zip');
+    await at(3_000);
+    const ctx = setup(s3, 1_000, 2_500);
+    const r = await run(pinObject(URL_, ctx));
+    if (!('sample' in r)) throw new Error('not pinned');
+    expect(r.sample.dateMs).toBe(OFFSET + 3_000);
+    expect(await run(settleCheck(URL_, r.sample, ctx))).toBe(true);
+    expect(s3.requests[1].send).toBe(9_100);
   });
 
   it('S10a4: the wall clock jumps 10 s after success; the wait is unaffected and our late write is seen', async () => {
@@ -482,7 +506,7 @@ describe('settleCheck', () => {
     // Our job's write lands 4.5 s after success, within the threat assumption.
     s3.write(7_500, '"ours"', 'our-job');
     vi.setSystemTime(Date.now() + 10_000);
-    expect(await run(settleCheck(URL_, r.sample, 3_000, ctx))).toEqual({ reason: 'object_settle_changed' });
+    expect(await run(settleCheck(URL_, r.sample, ctx))).toEqual({ reason: 'object_settle_changed' });
     expect(s3.requests[1].send).toBeGreaterThanOrEqual(9_000);
   });
 
@@ -497,7 +521,7 @@ describe('settleCheck', () => {
       if (!('sample' in r)) throw new Error('not pinned');
       const pinDate = new Date(r.sample.dateMs).toUTCString();
       s3.override = () => ({ headers: { date: pinDate } });
-      expect(await run(settleCheck(URL_, r.sample, success, ctx))).toEqual({ reason: 'object_settle_changed' });
+      expect(await run(settleCheck(URL_, r.sample, ctx))).toEqual({ reason: 'object_settle_changed' });
     }
   });
 
@@ -510,7 +534,7 @@ describe('settleCheck', () => {
     const r = await run(pinObject(URL_, ctx));
     if (!('sample' in r)) throw new Error('not pinned');
     await at(r.sample.arrival + 100);
-    expect(await run(settleCheck(URL_, r.sample, 1_000, ctx))).toBe(true);
+    expect(await run(settleCheck(URL_, r.sample, ctx))).toBe(true);
     expect(s3.requests[1].send).toBe(r.sample.arrival + 2_000);
   });
 
@@ -526,7 +550,7 @@ describe('settleCheck', () => {
     expect(Buffer.isBuffer(buf)).toBe(true);
     s3.rt = 100;
     const entered = performance.now();
-    expect(await run(settleCheck(URL_, r.sample, 3_000, ctx))).toBe(true);
+    expect(await run(settleCheck(URL_, r.sample, ctx))).toBe(true);
     expect(s3.requests.length).toBe(3);
     expect(s3.requests[2].send).toBe(entered);
   });
@@ -540,7 +564,7 @@ describe('settleCheck', () => {
     if (!('sample' in r)) throw new Error('not pinned');
     const expired = manualDeadline(0);
     expired.abort();
-    expect(await run(settleCheck(URL_, r.sample, 3_000, { ...ctx, deadline: expired }))).toBe(true);
+    expect(await run(settleCheck(URL_, r.sample, { ...ctx, deadline: expired }))).toBe(true);
   });
 
   it('no answer within 30 s after the wait → object_settle_changed', async () => {
@@ -551,7 +575,7 @@ describe('settleCheck', () => {
     const r = await run(pinObject(URL_, ctx));
     if (!('sample' in r)) throw new Error('not pinned');
     s3.rt = 60_000;
-    expect(await run(settleCheck(URL_, r.sample, 3_000, ctx))).toEqual({ reason: 'object_settle_changed' });
+    expect(await run(settleCheck(URL_, r.sample, ctx))).toEqual({ reason: 'object_settle_changed' });
   });
 
   it('a 403/404 at the settle point → object_settle_changed; a weak ETag → object_headers; Age → clock_uncertain', async () => {
@@ -571,7 +595,7 @@ describe('settleCheck', () => {
       const r = await run(pinObject(URL_, ctx));
       if (!('sample' in r)) throw new Error('not pinned');
       s3.override = () => ov;
-      expect(await run(settleCheck(URL_, r.sample, success, ctx))).toEqual({ reason });
+      expect(await run(settleCheck(URL_, r.sample, ctx))).toEqual({ reason });
     }
   });
 });
@@ -590,7 +614,7 @@ describe('S20: the signed URL never leaves the module', () => {
     const results: unknown[] = [];
     results.push(await run(pinObject(URL_, ctx)));
     results.push(await run(downloadPinned(URL_, pin, ctx)));
-    results.push(await run(settleCheck(URL_, pin, 0, ctx)));
+    results.push(await run(settleCheck(URL_, pin, ctx)));
     for (const res of results) {
       const text = JSON.stringify(res);
       expect(text).not.toContain('X-Amz-');

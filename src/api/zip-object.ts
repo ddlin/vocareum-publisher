@@ -10,6 +10,10 @@
  * Nothing here throws on an HTTP or transport failure; each outcome is a
  * `ZipNotUsedReason`. The signed URL never appears in a result: a reason is a
  * fixed string, so no error message (which can carry the URL) escapes.
+ *
+ * A transport error on the pin's ranged GET is `object_headers` (no headers
+ * were obtained) and is not retried; only stale objects and 403/404 are. With
+ * the deadline passed it is `deadline` instead.
  */
 import type { AxiosInstance, AxiosResponse } from 'axios';
 import type { Readable } from 'node:stream';
@@ -53,8 +57,8 @@ const SETTLE_SPACING_MS = 2_000;
 /** The settle GET must answer within this long after the wait ends. */
 const SETTLE_LIMIT_MS = 30_000;
 
-/** A strong ETag: one quoted string. `W/"…"`, unquoted or empty values refuse. */
-const STRONG_ETAG = /^"[^"]*"$/;
+/** A strong ETag: one non-empty quoted string. `W/"…"`, unquoted, `""` and empty values refuse. */
+const STRONG_ETAG = /^"[^"]+"$/;
 /** The total of a `bytes=0-0` answer. `*` (unknown size) refuses. */
 const CONTENT_RANGE = /^bytes 0-0\/(\d+)$/;
 
@@ -317,23 +321,22 @@ export async function downloadPinned(url: string, sample: HeaderSample, ctx: Zip
  * 30 s limit, not the step 2–6 deadline, which may have expired. The ETag must
  * equal the pinned one and S3's `Date` must agree the settle point passed.
  *
- * @param success - monotonic time the poll response reporting `success` arrived
+ * `success` is read from `ctx.success` only, so the pin's window and the
+ * settle point cannot be computed from two different values.
+ *
  * @returns true if the pinned object settled; otherwise why the zip is not used
  */
-export async function settleCheck(
-  url: string, pin: HeaderSample, success: number, ctx: ZipObjectContext,
-): Promise<true | NotUsed> {
-  const controller = new AbortController();
+export async function settleCheck(url: string, pin: HeaderSample, ctx: ZipObjectContext): Promise<true | NotUsed> {
+  const success = ctx.success;
   const until = Math.max(settleWaitUntil(pin, success), pin.arrival + SETTLE_SPACING_MS);
-  try {
-    // Loop: a timer may fire a fraction of a millisecond early against `ctx.now`.
-    for (let wait = until - ctx.now(); wait > 0; wait = until - ctx.now()) {
-      await abortableSleep(wait, controller.signal);
-    }
-  } catch {
-    return { reason: 'object_settle_changed' };
+  // Loop: a timer may fire a fraction of a millisecond early against `ctx.now`.
+  // The wait takes no signal: nothing outside cancels a settle check (ruled
+  // YAGNI), and the 30 s limit only starts once the wait ends.
+  for (let wait = until - ctx.now(); wait > 0; wait = until - ctx.now()) {
+    await abortableSleep(wait);
   }
 
+  const controller = new AbortController();
   const timer = setTimeout(() => { controller.abort(); }, SETTLE_LIMIT_MS);
   // unref: a pending limit must not keep the process alive.
   (timer as { unref?: () => void }).unref?.();
