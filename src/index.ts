@@ -9,6 +9,7 @@
 import { Command, CommanderError, Option } from 'commander';
 import { CAPABILITIES, readBuildInfo } from './core/capabilities';
 import { writeJsonDocument } from './core/report';
+import { sanitizeLogString } from './api/client';
 import { readFileSync, realpathSync } from 'fs';
 import { join } from 'path';
 
@@ -76,7 +77,7 @@ if (firstArg !== undefined && !firstArg.startsWith('-') && !KNOWN_COMMANDS.has(f
       retryable: false,
       payload: { payload_schema_version: 1 },
       diagnostics: [],
-      error: { code: 'usage', message, retryable: false },
+      error: { code: 'usage', message: sanitizeLogString(message), retryable: false },
     });
   } else {
     // process.stderr directly, not logger: this guard runs at module top level,
@@ -475,7 +476,7 @@ function writeUsageEnvelope(message: string): void {
     retryable: false,
     payload: { payload_schema_version: 1 },
     diagnostics: [],
-    error: { code: 'usage', message, retryable: false },
+    error: { code: 'usage', message: sanitizeLogString(message), retryable: false },
   });
 }
 

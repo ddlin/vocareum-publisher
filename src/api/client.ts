@@ -438,9 +438,11 @@ function trailingPunctuation(text: string): string {
  * or line break that ended the URL match early, or in a protocol-relative or
  * otherwise unrecognised URL. Names: S3 (`X-Amz-*`, `AWSAccessKeyId`,
  * `Signature`), CloudFront (`Signature`, `Policy`, `Key-Pair-Id`), generic
- * (`sig`, `signature`, `token`).
+ * (`sig`, `signature`, `token`). Also the CLI-flag form (`--token=…`,
+ * `--client-secret=…`), which reached a --json usage document verbatim when
+ * passed as an unknown option.
  */
-const SIGNED_URL_PARAM = /((?:^|[?&\s"'\\])(?:X-Amz-[A-Za-z-]+|AWSAccessKeyId|Signature|Policy|Key-Pair-Id|sig|token)=)[^&\s"'\\]*/gi;
+const SIGNED_URL_PARAM = /((?:^|[?&\s"'\\]|--)(?:X-Amz-[A-Za-z-]+|AWSAccessKeyId|Signature|Policy|Key-Pair-Id|sig|token|password|client[-_]secret|api[-_]key)=)[^&\s"'\\]*/gi;
 
 /**
  * Redact one absolute URL: drop user-info (`user:pass@`) and the whole query

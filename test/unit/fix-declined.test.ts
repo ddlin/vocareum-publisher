@@ -11,7 +11,7 @@ import { join } from 'path';
 vi.mock('../../src/utils/prompts', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   // Decline the parent; accept everything else.
-  promptConfirm: vi.fn(async (message: string) => !message.includes('"lab"')),
+  promptConfirm: vi.fn(async (message: string) => !/"(\.\/)?lab"/.test(message)),
 }));
 
 import { fixCommand } from '../../src/commands/fix';
@@ -34,5 +34,23 @@ describe('fix respects a declined folder', () => {
 
     expect(existsSync(join(dir, 'lab'))).toBe(false);
     expect(existsSync(join(dir, 'lab', 'sub'))).toBe(false);
+  });
+});
+
+describe('fix respects a declined folder under another spelling', () => {
+  it('`./lab` declined is not created through `lab/sub`', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vocgit-fix-declined-alias-'));
+    writeFileSync(join(dir, 'vocareum.yaml'), [
+      "version: '1.0'", 'vocareum:', "  org_id: '265'", "  course_id: '99999'",
+      '  templates: []', '  excluded_assignments: []',
+      'assignments:',
+      // The child first, and the parent spelled differently.
+      '  - path: lab/sub', '    name: Lab Sub', "    assignment_id: '112'", '    parts: []',
+      '  - path: ./lab', '    name: Lab', "    assignment_id: '111'", '    parts: []',
+    ].join('\n'));
+    await captureStdout(async () => {
+      await fixCommand({ config: join(dir, 'vocareum.yaml'), root: dir }).catch(() => undefined);
+    });
+    expect(existsSync(join(dir, 'lab'))).toBe(false);
   });
 });

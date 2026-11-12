@@ -68,6 +68,15 @@ describe('a malformed --json invocation still gets exactly one document', () => 
     expect(docs[0]).toMatchObject({ command, result: 'failed', error: { code: 'usage' } });
   });
 
+  it('a credential in an unknown option or command never reaches the document', () => {
+    for (const args of [['status', '--token=CLI_SECRET', '--json'], ['https://h.invalid/?token=CLI_SECRET', '--json']]) {
+      const { status, docs } = run(args);
+      expect(status).toBe(2);
+      expect(docs).toHaveLength(1);
+      expect(JSON.stringify(docs[0])).not.toContain('CLI_SECRET');
+    }
+  });
+
   it('`help push` is a known command (exit 0)', () => {
     const out = execFileSync(TSX, [CLI, 'help', 'push'], { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     expect(out).toMatch(/Usage: vocgit push/);

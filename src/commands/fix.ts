@@ -114,7 +114,11 @@ async function fixCommandInner(options: FixOptions): Promise<void> {
 
       // Parents before children: a folder is asked about before anything inside
       // it, so a "no" is known before a nested repair would create it anyway.
-      repairable.sort((a, b) => (a.path ?? '').split('/').length - (b.path ?? '').split('/').length);
+      // Compare RESOLVED paths: `./lab`, `lab/` and `lab` are one folder, and a
+      // raw-string check let `lab/sub` create a declined `./lab`.
+      const depth = (p: string): number =>
+        path.relative(workspaceRoot, path.resolve(workspaceRoot, p)).split(path.sep).length;
+      repairable.sort((a, b) => depth(a.path ?? '') - depth(b.path ?? ''));
 
       logger.info(`Found ${repairable.length} missing folder(s).`);
       for (const error of repairable) {
@@ -122,8 +126,9 @@ async function fixCommandInner(options: FixOptions): Promise<void> {
         attempted.add(folderPath);
         // Creating anything inside a declined folder would create the declined
         // folder itself (mkdir -p). Respect the "no": skip it, and say why.
+        const target = path.resolve(workspaceRoot, folderPath);
         const insideDeclined = remaining.find((r) =>
-          r.reason === 'declined' && folderPath.startsWith(`${r.path}/`));
+          r.reason === 'declined' && target.startsWith(path.resolve(workspaceRoot, r.path) + path.sep));
         if (insideDeclined !== undefined) {
           remaining.push({ path: folderPath, reason: 'declined', detail: `inside declined folder ${insideDeclined.path}` });
           continue;
