@@ -33,8 +33,14 @@ npm install -g vocareum-publisher
 ```bash
 mkdir my-course && cd my-course
 git init
-vocgit init
+vocgit init              # prompts for region (NA default), org, course, templates
+vocgit init --region eu  # EU tenant: writes api_base_url: https://api.eu.vocareum.com
 ```
+
+`vocgit init` asks which Vocareum tenant the course lives on and records its API
+host in `vocareum.yaml`. NA and EU are separate tenants with separate API keys,
+and course IDs from one mean nothing on the other. See
+[Regions (NA / EU)](#regions-na--eu).
 
 ### 2. Create an Assignment
 
@@ -86,6 +92,7 @@ version: "1.0"
 vocareum:
   org_id: "12345"
   course_id: "67890"
+  api_base_url: "https://api.vocareum.com"   # NA (default); EU: https://api.eu.vocareum.com
   templates:                        # Named templates for creating new assignments
     - id: "99999"
       name: "Standard Lab"
@@ -193,7 +200,43 @@ Because Vocareum's API treats fields inconsistently — some are writable, some 
   assignment is rejected outright. **To change a course's points, edit `parts[].rubrics`
   in `vocareum.yaml` and push** — see [Rubrics](#rubrics) below. This is the *only* way
   vocgit can change a course's points, since both point fields are otherwise read-only.
+
+  A container part's **`container_image_id`** and **`container_image_label`** are
+  observed too. The image *ID* belongs to one Vocareum tenant: an NA ID means nothing on
+  EU. The part-update API ignores both fields, so vocgit keeps them for reference and never
+  sends them, including when you push a config pulled from one tenant to another.
 - **`_unknown_settings`** — fields vocgit doesn't recognize yet (typically new Vocareum features). vocgit preserves them verbatim and passes them back through unchanged on the next push, so nothing is silently lost. When these appear, vocgit prints an end-of-run notice asking you to [file an issue](https://github.com/ddlin/vocareum-publisher/issues/new) so the field can be promoted to a supported setting.
+
+**Peer review settings** (assignment `settings:`). vocgit checks the limits Vocareum enforces when it loads `vocareum.yaml`, so a mistake fails before the push starts:
+
+| Setting | Values |
+|---------|--------|
+| `peer_review_toggle` | `true` / `false` |
+| `peer_schedule_mode` | `SCHEDULED`, `MANUAL`, `AUTO` |
+| `peer_review_start_date`, `peer_review_end_date` | a real date, `YYYY-MM-DD` (a date and time is rejected), or `null` to clear it |
+| `peer_hide_code`*, `peer_gallery`*, `peer_grading_toggle`* | `true` / `false` |
+| `reviews_number` | reviews each student writes, 1–10 |
+| `reviewguide` | guidance text for reviewers |
+| `reviewpenalty` | penalty percentage for missing reviews, 0–100 |
+| `reviewpenalty_percentrule` | `STUDENT_SCORE`, `MAX_SCORE` |
+| `reviewcalc` | `AVERAGE`, `MEDIAN`, `MAXIMUM` |
+
+\* These take effect only while peer review is on. While it is off (set to `false` in the
+config, or off in Vocareum when the config does not set it), push sends them as `false` and
+warns: Vocareum rejects `true` then, and resets them to `false` when peer review is turned
+off.
+
+Dates are checked as written, so an unquoted `2026-12-01` works and `2026-02-30` is an
+error rather than a different date.
+
+Part `cleanup_time` is a known setting too: a whole number, 0 or more. Vocareum stores it
+on container labs only. On a Vocareum Standard (Elite) part it reads back 0, so push warns
+and does not send it there.
+
+Configs pulled by an older vocgit keep these fields under `_unknown_settings`. vocgit moves
+each one to its proper place when it loads the config, so they push as normal settings. A
+leftover value that is not valid stays where it is, is not pushed, and vocgit warns about it.
+The YAML is written in the new layout the next time a command saves `vocareum.yaml`.
 
 **"Accepted but not confirmed" fields.** Some writable fields (e.g. `exam_mode`, `exam_duration`, `deadlinedate`, `late_penalty_percent`) are accepted by the API on write but are not echoed back on read. vocgit writes them and trusts the success response — it just can't read them back to confirm the value applied, so it won't report drift on them.
 
@@ -247,7 +290,7 @@ The rubrics **write** token permissions (POST, PUT — see [Generating a Token](
 
 | Command | Description |
 |---------|-------------|
-| `vocgit init` | Initialize a new course repository |
+| `vocgit init` | Initialize a new course repository (`--region na\|eu`, `--api-base-url <url>`) |
 | `vocgit new <path>` | Create new assignment structure |
 | `vocgit validate` | Validate configuration and structure |
 | `vocgit fix` | Interactively fix validation issues |
@@ -260,6 +303,12 @@ vocgit                  # Same as: vocgit status
 vocgit status --verbose # Include per-assignment details
 vocgit status --json    # Machine-readable content sync status (for tooling)
 ```
+
+`vocgit status` shows the API host and region (NA/EU) that `pull` and `push`
+will target, and where the host came from (`vocareum.yaml` or
+`VOCAREUM_API_BASE_URL`). Check it before pushing if you work with repos on
+both tenants. `status --json` reports this in `payload.api`:
+`{ base_url, host, region, source, allowlisted, malformed }`.
 
 ### Workspace Root (`--root`)
 
@@ -324,10 +373,46 @@ vocgit pull --content --assignment lab1 --part <part_id>  # scope to one part by
 
 `--skip-content` is a separate flag that controls orphan-import behavior only — it tells vocgit to skip downloading files for newly imported orphan assignments (useful to retry after a failed pull). It has no effect on content drift detection.
 
-Remote content downloads fail closed if a pull would exceed built-in safety
-limits: 5,000 files, 100 MiB for any single file, or 500 MiB total for one
-`downloadContent` pass. These limits protect local machines and CI runners from
-unexpectedly large or malformed remote file listings.
+Remote content downloads are capped to protect local machines and CI runners
+from unexpectedly large or malformed listings: 5,000 files (raise it with
+`VOCAREUM_MAX_DOWNLOAD_FILES`), 100 MiB for any single file, and 500 MiB in
+total per part. A file over the per-file cap is skipped and reported. When the
+file-count or total cap is reached, the download stops, keeps what already
+arrived, and reports the rest as not downloaded. Courses that ship Python
+environments under `data/` can list tens of thousands of files; raise the cap
+for those, for example `VOCAREUM_MAX_DOWNLOAD_FILES=50000 vocgit pull --batch`.
+
+**An incomplete pull exits 1.** If an import cannot download some remote files,
+vocgit still writes the files that did arrive and saves the assignment to
+`vocareum.yaml`, but it marks the import `INCOMPLETE`, adds a `Not downloaded`
+count to the summary, records the run in `publish_history` as `failed` (listing
+the missed paths), and exits 1. An import that fails outright is not saved, is
+counted under `Import failed`, and also exits 1. If `--content` cannot finish
+the drift check for an assignment, vocgit names it and exits 1; it never
+reports "No sync issues found" for a check it skipped. The warnings above the
+summary name each file and the reason.
+
+**Push refuses a directory an incomplete pull left behind.** Push uploads a
+changed directory by first clearing it on Vocareum, so uploading a partial copy
+would delete every remote file the pull missed. vocgit marks such a directory
+`incomplete-pull` in `publish_history.content_state` instead of recording a
+hash, and `vocgit push` (even with `--force-all`) reports it as failed and
+leaves it untouched until a complete pull replaces the marker. `vocgit status`
+lists such directories, and `status --json` reports them as `error`. If a
+remote file still cannot be written locally (for example because the local path
+is a symlink), the marker stays and the pull exits 1 until that is resolved.
+
+To complete an incomplete import once the cause is fixed (for example after
+raising `VOCAREUM_MAX_DOWNLOAD_FILES`), use content drift. The assignment is
+already imported, so a plain `vocgit pull --batch` will not retry it:
+
+```bash
+vocgit pull --batch --content --assignment <name>
+```
+
+An import that failed outright was not saved, so it is still an orphan: re-run
+`vocgit pull --batch`. Either way the run is recorded in `publish_history` as
+`failed`, with what was missed or why the import failed.
 
 **For orphaned assignments** (in Vocareum, not in config):
 - **Import**: Download content and add to your local repository
@@ -582,7 +667,7 @@ The `auto_commit` option should only be used locally. In CI/CD it is force-disab
 ### API Contract Notes
 
 - Authentication header: `Authorization: Token <token>`
-- Base API path: `https://api.vocareum.com/api/v2/`
+- Base API path: `/api/v2/` on the configured host, NA `https://api.vocareum.com` or EU `https://api.eu.vocareum.com` (see [Regions](#regions-na--eu))
 - Assignment copy: `POST /api/v2/courses/{courseId}/assignments` with body:
   - `{ "method": "copy", "source": "<templateAssignmentId>", "name": "<newName>" }`
   - Polls transaction endpoint for up to 60 seconds until complete
@@ -656,12 +741,46 @@ vocgit supports two authentication modes:
 
 | Mode | Flag / Env | Credential env vars | API base |
 |------|-----------|---------------------|----------|
-| `token` (default) | `--auth token` / `VOCAREUM_AUTH_MODE=token` | `VOCAREUM_API_KEY` or `VOCAREUM_API_TOKEN` | `https://api.vocareum.com/api/v2` |
+| `token` (default) | `--auth token` / `VOCAREUM_AUTH_MODE=token` | `VOCAREUM_API_KEY` or `VOCAREUM_API_TOKEN` | NA `https://api.vocareum.com/api/v2` or EU `https://api.eu.vocareum.com/api/v2` (see [Regions](#regions-na--eu)) |
 | `oauth` (opt-in) | `--auth oauth` / `VOCAREUM_AUTH_MODE=oauth` | `VOCAREUM_OAUTH_CLIENT_ID` + `VOCAREUM_OAUTH_CLIENT_SECRET` | `https://labs.vocareum.com/api/v3` |
 
-**v2 token (default)** — Set `VOCAREUM_API_KEY` (or the alias `VOCAREUM_API_TOKEN`) to your Personal Access Token. Requests carry `Authorization: Token <token>` against `https://api.vocareum.com/api/v2`. No additional configuration needed.
+**v2 token (default)** — Set `VOCAREUM_API_KEY` (or the alias `VOCAREUM_API_TOKEN`) to your Personal Access Token. Requests carry `Authorization: Token <token>` against the v2 host in `vocareum.api_base_url` (NA `https://api.vocareum.com` by default). No additional configuration is needed for NA; EU courses set the EU host with `vocgit init --region eu`.
 
 **v3 OAuth (opt-in)** — Set `VOCAREUM_OAUTH_CLIENT_ID` and `VOCAREUM_OAUTH_CLIENT_SECRET` and select the mode via `--auth oauth` or `VOCAREUM_AUTH_MODE=oauth`. vocgit performs an OAuth client-credentials exchange at `https://labs.vocareum.com/api/v3/oauth/token`, caches the resulting access token for the lifetime of the process, and retries automatically on a single 401 response. Requests carry `Authorization: Bearer <access_token>` against `https://labs.vocareum.com/api/v3`.
+
+#### Regions (NA / EU)
+
+Vocareum runs two tenants. Each has its own v2 API host and its own API keys:
+
+| Region | `api_base_url` | v2 API |
+|--------|----------------|--------|
+| `na` (default) | `https://api.vocareum.com` | `https://api.vocareum.com/api/v2` |
+| `eu` | `https://api.eu.vocareum.com` | `https://api.eu.vocareum.com/api/v2` |
+
+Both hosts are on vocgit's built-in allowlist, so EU needs no
+`VOCAREUM_ALLOW_CUSTOM_BASE_URL` override. Pick the region when you run
+`vocgit init` (`--region eu`, `--api-base-url https://api.eu.vocareum.com`, or
+the interactive prompt). The host is saved to `vocareum.yaml`, so later
+`pull`/`push` runs, including CI, use it automatically.
+
+To point a single run at another host, use `--api-base-url` on `pull`/`push`,
+or set `VOCAREUM_API_BASE_URL`. Precedence:
+**`--api-base-url` > `VOCAREUM_API_BASE_URL` > `vocareum.yaml` > NA default.**
+Overrides must still be HTTPS and allowlisted. If an override differs from the
+host in `vocareum.yaml`, vocgit prints a warning naming both hosts.
+
+Wherever it comes from, the base URL must be a plain `https://host[/api/v2]`.
+vocgit refuses a URL containing a query (`?`), fragment (`#`), credentials
+(`user@`), a backslash or whitespace, even with
+`VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`. Error messages show the URL with any such
+credentials removed.
+
+The region applies to v2 token auth only. v3 OAuth always targets the NA
+`labs.vocareum.com` host; no EU v3 host is supported yet.
+
+`VOCAREUM_ALLOW_CUSTOM_BASE_URL=1` remains an escape hatch for non-Vocareum
+hosts (e.g. local testing). It disables the allowlist and sends credentials
+to whatever host is configured, so do not use it for EU.
 
 Optional URL overrides for v3 OAuth:
 
@@ -786,6 +905,7 @@ Store credentials as repository secrets (`VOCAREUM_OAUTH_CLIENT_ID`, `VOCAREUM_O
 | `VOCAREUM_API_KEY` | v2 Personal Access Token (default auth mode) |
 | `VOCAREUM_API_TOKEN` | Alias for `VOCAREUM_API_KEY` |
 | `VOCAREUM_AUTH_MODE` | Auth mode: `token` (default) or `oauth` |
+| `VOCAREUM_API_BASE_URL` | v2 API host for token auth, e.g. `https://api.eu.vocareum.com`. Overrides `vocareum.yaml` `api_base_url`; `--api-base-url` overrides it. Must be allowlisted |
 | `VOCAREUM_OAUTH_CLIENT_ID` | v3 OAuth client ID (required when `VOCAREUM_AUTH_MODE=oauth`) |
 | `VOCAREUM_OAUTH_CLIENT_SECRET` | v3 OAuth client secret (required when `VOCAREUM_AUTH_MODE=oauth`) |
 | `VOCAREUM_API_V3_BASE_URL` | Override the v3 API base URL (default: `https://labs.vocareum.com/api/v3`) |
@@ -793,6 +913,7 @@ Store credentials as repository secrets (`VOCAREUM_OAUTH_CLIENT_ID`, `VOCAREUM_O
 | `VOCAREUM_MAX_CONCURRENCY` | Override `vocareum.throttle.max_concurrency` (1–5) |
 | `VOCAREUM_MIN_REQUEST_INTERVAL_MS` | Override `vocareum.throttle.min_interval_ms` (0–60000 ms) |
 | `VOCAREUM_THROTTLE_JITTER` | Override `vocareum.throttle.jitter` (`true` / `false`) |
+| `VOCAREUM_MAX_DOWNLOAD_FILES` | Per-part file-count cap for pull downloads (default: 5000, range: 1–1000000) |
 | `VOCAREUM_MAX_UPLOAD_CHUNK_BYTES` | Upload chunk size in bytes (default: 33554432, range: 1024–67108864) |
 | `VOCAREUM_LOG_LEVEL` | Log level: ERROR, WARN, INFO, DEBUG, TRACE |
 

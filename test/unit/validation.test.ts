@@ -49,7 +49,7 @@ describe('validateSchema', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(SchemaValidationError);
       expect((error as SchemaValidationError).errors).toBeDefined();
-      expect((error as SchemaValidationError).errors.errors).toHaveLength(2);
+      expect((error as SchemaValidationError).errors.issues).toHaveLength(2);
     }
   });
 
@@ -76,6 +76,23 @@ describe('validateSchema', () => {
 });
 
 describe('formatZodError', () => {
+  const formatted = (schema: z.ZodType, data: unknown): string => {
+    const r = schema.safeParse(data);
+    if (r.success) { throw new Error('expected a validation failure'); }
+    return formatZodError(r.error);
+  };
+
+  it('adds the object-vs-array hint to a record given an array (zod 4 says "record")', () => {
+    const out = formatted(z.object({ state: z.record(z.string(), z.string()) }), { state: [] });
+    expect(out).toContain('Hint: This field expects an object {...} but got an array [...]');
+  });
+
+  it('adds the ID hint to a numeric ID but not to a missing one', () => {
+    const schema = z.object({ course_id: z.string() });
+    expect(formatted(schema, { course_id: 2 })).toContain('Hint: All IDs must be strings');
+    expect(formatted(schema, {})).not.toContain('Hint:');
+  });
+
   it('should format single error', () => {
     const schema = z.object({ name: z.string() });
 

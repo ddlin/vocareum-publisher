@@ -31,7 +31,7 @@ describe('waitForAssignmentObjId', () => {
     expect(requestMock).toHaveBeenCalledWith({
       method: 'GET',
       url: '/transaction/txn-123',
-    });
+    }, { retryOverload: false });
   });
 
   it('should poll until transaction succeeds', async () => {

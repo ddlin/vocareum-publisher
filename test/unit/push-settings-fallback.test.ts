@@ -12,7 +12,7 @@ describe('safe-mode fallback loss', () => {
       container_image: 'Jupyter v1.70',
       lab_interface: { panels: ['Html'], controls: [], information: [] },
       tags: [],
-      _unknown_settings: { cleanup_time: '0' },
+      _unknown_settings: { future_unknown_flag: '0' },
     } as never;
 
     const full = buildPartSettingsPayload('cloud-lab', settings, 'full');
@@ -23,7 +23,7 @@ describe('safe-mode fallback loss', () => {
     // named, so the caller can tell the user what was given up. (This fixture used
     // max_points until it became a reserved observed key — it is now filtered before
     // payload construction, so it can no longer reach or be dropped by this ladder.)
-    expect(dropped).toContain('cleanup_time');
+    expect(dropped).toContain('future_unknown_flag');
     expect(dropped).toContain('lab_interface');
     expect(dropped).toContain('container_image');
     expect(dropped).toContain('labtype');

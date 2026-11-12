@@ -16,6 +16,7 @@ import {
 } from '../../src/api/content';
 import { VocareumClient, VocareumError } from '../../src/api/client';
 import axios from 'axios';
+import { withEmptyLaterPages } from '../helpers/paged-listing';
 
 // Mock axios for S3 downloads
 vi.mock('axios');
@@ -181,7 +182,7 @@ describe('waitForPartUpdateTransaction', () => {
   beforeEach(() => {
     requestMock = vi.fn();
     mockClient = {
-      request: requestMock,
+      request: withEmptyLaterPages(requestMock),
       events: { emit: vi.fn() },
     } as unknown as VocareumClient;
   });
@@ -293,7 +294,7 @@ describe('uploadContent', () => {
   beforeEach(() => {
     requestMock = vi.fn();
     mockClient = {
-      request: requestMock,
+      request: withEmptyLaterPages(requestMock),
       events: { emit: vi.fn() },
     } as unknown as VocareumClient;
   });
@@ -445,7 +446,7 @@ describe('listFiles', () => {
   beforeEach(() => {
     requestMock = vi.fn();
     mockClient = {
-      request: requestMock,
+      request: withEmptyLaterPages(requestMock),
       events: { emit: vi.fn() },
     } as unknown as VocareumClient;
   });
@@ -492,12 +493,12 @@ describe('listFiles', () => {
     expect(result).toEqual(mockFiles);
   });
 
-  it('should return empty array when files field is missing', async () => {
+  it('throws when the files field is missing (an empty directory answers `files: []`)', async () => {
+    // Reading a body with no listing as "no names" made a directory look
+    // empty, and drift planned its files as remote deletions.
     requestMock.mockResolvedValueOnce({});
 
-    const result = await listFiles(mockClient, 'c1', 'a1', 'p1', 'docs');
-
-    expect(result).toEqual([]);
+    await expect(listFiles(mockClient, 'c1', 'a1', 'p1', 'docs')).rejects.toThrow(/not a file listing/);
   });
 
   it('should support direct array response from API', async () => {
@@ -577,7 +578,7 @@ describe('deleteFile', () => {
   beforeEach(() => {
     requestMock = vi.fn();
     mockClient = {
-      request: requestMock,
+      request: withEmptyLaterPages(requestMock),
       events: { emit: vi.fn() },
     } as unknown as VocareumClient;
   });
@@ -638,7 +639,7 @@ describe('downloadContent', () => {
   beforeEach(() => {
     requestMock = vi.fn();
     mockClient = {
-      request: requestMock,
+      request: withEmptyLaterPages(requestMock),
       events: { emit: vi.fn() },
     } as unknown as VocareumClient;
     vi.clearAllMocks();
@@ -846,18 +847,18 @@ describe('downloadContent', () => {
     });
   });
 
-  it('should reject files whose listed size exceeds the per-file limit before S3 fetch', async () => {
+  it('should reject files whose listed size exceeds the per-file limit before S3 fetch (strict mode throws)', async () => {
     requestMock.mockResolvedValueOnce({ files: [{ path: 'huge.bin', size: 6 }] });
 
     await expect(
       downloadContent(mockClient, 'c1', 'a1', 'p1', ['startercode'], undefined, {
-        limits: { maxFileBytes: 5 },
+        strict: true, limits: { maxFileBytes: 5 },
       })
     ).rejects.toThrow(DownloadLimitError);
     expect(mockedAxios.get).not.toHaveBeenCalled();
   });
 
-  it('should reject files whose actual fetched size exceeds the per-file limit', async () => {
+  it('should reject files whose actual fetched size exceeds the per-file limit (strict mode throws)', async () => {
     requestMock.mockResolvedValueOnce({ files: [{ path: 'huge.bin', size: 1 }] });
     requestMock.mockResolvedValueOnce({
       status: 'success',
@@ -867,12 +868,12 @@ describe('downloadContent', () => {
 
     await expect(
       downloadContent(mockClient, 'c1', 'a1', 'p1', ['startercode'], undefined, {
-        limits: { maxFileBytes: 5 },
+        strict: true, limits: { maxFileBytes: 5 },
       })
     ).rejects.toThrow(DownloadLimitError);
   });
 
-  it('should convert axios maxContentLength failures into DownloadLimitError', async () => {
+  it('should convert axios maxContentLength failures into DownloadLimitError (strict mode throws)', async () => {
     requestMock.mockResolvedValueOnce({ files: ['huge.bin'] });
     requestMock.mockResolvedValueOnce({
       status: 'success',
@@ -885,12 +886,12 @@ describe('downloadContent', () => {
 
     await expect(
       downloadContent(mockClient, 'c1', 'a1', 'p1', ['startercode'], undefined, {
-        limits: { maxFileBytes: 5 },
+        strict: true, limits: { maxFileBytes: 5 },
       })
     ).rejects.toThrow(DownloadLimitError);
   });
 
-  it('should reject downloads that exceed the file count limit', async () => {
+  it('should reject downloads that exceed the file count limit (strict mode throws)', async () => {
     requestMock.mockResolvedValueOnce({
       files: [
         { path: 'one.txt', size: 1 },
@@ -905,12 +906,12 @@ describe('downloadContent', () => {
 
     await expect(
       downloadContent(mockClient, 'c1', 'a1', 'p1', ['startercode'], undefined, {
-        limits: { maxFiles: 1 },
+        strict: true, limits: { maxFiles: 1 },
       })
     ).rejects.toThrow(DownloadLimitError);
   });
 
-  it('should reject downloads that exceed the cumulative byte limit', async () => {
+  it('should reject downloads that exceed the cumulative byte limit (strict mode throws)', async () => {
     requestMock.mockResolvedValueOnce({
       files: [
         { path: 'one.txt', size: 4 },
@@ -930,7 +931,7 @@ describe('downloadContent', () => {
 
     await expect(
       downloadContent(mockClient, 'c1', 'a1', 'p1', ['startercode'], undefined, {
-        limits: { maxTotalBytes: 5 },
+        strict: true, limits: { maxTotalBytes: 5 },
       })
     ).rejects.toThrow(DownloadLimitError);
   });
@@ -944,7 +945,7 @@ describe('downloadContent recursive directory handling', () => {
   beforeEach(() => {
     requestMock = vi.fn();
     mockClient = {
-      request: requestMock,
+      request: withEmptyLaterPages(requestMock),
       events: { emit: vi.fn() },
     } as unknown as VocareumClient;
     vi.clearAllMocks();
@@ -1035,9 +1036,8 @@ describe('downloadContent recursive directory handling', () => {
     });
     // The placeholder object is real but empty.
     mockedAxios.get.mockResolvedValueOnce({ data: Buffer.alloc(0) });
-    // Probe scripts/python as a directory → has children.
-    requestMock.mockResolvedValueOnce({ files: [{ path: 'dbacademy.py', size: 10 }] });
-    // Recursion lists scripts/python again.
+    // Probe scripts/python as a directory → has children. The recursion reuses
+    // this listing: the directory is not listed a second time.
     requestMock.mockResolvedValueOnce({ files: [{ path: 'dbacademy.py', size: 10 }] });
     // fetch scripts/python/dbacademy.py → real file
     requestMock.mockResolvedValueOnce({
@@ -1050,9 +1050,11 @@ describe('downloadContent recursive directory handling', () => {
 
     expect(result).not.toHaveProperty('scripts/python');
     expect(result['scripts/python/dbacademy.py'].toString()).toBe('nested py');
+    // list scripts, fetch python, list python (once), fetch dbacademy.py
+    expect(requestMock).toHaveBeenCalledTimes(4);
   });
 
-  it('should count zero-byte placeholder fetches against maxFiles', async () => {
+  it('should count zero-byte placeholder fetches against maxFiles (strict mode throws)', async () => {
     requestMock.mockResolvedValueOnce({ files: [{ path: 'python', size: 0 }] });
     requestMock.mockResolvedValueOnce({
       status: 'success',
@@ -1060,11 +1062,10 @@ describe('downloadContent recursive directory handling', () => {
     });
     mockedAxios.get.mockResolvedValueOnce({ data: Buffer.alloc(0) });
     requestMock.mockResolvedValueOnce({ files: [{ path: 'dbacademy.py', size: 10 }] });
-    requestMock.mockResolvedValueOnce({ files: [{ path: 'dbacademy.py', size: 10 }] });
 
     await expect(
       downloadContent(mockClient, 'c1', 'a1', 'p1', ['scripts'], undefined, {
-        limits: { maxFiles: 1 },
+        strict: true, limits: { maxFiles: 1 },
       })
     ).rejects.toThrow(DownloadLimitError);
   });
@@ -1112,11 +1113,15 @@ describe('downloadContent recursive directory handling', () => {
       });
     }
 
-    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1', ['asnlib']);
+    const failures: Array<{ path: string; reason: string }> = [];
+    const result = await downloadContent(mockClient, 'c1', 'a1', 'p1', ['asnlib'], undefined, { failures });
 
     expect(result).toEqual({});
-    // Levels 0..MAX_DEPTH are listed and probed; the descent from MAX_DEPTH is
-    // refused. One list + one fetch-as-file per level.
-    expect(requestMock).toHaveBeenCalledTimes((MAX_DEPTH + 1) * 2);
+    // Levels 0..MAX_DEPTH are listed and probed (one list + one fetch-as-file
+    // each). The entry at MAX_DEPTH is listed once more — to tell a directory
+    // from a missing entry — and then the descent is refused and RECORDED.
+    expect(requestMock).toHaveBeenCalledTimes((MAX_DEPTH + 1) * 2 + 1);
+    expect(failures).toHaveLength(1);
+    expect(failures[0].reason).toMatch(/download limit/);
   });
 });

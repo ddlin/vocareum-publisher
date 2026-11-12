@@ -10,13 +10,64 @@
 import * as yaml from 'js-yaml';
 import { pathExists, writeFile } from '../utils/files';
 import { logger } from '../utils/logger';
-import { prompt, promptConfirm } from '../utils/prompts';
+import { prompt, promptChoice, promptConfirm } from '../utils/prompts';
+import { getApiBaseUrlEnv, loadDotEnvIfPresent } from '../utils/env';
+import { assertBaseUrlForVersion } from '../api/client';
+import {
+  DEFAULT_REGION, REGION_HOSTS, VOCAREUM_REGIONS, displayHost, normalizeApiBaseUrl,
+  type VocareumRegion,
+} from '../api/regions';
 import type { Config, TemplateConfig } from '../types/config';
 
 export interface InitOptions {
   import?: boolean;
   courseId?: string;
   force?: boolean;
+  /** --region <na|eu>: Vocareum tenant whose API host is written to vocareum.yaml. */
+  region?: string;
+  /** --api-base-url <url>: explicit v2 API host (must pass the v2 allowlist). */
+  apiBaseUrl?: string;
+}
+
+function regionChoiceLabel(region: VocareumRegion): string {
+  const hosts = REGION_HOSTS[region];
+  return `${region.toUpperCase()} — ${hosts.label} (${displayHost(hosts.apiBaseUrl)})`;
+}
+
+/**
+ * Decide the v2 API host before any prompt, so a bad flag fails fast.
+ * Returns undefined when the user should be asked interactively.
+ * Precedence: --api-base-url / --region > VOCAREUM_API_BASE_URL > prompt.
+ */
+export function resolveInitApiBaseUrl(options: InitOptions): string | undefined {
+  const flagUrl = options.apiBaseUrl?.trim();
+  const region = options.region?.trim().toLowerCase();
+  if (flagUrl !== undefined && flagUrl !== '' && region !== undefined && region !== '') {
+    throw new Error('Use either --region or --api-base-url, not both.');
+  }
+  if (region !== undefined && region !== '') {
+    if (!(VOCAREUM_REGIONS as readonly string[]).includes(region)) {
+      throw new Error(`Unknown region "${options.region ?? ''}". Use one of: ${VOCAREUM_REGIONS.join(', ')}.`);
+    }
+    return REGION_HOSTS[region as VocareumRegion].apiBaseUrl;
+  }
+  const explicit = flagUrl !== undefined && flagUrl !== '' ? flagUrl : getApiBaseUrlEnv();
+  if (explicit === undefined) {
+    return undefined;
+  }
+  // Same gate push/pull apply: HTTPS + exact v2 allowlist entry, unless
+  // VOCAREUM_ALLOW_CUSTOM_BASE_URL=1. Never write a host we would refuse.
+  assertBaseUrlForVersion(normalizeApiBaseUrl(explicit), 'v2');
+  return explicit.replace(/\/+$/, '');
+}
+
+async function promptRegionApiBaseUrl(): Promise<string> {
+  // Default first: inquirer's list highlights the first entry.
+  const ordered = [DEFAULT_REGION, ...VOCAREUM_REGIONS.filter(r => r !== DEFAULT_REGION)];
+  const labels = ordered.map(regionChoiceLabel);
+  const picked = await promptChoice('Vocareum region (tenant):', labels);
+  const region = ordered[labels.indexOf(picked)] ?? DEFAULT_REGION;
+  return REGION_HOSTS[region].apiBaseUrl;
 }
 
 /**
@@ -24,6 +75,11 @@ export interface InitOptions {
  */
 export async function initCommand(options: InitOptions): Promise<void> {
   const configPath = 'vocareum.yaml';
+  // Same .env pickup as status/pull/push (shell values still win), so a tenant
+  // set only in .env is the one init writes — not NA, which later runs would
+  // silently diverge from once that .env is gone.
+  loadDotEnvIfPresent('.env');
+  const presetApiBaseUrl = resolveInitApiBaseUrl(options);
 
   if (await pathExists(configPath) && options.force !== true) {
     const overwrite = await promptConfirm(
@@ -37,6 +93,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
   }
 
   logger.info('Initializing Vocareum configuration...');
+
+  // The tenant comes first: org/course IDs only mean something on one tenant.
+  const apiBaseUrl = presetApiBaseUrl ?? await promptRegionApiBaseUrl();
+  logger.info(`API host: ${displayHost(apiBaseUrl)}`);
 
   const orgId = await prompt('Enter Organization ID:');
   if (!orgId) {
@@ -82,7 +142,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     vocareum: {
       org_id: orgId,
       course_id: courseId,
-      api_base_url: 'https://api.vocareum.com',
+      api_base_url: apiBaseUrl,
       templates,
       template_assignment_ids: [],
       excluded_assignments: [],

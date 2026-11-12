@@ -6,7 +6,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import simpleGit from 'simple-git';
+import { execFileSync } from 'child_process';
+import { simpleGit } from 'simple-git';
 import {
   isGitRepo,
   getCommitSha,
@@ -189,6 +190,53 @@ describe('Git Utilities', () => {
       await expect(commitChanges('Bad commit', ['nonexistent.txt'], tempDir)).rejects.toThrow(
         GitError
       );
+    });
+
+    // simple-git 4 strips inherited GIT_* variables unless allowlisted; these
+    // pin the ones vocgit deliberately lets through.
+    describe('ambient git environment', () => {
+      const saved: Record<string, string | undefined> = {};
+      const setEnv = (key: string, value: string): void => {
+        if (!(key in saved)) { saved[key] = process.env[key]; }
+        process.env[key] = value;
+      };
+      afterEach(() => {
+        for (const [key, value] of Object.entries(saved)) {
+          if (value === undefined) { delete process.env[key]; } else { process.env[key] = value; }
+          delete saved[key];
+        }
+      });
+
+      it('honours GIT_AUTHOR_* / GIT_COMMITTER_* identity', async () => {
+        await initGitRepo();
+        await createInitialCommit();
+        await fs.writeFile(path.join(tempDir, 'new.txt'), 'x');
+        setEnv('GIT_AUTHOR_NAME', 'Env Author');
+        setEnv('GIT_AUTHOR_EMAIL', 'author@example.com');
+        setEnv('GIT_COMMITTER_NAME', 'Env Committer');
+        setEnv('GIT_COMMITTER_EMAIL', 'committer@example.com');
+
+        await commitChanges('Env identity', ['new.txt'], tempDir);
+
+        const raw = await simpleGit(tempDir).raw(['log', '-1', '--format=%an <%ae>|%cn <%ce>']);
+        expect(raw.trim()).toBe('Env Author <author@example.com>|Env Committer <committer@example.com>');
+      });
+
+      it('honours an alternate GIT_INDEX_FILE and does not commit the normal index', async () => {
+        await initGitRepo();
+        await createInitialCommit();
+        await fs.writeFile(path.join(tempDir, 'unrelated.txt'), 'staged elsewhere');
+        await simpleGit(tempDir).add(['unrelated.txt']);
+        await fs.writeFile(path.join(tempDir, 'vocareum.yaml'), 'x: 1\n');
+        const altIndex = path.join(tempDir, '.git', 'alt-index');
+        execFileSync('git', ['read-tree', 'HEAD'], { cwd: tempDir, env: { ...process.env, GIT_INDEX_FILE: altIndex } });
+        setEnv('GIT_INDEX_FILE', altIndex);
+
+        await commitChanges('Alt index', ['vocareum.yaml'], tempDir);
+
+        const files = await simpleGit(tempDir).raw(['show', '--name-only', '--format=', 'HEAD']);
+        expect(files.trim().split('\n')).toEqual(['vocareum.yaml']);
+      });
     });
   });
 

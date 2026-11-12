@@ -21,6 +21,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `code`, never on message text.
 - **`vocgit --version --json`** reporting the version, the resolved binary path,
   git provenance from a build stamp, and a capability list.
+- **Peer review settings are supported.** The twelve peer-review assignment fields
+  (`peer_review_toggle`, `peer_schedule_mode`, `peer_review_start_date`,
+  `peer_review_end_date`, `peer_hide_code`, `peer_gallery`, `peer_grading_toggle`,
+  `reviews_number`, `reviewguide`, `reviewpenalty`, `reviewpenalty_percentrule`,
+  `reviewcalc`) are now typed settings. Before, they were passed through untyped in
+  `_unknown_settings`. Each was checked against the live API before being promoted: all
+  twelve are stored. The config is checked against the API's own limits when it loads:
+  - dates must be real `YYYY-MM-DD` dates, and `null` clears a date on push. YAML dates
+    are no longer parsed as timestamps, so an unquoted `2026-02-30` is an error instead of
+    silently becoming 2 March;
+  - `reviews_number` is a whole number 1–10 and `reviewpenalty` a whole number 0–100;
+  - the three enums accept only the values the API lists, in any case.
+  While peer review is off (in the config, or in Vocareum when the config does not set the
+  toggle), push sends the three peer options as `false` and warns: Vocareum rejects them as
+  `true` then. Changes to these fields are detected by both pull and push. (Field report #5.)
+- **Part `cleanup_time`** is a known setting: a whole number, 0 or more. Vocareum stores it
+  on container labs only; on a Vocareum Standard (Elite) part, which reads it back as 0, push
+  warns and does not send it.
+- **`VOCAREUM_MAX_DOWNLOAD_FILES`** raises the per-part file-count cap for pull
+  downloads (default 5,000, range 1 to 1,000,000). Courses that ship Python
+  environments under `data/` list tens of thousands of files.
 
 ### Changed
 - **Exit codes are now categorized.** Every failure previously exited `1`.
@@ -39,6 +60,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorded every attempt and reported "Deleted N files" even when the API refused
   them; it now reports what actually happened and keeps the directory eligible
   for retry, which means such a push reports partial rather than success.
+- **Dependencies upgraded to clear `npm audit`:** `zod` 3 → 4 (memory exhaustion
+  advisory GHSA-mrhx-c7xc-m3w5), `simple-git` 3 → 4 (critical advisory
+  GHSA-v5rq-49vh-5v5c), and `follow-redirects` (via axios) to 1.16.3. Config
+  validation errors now use zod 4's wording, e.g. `Invalid input: expected string,
+  received number` rather than `Expected string, received number`, and a missing
+  field reads `expected string, received undefined` rather than `Required`.
+  vocgit's hints follow the new wording: the object-vs-array hint now also
+  covers record fields such as `content_state` and `_unknown_settings`, and the
+  "quote your IDs" hint no longer appears for an ID that is missing.
+  zod 4 also rejects two values zod 3 accepted, so a config holding either now
+  fails to load: a non-finite number (YAML `.inf` in `exam_duration`), and a
+  whole-number setting above 2^53 - 1 (`cleanup_time`).
+  simple-git 4 strips inherited `GIT_*` variables from the git commands it
+  runs. vocgit keeps passing through the identity (`GIT_AUTHOR_*`,
+  `GIT_COMMITTER_*`) and repository/index location (`GIT_DIR`, `GIT_WORK_TREE`,
+  `GIT_INDEX_FILE`, ...) variables, so auto-commit behaves as before. Variables
+  that run a program (`GIT_SSH_COMMAND`, `GIT_ASKPASS`, `GIT_CONFIG_*`, ...)
+  stay blocked. The lockfile also picked up dev-only tooling updates.
+- **Download safety limits keep what arrived.** When a pull hits the file-count
+  or total-size cap, the download now stops and keeps the files already
+  fetched. The import is saved, marked `INCOMPLETE` and exits 6 (partial), with the
+  directory where the cap tripped and every directory not reached named as not
+  downloaded. Before, the whole import was discarded. A single file over the
+  per-file cap is skipped and reported, and the rest of the walk continues.
+  Content drift (`--content`) still stops at any limit.
+- **Vocareum's `publicdata` link no longer makes a pull incomplete.** The
+  course-wide tree (`lib/` on Elite) holds a root-owned link, `publicdata`, to
+  the course data mount. The API lists it but cannot fetch it, and a
+  clear-and-replace upload of `lib/` leaves it in place (tested on an Elite
+  course). Pull now skips that one entry instead of marking `lib/`
+  incomplete and blocking every push of it. Any other unreadable entry still
+  counts.
+- **An upload target the course does not have is explained.** Vocareum rejects
+  `lib` as a target in a Container course, which happens when a Vocareum
+  Standard part sits in one. Push now says to remove `lib` (and `asnlib`) from
+  that part's `directories` in `vocareum.yaml`, instead of passing the raw API
+  error through.
 
 ### Fixed
 - **`push` no longer reports failures twice.** It logged the error and threw a
@@ -52,6 +110,171 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--assignment`/`--part` selectors now exit 2** instead of 1.
 - **`push` no longer claims updates it did not make.** An assignment whose only
   planned change failed still appeared in `updated` with an empty `parts` list.
+- **An overloaded Vocareum no longer reads as an empty directory.** Under heavy
+  traffic, Vocareum answers HTTP 200 with a text message ("VOCAREUM-ERROR: Sorry,
+  your access to Vocareum is temporarily unavailable due to heavy traffic…")
+  instead of a listing. vocgit read that answer as a listing with no names. On
+  the first page, the directory looked empty; on a later page, the listing ended
+  early. Pull then missed those files without marking the import incomplete, and
+  `pull --content` read them as deleted on Vocareum, so `--batch` could delete
+  the local copies. (Seen on 5 of 24 listing requests in one probe.)
+
+  Such an answer is now an error, handled like an HTTP 503:
+  - GET, PUT and DELETE requests are retried (3 attempts in all). A
+    `Retry-After` header sent with it is honoured up to 60 seconds. A POST is
+    not retried, because it may have taken effect.
+  - Polls of a running job (upload, settings update, assignment copy) treat it
+    as "no news yet": one request per check, then the poll's usual wait, as
+    before. They do not retry it or wait for `Retry-After`, and they end at
+    their usual limit instead of giving up on the job at the first busy answer.
+  - A listing whose answer has no file list, or only entries without names,
+    fails instead of reading as empty.
+
+  If the retries run out on a listing, nothing is read as deleted. For a
+  directory inside a part's folder, pull records a failure and marks that
+  folder incomplete. For a part's top-level folder, the import of that
+  assignment fails and is recorded as failed. `pull --content` skips the
+  assignment rather than planning deletions.
+- **Directories with more than 100 entries are read in full.** Vocareum's file
+  listing returns at most 100 names per request and pages the rest, without
+  saying so; vocgit read only the first page. In any directory with more than
+  100 entries, every name after the 100th in listing order was missed, with no
+  warning. Pull did not download those files and did not mark the import
+  incomplete. `pull --content` read them as deleted on Vocareum, so `--batch`
+  could delete the local copies. A push of that directory after it changed
+  locally (a clear-and-replace upload) could then delete them from Vocareum.
+  Listings now read page after page until an empty one. A listing fails,
+  instead of coming back short, when a page repeats names already read (a
+  server ignoring the page request), when the directory vanishes partway
+  through, or past 10,000 pages. Each directory costs one extra request to
+  confirm the end. Files changed on Vocareum while a listing is being read can
+  still be missed. **If a repo was pulled from a course with large
+  directories, run `vocgit pull --batch --content` before pushing those
+  directories**, to bring back files that were missed. Files that a push
+  already removed from Vocareum cannot be brought back this way.
+- **Signed download URLs no longer reach logs or error messages.** With
+  `VOCAREUM_LOG_LEVEL=DEBUG`, API responses were logged with signed
+  file-download URLs intact, credentials included. API error messages, which
+  appear in warnings at every log level, could carry them too. Log output and
+  error text now drop the query string and any user-info of absolute URLs
+  (including JSON-escaped ones), and redact signed-URL credential parameters
+  (`X-Amz-*`, `Signature`, `Policy`, `Key-Pair-Id`) wherever they appear.
+- **A pulled container image ID is no longer pushed back.** `container_image_id` and
+  `container_image_label` used to ride in `_unknown_settings` and were sent on every part
+  update. That included a push to a different tenant, where an NA image ID means nothing.
+  They are now observed only: kept for reference and never sent. Probing showed the
+  part-update API ignores both fields anyway, and that image IDs are tenant-scoped. No push
+  actually changed an image this way. (Field report #3.)
+- **Fields an older pull left in `_unknown_settings` keep working.** When a newer vocgit
+  recognizes such a field, loading the config moves it where it now belongs. Known fields
+  become top-level settings, observed fields move to `_observed_settings`, and server-only
+  fields are dropped. This replaces a warning-and-drop on every push. A top-level value
+  always wins over a leftover copy, and raw API spellings such as `"1"` or `median` are
+  normalized first. A leftover value that is still invalid stays where it is, so it cannot
+  stop the config from loading. It is not pushed, and vocgit warns about it. The file is
+  written in the new layout the next time any command saves `vocareum.yaml`.
+- **A peer-review value that vocgit does not recognize is kept.** If Vocareum returns a
+  value this release cannot read (a newer enum value, an out-of-range number, a date in
+  another format), pull keeps it in `_unknown_settings` in place of the local typed value,
+  and reports it. It is not pushed.
+- **`pull` now downloads subdirectories.** For a path that is a directory, the
+  v2 files API returns HTTP 400 `specified file does not exist <path>`, not the
+  `status:"error"` body vocgit checked for. Each subdirectory was therefore
+  logged as "Failed to download" and skipped, so its files were never fetched.
+  On one course a pull lost 1,386 of 1,393 files and still printed
+  `✓ Imported`. That 400 (and the `specified source does not exist` form) now
+  means "not a file", so vocgit lists the path as a directory and walks into it.
+- **A pull that loses files says so, and exits 6 (partial).** An import that cannot
+  download some files still writes what arrived and saves the assignment, but
+  is reported `INCOMPLETE` instead of imported. The summary gains a
+  `Not downloaded` count. An entry that is neither a downloadable file nor a
+  listable directory (for example a dangling link), a subdirectory that cannot
+  be listed, and anything past the 10-level nesting limit are each recorded as
+  a failure. Before, they were dropped silently or ended the download early.
+  An import that fails outright is counted under `Import failed` instead of
+  `Skipped`, and also exits 6.
+- **`push` no longer deletes files that a pull missed.** An incomplete pull used
+  to be recorded in `publish_history` as a successful sync, with the hash of
+  the partial directory. The next push then uploaded that directory, and since
+  an upload first clears the directory on Vocareum (`reset: 1`), it deleted
+  every remote file the pull had not downloaded. This happened on 1.5.0 and
+  earlier: pulling a course whose subdirectories failed, then pushing any edit,
+  removed those subdirectories from the course. An incomplete pull is now
+  recorded as `failed`, with the missed paths listed. Its directories carry an
+  `incomplete-pull` marker instead of a hash. `push`, including `--force-all`,
+  refuses those directories and reports them as failed. A complete
+  `vocgit pull --batch --content --assignment <name>` replaces the marker with
+  a real hash, even when no file differs. The marker stays if a remote file in
+  that directory still cannot be written locally, such as when the local path
+  is a symlink. `vocgit status` lists marked directories, and `status --json`
+  reports them as `error`, not `synced`.
+- **Failed imports are recorded in `publish_history`.** An import that failed
+  outright left no record. A run in which one import failed and another
+  succeeded was recorded as `success`. Both are now recorded as `failed`, naming
+  the assignment and the reason, and the earlier `content_state` is kept.
+- **Directory walking no longer drops real folders or keeps placeholders as
+  files.** A path whose last three names repeat (such as `data/a/a/a`) used to
+  be skipped as a symlink cycle by name alone. It is now skipped only when it
+  lists exactly the same entries as its parent. A zero-byte directory
+  placeholder deeper than the nesting limit used to be saved as an empty file.
+  It is now recorded as a failure. Placeholder folders are also listed once,
+  not twice.
+- **`pull --content` no longer reports a skipped drift check as clean.** The
+  first subdirectory used to abort the drift check for the whole assignment,
+  and the run still printed `✓ No sync issues found.` Subdirectories are now
+  walked. Any assignment whose check still cannot finish is named, and the pull
+  exits 6 (partial): the check is unknown, not clean.
+
+## [1.5.0] — 2026-11-09
+
+### Added
+- **The Vocareum EU tenant is supported out of the box.**
+  `https://api.eu.vocareum.com/api/v2` is now on the v2 allowlist next to the
+  NA host. Previously an EU course needed `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`,
+  which switched the credential-safety allowlist off entirely and printed a
+  "credentials will be sent to this host" warning on every call. It also needed
+  a hand edit of `api_base_url` after `vocgit init`. A user who forgot that edit
+  sent their EU API key to the NA host.
+  The allowlist is now built from a region table (`src/api/regions.ts`), and
+  the token→v2 / OAuth→v3 host binding is unchanged. No EU v3/OAuth host is
+  allowlisted: none is confirmed, so it is a marked TODO in the table, not an
+  entry.
+- **`vocgit init --region <na|eu>` and `--api-base-url <url>`.** `init` writes the
+  chosen tenant's host to `vocareum.api_base_url`. When neither flag is given,
+  `init` prompts for the region before the org ID, with NA as the default.
+  `VOCAREUM_API_BASE_URL` also skips the prompt, whether it comes from the
+  shell or from `.env` (which `init` now loads, as pull and push already do).
+  `--api-base-url` goes through the same HTTPS + allowlist check that pull and
+  push apply, so `init` never writes a host they would refuse.
+- **`VOCAREUM_API_BASE_URL` and `--api-base-url` on `pull`/`push`.** These
+  override the v2 host for one run. Precedence: flag > env > `vocareum.yaml` >
+  NA default. Both still have to pass the allowlist. If an override points
+  somewhere other than the host in `vocareum.yaml`, vocgit warns and names both
+  hosts, so a stray shell export cannot quietly redirect a push to the other
+  tenant. `--api-base-url` with `--auth oauth` is an error, not silently ignored.
+- **`vocgit status` shows the API host, region, and source** (`vocareum.yaml`
+  or `VOCAREUM_API_BASE_URL`). It also flags a host that is not allowlisted.
+  `status --json` gains an additive `api` object
+  (`base_url`, `host`, `region`, `source`, `allowlisted`); `schema_version`
+  stays `1`.
+
+### Changed
+- **API base URLs must be a plain `https://host[/api/vN]`.** vocgit now refuses
+  a base URL or OAuth token URL that contains a query (`?`), fragment (`#`),
+  credentials (`user@`), a backslash, whitespace or a control character, even
+  with `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`. Before, the URL parser stripped these
+  and the check passed on the clean host, but axios sent the raw string. So
+  `…/api/v2?x=` turned every request path into query data, `#` moved it into a
+  fragment that was never sent, and `user@` carried a credential. This applies
+  to NA configs too; a config without these characters is unaffected.
+- **`InsecureBaseUrlError` no longer echoes the raw URL.** It shows
+  `scheme://host/path` only, so a token pasted into the URL cannot reach the
+  terminal or CI logs.
+
+### Unchanged
+- Existing configs, including ones with no `api_base_url`, still resolve to
+  `https://api.vocareum.com`. Non-HTTPS URLs and unknown or look-alike hosts are
+  still refused unless `VOCAREUM_ALLOW_CUSTOM_BASE_URL=1`.
 
 ## [1.4.0] — 2026-09-04
 

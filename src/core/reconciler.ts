@@ -5,7 +5,7 @@
  */
 
 import type { Config, PublishHistory, Part, Assignment } from '../types/config';
-import { normalizeSubmissionFilters } from '../types/config';
+import { detectArchitecture, normalizeSubmissionFilters } from '../types/config';
 import { detectChangedDirectories, directoriesForPart, publishExcludePatterns } from './local-scan';
 import type { VocareumAssignmentResponse, VocareumPartResponse, RubricSyncPlan, RemoteRubric } from '../types/api';
 import type {
@@ -32,6 +32,8 @@ import {
 } from '../utils/settings-sync';
 import { mapRubrics, planRubricSync } from '../utils/rubrics';
 import { deepEqual } from '../utils/deep-equal';
+import { mapPeerReviewSettings } from '../utils/settings';
+import { coercedPeerDependents, peerReviewPayload } from './payload-helpers';
 
 const ACCEPTED_UNVERIFIED_ASSIGNMENT_KEYS = [
   'anonymous_grading',
@@ -92,6 +94,32 @@ function hasAcceptedUnverifiedPartChange(
     }
   }
   return false;
+}
+
+/** Local cleanup_time is set and differs numerically from what Vocareum returns. */
+function cleanupTimeDiffers(configPart: Part, remotePart: VocareumPartResponse | undefined): boolean {
+  const local = configPart.settings?.cleanup_time;
+  if (local === undefined || local === null || remotePart?.cleanup_time === undefined) { return false; }
+  const remote = Number(remotePart.cleanup_time);
+  return !Number.isFinite(remote) || remote !== local;
+}
+
+/**
+ * Vocareum stores cleanup_time only on container labs. On an Elite-architecture
+ * part (Vocareum Standard and friends) a PUT is accepted and the field reads
+ * back 0, so a non-zero local value would be re-sent on every push. Probed
+ * 2026-11-10 (Standard part 5441304: sent 30, read 0).
+ *
+ * Decided from the part's own labtype and the readback, never from history: a
+ * container lab whose value was changed in the UI must still be corrected.
+ *
+ * @internal Exported for testing
+ */
+export function cleanupTimeIgnoredByServer(part: Part, remotePart: VocareumPartResponse | undefined): boolean {
+  if (!cleanupTimeDiffers(part, remotePart)) { return false; }
+  const readback = remotePart?.cleanup_time;
+  const readsZero = readback === 0 || (typeof readback === 'string' && readback.trim() === '0');
+  return detectArchitecture(remotePart?.labtype) === 'elite' && readsZero;
 }
 
 /**
@@ -164,6 +192,7 @@ export async function reconcile(
     let remoteAssignment: VocareumAssignmentResponse | null = null;
     let idDiscoveredByName = false;
     let assignmentMetadataChanged = false;
+    let remotePeerReviewToggle: boolean | undefined;
     let assignmentReason: string | undefined;
 
     if (configAssignment.assignment_id !== undefined && configAssignment.assignment_id !== null) {
@@ -221,10 +250,27 @@ export async function reconcile(
     if (assignmentActionType === 'update' && remoteAssignment) {
       // Fetch full assignment details for accurate settings comparison
       const fullAssignment = await getAssignment(client, config.vocareum.course_id, remoteAssignment.id);
+      const remotePeerForToggle: Record<string, unknown> = {};
+      mapPeerReviewSettings(fullAssignment, remotePeerForToggle);
+      if (typeof remotePeerForToggle.peer_review_toggle === 'boolean') {
+        remotePeerReviewToggle = remotePeerForToggle.peer_review_toggle;
+      }
 
       // Check for changes in fields that can be updated via API
       // Working fields: name, description, nosubmit, auto_submit, grading_on_submit, publish, etc.
       // NOT working: due_date, points (return "No valid parameters")
+      if (shouldSyncAssignmentSettings(config, configAssignment)) {
+        // Warn whenever a configured true cannot take effect, even when the
+        // server is already false (no PUT): otherwise the intent is silently
+        // unapplied and push reports the assignment as in sync.
+        const coerced = coercedPeerDependents(configAssignment.settings, { remoteToggle: remotePeerReviewToggle });
+        if (coerced.length > 0) {
+          events.emit({
+            level: 'warn',
+            message: `"${configAssignment.name}": ${coerced.join(', ')} ${coerced.length === 1 ? 'is' : 'are'} true in vocareum.yaml but peer review is off, so ${coerced.length === 1 ? 'it is' : 'they are'} sent as false (Vocareum rejects true). Set peer_review_toggle: true to enable ${coerced.length === 1 ? 'it' : 'them'}, or set ${coerced.length === 1 ? 'it' : 'them'} to false.`,
+          });
+        }
+      }
       assignmentMetadataChanged = shouldSyncAssignmentSettings(config, configAssignment)
         ? detectAssignmentSettingsChanged(configAssignment, fullAssignment) ||
           hasAcceptedUnverifiedAssignmentChange(configAssignment, lastPublishHistory)
@@ -247,10 +293,18 @@ export async function reconcile(
           }
 
           let metadataChanged = false;
+          let cleanupIgnored = false;
           if (shouldSyncPartSettings(config, configAssignment, configPart)) {
             const fullPart = await getPart(client, config.vocareum.course_id, remoteAssignment.id, mapping.apiPartId);
+            cleanupIgnored = cleanupTimeIgnoredByServer(configPart, fullPart);
+            if (cleanupIgnored) {
+              events.emit({
+                level: 'warn',
+                message: `Part "${configPart.name ?? configPart.path}" of "${configAssignment.name}": cleanup_time ${String(configPart.settings?.cleanup_time)} is not sent. Vocareum stores it only on container labs, and this part is ${String(fullPart.labtype)}.`,
+              });
+            }
             metadataChanged =
-              detectPartSettingsChanged(configPart, fullPart) ||
+              detectPartSettingsChanged(configPart, fullPart, { ignoreCleanupTime: cleanupIgnored }) ||
               hasAcceptedUnverifiedPartChange(configAssignment, configPart, lastPublishHistory);
           }
 
@@ -306,7 +360,7 @@ export async function reconcile(
           const effectiveDirs = directoriesForPart(config, configPart);
 
           const excludePatterns = publishExcludePatterns(config);
-          const { changedDirs, hashes: dirHashes } = await detectChangedDirectories(
+          const { changedDirs, hashes: dirHashes, blockedDirs } = await detectChangedDirectories(
             configAssignment.path,
             configPart.path,
             effectiveDirs,
@@ -318,10 +372,15 @@ export async function reconcile(
 
           const rubricsChanged = rubricPlan !== undefined;
 
-          if (changedDirs.length > 0 || metadataChanged || rubricsChanged || rubricReadFailed !== undefined) {
+          // A blocked directory alone still promotes the part: push must report
+          // it as failed, not finish green having silently skipped it.
+          if (changedDirs.length > 0 || metadataChanged || rubricsChanged || rubricReadFailed !== undefined || blockedDirs.length > 0) {
             const reasons: string[] = [];
             if (changedDirs.length > 0) {
               reasons.push(`Content: ${changedDirs.join(', ')}`);
+            }
+            if (blockedDirs.length > 0) {
+              reasons.push(`Content blocked (incomplete pull): ${blockedDirs.join(', ')}`);
             }
             if (metadataChanged) {
               reasons.push('Settings changed');
@@ -358,9 +417,11 @@ export async function reconcile(
               // can read them directly instead of recomputing (Stage 1a Fix 3).
               dirHashes: Object.keys(dirHashes).length > 0 ? dirHashes : undefined,
               metadataChanged,
+              ...(cleanupIgnored ? { cleanupTimeIgnored: true } : {}),
               rubricPlan,
               remoteRubrics,
               rubricReadFailed,
+              blockedDirectories: blockedDirs.length > 0 ? blockedDirs : undefined,
               reason: reasons.join('; ')
             });
           } else {
@@ -408,6 +469,7 @@ export async function reconcile(
       idDiscoveredByName,
       partIdsDiscovered,
       assignmentMetadataChanged,
+      remotePeerReviewToggle,
       reason: assignmentReason,
     });
   }
@@ -528,7 +590,8 @@ function settingsDiffer(local: unknown, remote: unknown): boolean {
  * Non-schema/create-only fields may be preserved under _observed_settings but
  * should not trigger push updates.
  */
-function detectAssignmentSettingsChanged(
+/** @internal Exported for testing */
+export function detectAssignmentSettingsChanged(
   configAssignment: Assignment,
   remoteAssignment: VocareumAssignmentResponse
 ): boolean {
@@ -561,6 +624,19 @@ function detectAssignmentSettingsChanged(
   if (hasValue(s.exam_duration) && remoteAssignment.exam_duration !== undefined && settingsDiffer(s.exam_duration, remoteAssignment.exam_duration)) { return true; }
   if (hasValue(s.num_attempts) && remoteAssignment.num_attempts !== undefined && settingsDiffer(s.num_attempts, remoteAssignment.num_attempts)) { return true; }
 
+  // Peer review (field report #5). Compare what push would SEND (see
+  // peerReviewPayload: off-toggle dependents as false, null dates as clears)
+  // with the remote run through the same mapper pull uses, so case, numeric
+  // strings and "1"/"0" flags compare like for like. A key the server does not
+  // return (or returns in a form the mapper cannot read) is not drift — older
+  // tenants or plans may not expose peer review at all.
+  const remotePeer: Record<string, unknown> = {};
+  mapPeerReviewSettings(remoteAssignment, remotePeer);
+  const remoteToggle = typeof remotePeer.peer_review_toggle === 'boolean' ? remotePeer.peer_review_toggle : undefined;
+  for (const [key, local] of Object.entries(peerReviewPayload(s, { remoteToggle }))) {
+    if (remotePeer[key] !== undefined && !deepEqual(local, remotePeer[key])) { return true; }
+  }
+
   return false;
 }
 
@@ -578,9 +654,11 @@ function detectAssignmentSettingsChanged(
  * Accepted-unverified fields are written when payloads are sent, but absent
  * readback is not treated as drift.
  */
-function detectPartSettingsChanged(
+/** @internal Exported for testing */
+export function detectPartSettingsChanged(
   configPart: Part,
-  remotePart?: VocareumPartResponse
+  remotePart?: VocareumPartResponse,
+  options: { ignoreCleanupTime?: boolean } = {}
 ): boolean {
   if (!remotePart) { return false; }
 
@@ -610,6 +688,10 @@ function detectPartSettingsChanged(
   if (s.container_image !== undefined && s.container_image !== null && settingsDiffer(s.container_image, remotePart.container_image)) { return true; }
   if (s.number_of_submissions !== undefined && s.number_of_submissions !== null && remotePart.number_of_submissions !== undefined && settingsDiffer(s.number_of_submissions, remotePart.number_of_submissions)) { return true; }
   if (s.databricks_maxusers !== undefined && s.databricks_maxusers !== null && settingsDiffer(s.databricks_maxusers, remotePart.databricks_maxusers)) { return true; }
+  // cleanup_time: whole numbers, so compare numerically (the API echoes a string).
+  // A value Vocareum ignored (Standard labs read back 0) is handled by the
+  // caller against the last push, not here.
+  if (options.ignoreCleanupTime !== true && cleanupTimeDiffers(configPart, remotePart)) { return true; }
 
   // Compare submission filters (normalize both to object format)
   if (s.submission_filters !== undefined && s.submission_filters !== null) {

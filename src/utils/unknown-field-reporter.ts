@@ -141,7 +141,8 @@ export class UnknownFieldReporter {
     lines.push('');
     lines.push('These fields were preserved under _unknown_settings in vocareum.yaml');
     lines.push('and will be passed through on future updates, but vocgit does not');
-    lines.push('understand them yet.');
+    lines.push('understand them yet. (A value vocgit cannot read for a setting it does');
+    lines.push('know, such as a new peer-review option, is kept there but not sent.)');
     lines.push('');
     lines.push('Please file a bug or enhancement request so vocgit can promote these');
     lines.push('fields to formally supported settings.');

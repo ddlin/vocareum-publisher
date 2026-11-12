@@ -6,7 +6,7 @@
  * from GitHub repositories to Vocareum.
  */
 
-import { Command, CommanderError } from 'commander';
+import { Command, CommanderError, Option } from 'commander';
 import { CAPABILITIES, readBuildInfo } from './core/capabilities';
 import { writeJsonDocument } from './core/report';
 import { readFileSync, realpathSync } from 'fs';
@@ -108,18 +108,29 @@ program
   .option('--import', 'Import existing course from Vocareum')
   .option('--course-id <id>', 'Course ID for import')
   .option('--force', 'Force overwrite if config exists')
+  .addOption(new Option('--region <region>', 'Vocareum tenant: na (api.vocareum.com, default) or eu (api.eu.vocareum.com)').choices(['na', 'eu']))
+  .option('--api-base-url <url>', 'Explicit v2 API host to write as api_base_url (must be a known Vocareum host)')
   .addHelpText('after', `
 Description:
   Creates a new vocareum.yaml configuration file for managing course assignments.
   This is typically the first command you run when setting up a new course repository.
 
   You will be prompted to enter:
+    - Region (NA or EU tenant) — skipped when --region, --api-base-url,
+      or VOCAREUM_API_BASE_URL is set
     - Organization ID (your Vocareum org)
     - Course ID (the target course for publishing)
     - Template assignment(s) with names and source course IDs
 
+  The region sets vocareum.api_base_url in vocareum.yaml: the host that
+  pull and push send your API key to.
+    na  https://api.vocareum.com      (default)
+    eu  https://api.eu.vocareum.com
+  Both are allowlisted; no VOCAREUM_ALLOW_CUSTOM_BASE_URL override is needed.
+
 Examples:
-  $ vocgit init              # Interactive setup
+  $ vocgit init              # Interactive setup (prompts for region, NA default)
+  $ vocgit init --region eu  # EU tenant
   $ vocgit init --force      # Overwrite existing config
 `)
   .action(async (options: InitOptions) => {
@@ -290,6 +301,25 @@ Description:
                       Ideal for bulk onboarding or CI sync.
     --non-interactive  Report issues only, make no changes.
 
+  API host:
+    Token auth uses vocareum.api_base_url from vocareum.yaml (written by
+    vocgit init; NA https://api.vocareum.com or EU https://api.eu.vocareum.com).
+    Override per run with --api-base-url or VOCAREUM_API_BASE_URL
+    (precedence: flag > env > vocareum.yaml > NA default).
+
+  Exit status:
+    1 when the pull is incomplete: an import could not download some files
+    (it is still saved, marked INCOMPLETE, and counted under "Not downloaded"),
+    an import failed outright ("Import failed"), or --content could not finish
+    the drift check for an assignment.
+
+  Incomplete imports:
+    Push refuses directories an incomplete pull left behind (uploading them
+    would delete the missing files on Vocareum). Complete them with
+      vocgit pull --batch --content --assignment <name>
+    Raise the 5,000-file download cap with VOCAREUM_MAX_DOWNLOAD_FILES.
+    A failed import was not saved: re-run vocgit pull --batch.
+
   This is useful when:
     - Onboarding an existing course to Git-based management
     - Assignments were created/modified directly in Vocareum UI
@@ -328,6 +358,9 @@ Description:
     - Last push timestamp, status, and commit
     - Git branch/commit/dirty state
     - Environment details (CI/local, API key presence)
+    - Directories an incomplete pull left blocked from push, if any
+    - API host and region (NA/EU) that pull/push will target, and where
+      it came from (VOCAREUM_API_BASE_URL or vocareum.yaml)
 
   With --json, prints a versioned JSON document on stdout including
   per-assignment/part/directory CONTENT sync status, computed with the
@@ -392,6 +425,15 @@ Options explained:
   --force-all       Bypass change detection, re-upload everything
   --sync-deletes    Remove files from Vocareum that aren't in Git (careful!)
   --auto-commit     Commit vocareum.yaml after push (local dev only)
+
+  Push never uploads a directory that a pull left incomplete (marked
+  incomplete-pull in publish_history): uploading clears the directory on
+  Vocareum first, which would delete the files the pull missed. It is reported
+  as failed until \`vocgit pull --batch --content --assignment <name>\` completes it.
+  --api-base-url    v2 API host for this run, e.g. https://api.eu.vocareum.com
+                    (precedence: flag > VOCAREUM_API_BASE_URL > vocareum.yaml
+                    api_base_url > NA default). Run "vocgit status" to see
+                    which tenant (NA/EU) a push will target.
 
 Examples:
   $ vocgit push               # Push all changed assignments

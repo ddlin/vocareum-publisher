@@ -8,15 +8,15 @@
  */
 
 import * as path from 'path';
-import { assertConfinedToWorkspace } from '../local-scan';
+import { assertConfinedToWorkspace, INCOMPLETE_PULL_MARKER } from '../local-scan';
 import { reconcile } from '../reconciler';
 import { getAssignment } from '../../api/assignments';
 import { listParts, getPart } from '../../api/parts';
-import { downloadContent } from '../../api/content';
+import { downloadContent, type DownloadFailure } from '../../api/content';
 import { pathExists, ensureDirectory, writeFile, writeFileUnderBase, calculateDirectoryHash, validatePath, readDirectory } from '../../utils/files';
 import { isPathConfinedToBase } from '../../utils/path-security';
 import { getCommitSha, getGitUserName } from '../../utils/git';
-import type { PublishHistory } from '../../types/config';
+import type { PublishHistory, HistoryFailedEntity } from '../../types/config';
 import { mapAssignmentSettings, mapPartSettings } from '../../utils/settings';
 import { UnknownFieldReporter } from '../../utils/unknown-field-reporter';
 import {
@@ -37,6 +37,7 @@ import type { PullRequest } from './types';
 import {
   OBSERVED_ASSIGNMENT_SETTING_KEYS,
   OBSERVED_PART_SETTING_KEYS,
+  PEER_REVIEW_SETTING_KEYS,
 } from '../../utils/known-settings';
 import {
   shouldSyncAssignmentSettings,
@@ -217,6 +218,17 @@ export function scopeAssignmentsForContent(
 export interface ImportResult {
   assignment: Assignment;
   contentState: Record<string, string>;
+  /** Remote entries that could not be downloaded, as workspace-relative paths.
+   *  Non-empty means the import is INCOMPLETE and must not be reported as a
+   *  success; each directory containing one is recorded with
+   *  INCOMPLETE_PULL_MARKER instead of a hash, so push refuses it. */
+  missingFiles: DownloadFailure[];
+}
+
+/** An assignment whose content drift check could not finish. */
+export interface ContentDriftSkip {
+  assignmentName: string;
+  reason: string;
 }
 
 /** Represents a single setting that differs between local and remote */
@@ -274,6 +286,13 @@ export interface PartContentDrift {
   remoteFiles: FileMap;
   /** Configured directories for the part; scaffolded (with .gitkeep when empty) on apply. */
   directories: DirectoryType[];
+  /** Directories an earlier pull left incomplete (INCOMPLETE_PULL_MARKER). This
+   *  complete check covered them, so pulling records a real hash and lifts
+   *  push's block — even when no file differs. */
+  incompleteDirectories?: DirectoryType[];
+  /** Marked directories this check could NOT complete (a remote file could not
+   *  be written locally). Their marker is kept: never hashed on apply. */
+  stillIncompleteDirectories?: DirectoryType[];
 }
 
 /** Represents content drift for an assignment */
@@ -334,6 +353,9 @@ export interface PullInspection {
   stale: StaleAssignment[];
   settingsDrift: AssignmentSettingsDrift[];
   contentDrift: AssignmentContentDrift[];
+  /** Assignments whose content drift check was skipped. When non-empty the
+   *  drift result is incomplete — never report it as "no sync issues". */
+  contentDriftIncomplete?: ContentDriftSkip[];
 }
 
 export interface PullResult {
@@ -344,15 +366,33 @@ export interface PullResult {
   reset: number;
   settingsPulled: number;
   contentPulled: number;
-  /**
-   * Error skips. This intentionally overlaps with `skipped`: skipped keeps its
-   * existing meaning of "did not land", while failures adds "because an error
-   * occurred" for JSON outcome mapping.
-   */
-  failures: number;
+  /** Files that imports could not download (see ImportResult.missingFiles). */
+  filesNotDownloaded: number;
+  /** Imports that threw (e.g. a download safety limit, an unlistable root
+   *  directory) and were not saved. Distinct from `skipped`, which counts
+   *  orphans the user chose not to import. */
+  importsFailed: number;
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
+
+/** Cap on misses listed in one history entry; the rest are summarized. A
+ *  limit-tripped pull can miss thousands, and the YAML must stay readable. */
+const MAX_HISTORY_MISSES = 50;
+
+function historyFailuresFor(misses: DownloadFailure[]): HistoryFailedEntity[] {
+  const listed: HistoryFailedEntity[] = misses
+    .slice(0, MAX_HISTORY_MISSES)
+    .map(m => ({ type: 'file', id: m.path, error: `not downloaded: ${m.reason}` }));
+  if (misses.length > MAX_HISTORY_MISSES) {
+    listed.push({
+      type: 'file',
+      id: `(${misses.length - MAX_HISTORY_MISSES} more)`,
+      error: 'not downloaded; see the pull output for the full list',
+    });
+  }
+  return listed;
+}
 
 function formatValue(value: unknown): string {
   if (value === undefined) { return '(not set)'; }
@@ -387,7 +427,27 @@ function clearObservedTopLevelSettings(
   }
 }
 
-function compareAssignmentSettings(
+/**
+ * Pull just mapped a remote value it cannot read for a KNOWN setting into
+ * `_unknown_settings` (e.g. a newer reviewcalc enum). The remote value
+ * supersedes the local typed copy, so drop that copy from the merge. Left in,
+ * the next load's top-level-wins migration would delete the remote value and
+ * keep the stale local one, and every pull would report the same drift again.
+ *
+ * @internal Exported for testing
+ */
+export function dropTypedCopiesOfUnreadableRemote(
+  merged: Record<string, unknown>,
+  remoteUnknown: Record<string, unknown> | undefined
+): void {
+  if (!remoteUnknown) { return; }
+  for (const key of Object.keys(remoteUnknown)) {
+    if (!key.startsWith('_')) { delete merged[key]; }
+  }
+}
+
+/** @internal Exported for testing */
+export function compareAssignmentSettings(
   localSettings: NonNullable<AssignmentSettings> | undefined,
   remoteSettings: NonNullable<AssignmentSettings>
 ): SettingDiff[] {
@@ -402,6 +462,7 @@ function compareAssignmentSettings(
     'show_end_exam_button',
     'lti_on', 'anonymous_grading', 'grading_visibility',
     'live_code_comments',
+    ...PEER_REVIEW_SETTING_KEYS,
   ];
 
   for (const key of keys) {
@@ -415,7 +476,8 @@ function compareAssignmentSettings(
   return diffs;
 }
 
-function comparePartSettings(
+/** @internal Exported for testing */
+export function comparePartSettings(
   localSettings: NonNullable<PartSettings> | undefined,
   remoteSettings: NonNullable<PartSettings>
 ): SettingDiff[] {
@@ -427,7 +489,7 @@ function comparePartSettings(
     'submission_filters', 'cloud_labs', 'instant_aws_access',
     'session_length', 'monthly_dollar', 'monthly_time', 'total_time', 'total_dollar',
     'endlab', 'labtype', 'container_image', 'lab_interface',
-    'databricks_maxusers', 'tags',
+    'databricks_maxusers', 'tags', 'cleanup_time',
   ];
 
   for (const key of keys) {
@@ -588,6 +650,7 @@ async function importAssignment(
 
   const configParts: Part[] = [];
   const takenPartPaths = new Set<string>();
+  const missingFiles: DownloadFailure[] = [];
 
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
@@ -604,6 +667,7 @@ async function importAssignment(
 
     let files: FileMap = {};
     let usedExistingContent = false;
+    const partFailures: DownloadFailure[] = [];
     if (skipContent) {
       const existing = await readDirectory(partDir, ['.gitkeep', '**/.gitkeep']);
       if (Object.keys(existing).length > 0) {
@@ -619,8 +683,13 @@ async function importAssignment(
         assignmentId,
         part.id,
         downloadPlan.directories,
-        downloadPlan.architecture
+        downloadPlan.architecture,
+        { failures: partFailures }
       );
+      missingFiles.push(...partFailures.map(f => ({
+        path: partPath === '.' ? path.join(localPath, f.path) : path.join(localPath, partPath, f.path),
+        reason: f.reason,
+      })));
     }
     const fileCount = Object.keys(files).length;
 
@@ -655,6 +724,12 @@ async function importAssignment(
 
     if (usedExistingContent) {
       events.emit({ level: 'plain', message: `  Part ${i + 1}/${parts.length}: reused ${fileCount} existing file${fileCount === 1 ? '' : 's'} (--skip-content)` });
+    } else if (partFailures.length > 0) {
+      events.emit({
+        level: 'warn',
+        message: `  Part ${i + 1}/${parts.length}: downloaded ${fileCount} file${fileCount === 1 ? '' : 's'}, ` +
+          `${partFailures.length} could NOT be downloaded (listed above)`,
+      });
     } else if (fileCount > 0) {
       events.emit({ level: 'plain', message: `  Part ${i + 1}/${parts.length}: downloaded ${fileCount} file${fileCount === 1 ? '' : 's'}` });
     } else {
@@ -684,6 +759,14 @@ async function importAssignment(
 
       const dirPath = path.resolve(workspaceRoot, stateKey);
 
+      // Never record the hash of a directory the download could not finish:
+      // push would treat it as the true remote state, and its reset:1 upload
+      // would delete the files that are missing here.
+      if (missingFiles.some(f => f.path === stateKey || f.path.startsWith(stateKey + path.sep))) {
+        contentState[stateKey] = INCOMPLETE_PULL_MARKER;
+        continue;
+      }
+
       try {
         const hash = await calculateDirectoryHash(dirPath, excludePatterns);
         contentState[stateKey] = hash;
@@ -699,7 +782,7 @@ async function importAssignment(
     }
   }
 
-  return { assignment, contentState };
+  return { assignment, contentState, missingFiles };
 }
 
 async function detectSettingsDrift(
@@ -847,13 +930,42 @@ async function detectSettingsDrift(
   return driftList;
 }
 
+/**
+ * A local relative path in the '/'-separated form remote FileMap keys use on
+ * every platform. On Windows `path.join` yields backslashes, which matched no
+ * remote key, so every local file looked remotely deleted and batch apply
+ * unlinked it.
+ *
+ * @internal Exported for testing
+ */
+export function toRemoteKey(nativeRelativePath: string, sep: string = path.sep): string {
+  return sep === '/' ? nativeRelativePath : nativeRelativePath.split(sep).join('/');
+}
+
+/**
+ * The managed link (e.g. `lib/publicdata`) a remote key sits at or under, if
+ * any. `lib/publicdata2` is a sibling, not covered.
+ *
+ * @internal Exported for testing
+ */
+export function managedLinkCovering(key: string, links: readonly string[]): string | undefined {
+  return links.find(link => key === link || key.startsWith(`${link}/`));
+}
+
 export async function detectContentDrift(
-  config: { assignments: Assignment[]; vocareum: { course_id: string; excluded_assignments?: string[]; architecture?: 'elite' | 'container' } },
+  config: {
+    assignments: Assignment[];
+    vocareum: { course_id: string; excluded_assignments?: string[]; architecture?: 'elite' | 'container' };
+    publish_history?: PublishHistory[];
+  },
   client: VocareumClient,
   skipAssignmentIds: Set<string>,
   workspaceRoot: string,
   warnFn: (msg: string) => void,
   partIds?: Set<string>,
+  /** Receives each assignment whose check was skipped, so the caller can
+   *  report the drift result as incomplete rather than clean. */
+  skipped?: ContentDriftSkip[],
 ): Promise<AssignmentContentDrift[]> {
   const driftList: AssignmentContentDrift[] = [];
   const excludedIds = new Set(config.vocareum.excluded_assignments ?? []);
@@ -878,6 +990,7 @@ export async function detectContentDrift(
           configPart.directories
         );
 
+        const managedLinks: string[] = [];
         const remoteFiles = await downloadContent(
           client,
           config.vocareum.course_id,
@@ -885,7 +998,7 @@ export async function detectContentDrift(
           configPart.part_id,
           downloadPlan.directories,
           downloadPlan.architecture,
-          { strict: true }
+          { strict: true, managedLinks }
         );
 
         const fileDiffs: FileDiff[] = [];
@@ -909,6 +1022,10 @@ export async function detectContentDrift(
         // escape), so escaping entries are excluded here — otherwise apply would
         // abort before restoring the confined files.
         const safeRemoteFiles: FileMap = {};
+        // Directories with a remote file this check could NOT materialize
+        // locally (escaping or symlinked local path). Such a directory is not
+        // complete, so its incomplete-pull marker must survive recovery.
+        const omittedDirs = new Set<string>();
 
         for (const [remotePath, remoteContent] of Object.entries(remoteFiles)) {
           validatePath(localBaseAbs, remotePath);
@@ -921,6 +1038,7 @@ export async function detectContentDrift(
               // still compared. The write side keeps its own confinement, so
               // nothing is ever materialized through the escaping symlink.
               warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`);
+              omittedDirs.add(remotePath.split('/')[0]);
               continue;
             }
             // apply writes this file through writeFileUnderBase, which refuses to
@@ -935,6 +1053,7 @@ export async function detectContentDrift(
             } catch { /* ENOENT (e.g. locally-deleted path) → not a symlink */ }
             if (localIsSymlink) {
               warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": local path is a symlink and cannot be safely overwritten`);
+              omittedDirs.add(remotePath.split('/')[0]);
               continue;
             }
           }
@@ -956,6 +1075,7 @@ export async function detectContentDrift(
         }
 
         const directories = downloadPlan.directories;
+        const shadowedByLink = new Set<string>();
         for (const dir of directories) {
           const localDirPath = path.join(localBaseAbs, dir);
           if (!await pathExists(localDirPath)) { continue; }
@@ -974,13 +1094,24 @@ export async function detectContentDrift(
               const file = String(entry);
               if (file === '.gitkeep' || file.endsWith('/.gitkeep')) { continue; }
 
-              const relativePath = path.join(dir, file);
+              // Remote keys (and managed links) are '/'-separated on every
+              // platform; on Windows path.join gives '\\', which matched nothing
+              // and made every local file look remotely deleted.
+              const relativePath = toRemoteKey(path.join(dir, file));
               const fullPath = path.join(localDirPath, file);
               // Skip nested entries that resolve outside the part directory
               // (an escaping symlink below a confined dir) for the same reason.
               if (!await isPathConfinedToBase(localBaseAbs, fullPath)) { continue; }
               const stat = await fs.stat(fullPath);
               if (stat.isFile() && remoteFiles[relativePath] === undefined) {
+                // Under a Vocareum-managed link the remote content is unreadable,
+                // not deleted: never plan an unlink there. Report the check as
+                // incomplete instead (the pull exits 1, nothing is removed).
+                const underLink = managedLinkCovering(relativePath, managedLinks);
+                if (underLink !== undefined) {
+                  shadowedByLink.add(underLink);
+                  continue;
+                }
                 fileDiffs.push({ filePath: relativePath, status: 'deleted' });
               }
             }
@@ -989,7 +1120,34 @@ export async function detectContentDrift(
           }
         }
 
-        if (fileDiffs.length > 0) {
+        if (shadowedByLink.size > 0) {
+          const reason = `local files under ${[...shadowedByLink].map(l => `${l}/`).join(', ')} were not compared: ` +
+            `on Vocareum that path is a link it manages, which cannot be read. Move them elsewhere; ` +
+            `they are not deleted.`;
+          warnFn(`"${assignment.name}": ${reason}`);
+          skipped?.push({ assignmentName: assignment.name, reason });
+        }
+
+        const contentState = config.publish_history?.[0]?.content_state ?? {};
+        const markedDirs = downloadPlan.directories.filter(
+          dir => contentState[path.join(localBasePath, dir)] === INCOMPLETE_PULL_MARKER
+        );
+        const incompleteDirectories = markedDirs.filter(dir => !omittedDirs.has(dir));
+        const stillIncomplete = markedDirs.filter(dir => omittedDirs.has(dir));
+        if (stillIncomplete.length > 0) {
+          // Recovery cannot finish these: report the check as incomplete (the
+          // pull exits 1) and keep their markers, or push would reset:1-delete
+          // the remote files that could not be written here.
+          skipped?.push({
+            assignmentName: assignment.name,
+            reason: `${stillIncomplete.map(d => `${d}/`).join(', ')} still incomplete: ` +
+              `some remote files could not be written locally (see the warnings above)`,
+          });
+        }
+        // A still-incomplete directory with nothing else to change must still
+        // reach apply, or its failed recovery leaves no publish_history entry
+        // (AGENTS.md #9) and a mixed run can record plain success.
+        if (fileDiffs.length > 0 || incompleteDirectories.length > 0 || stillIncomplete.length > 0) {
           partsDrift.push({
             partId: configPart.part_id,
             partName: configPart.name ?? 'Part',
@@ -997,6 +1155,8 @@ export async function detectContentDrift(
             fileDiffs,
             remoteFiles: safeRemoteFiles,
             directories: downloadPlan.directories,
+            ...(incompleteDirectories.length > 0 ? { incompleteDirectories } : {}),
+            ...(stillIncomplete.length > 0 ? { stillIncompleteDirectories: stillIncomplete } : {}),
           });
         }
       }
@@ -1012,6 +1172,7 @@ export async function detectContentDrift(
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       warnFn(`Skipping content drift check for "${assignment.name}": ${message}`);
+      skipped?.push({ assignmentName: assignment.name, reason: message });
     }
   }
 
@@ -1046,6 +1207,7 @@ export async function inspectPull(
   const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds, warnFn, reporter, rubricFetcher);
 
   let contentDrift: AssignmentContentDrift[] = [];
+  const contentDriftIncomplete: ContentDriftSkip[] = [];
   if (req.content) {
     const scoped = scopeAssignmentsForContent(
       config.assignments,
@@ -1059,6 +1221,7 @@ export async function inspectPull(
       workspaceRoot,
       warnFn,
       scoped.partIds,
+      contentDriftIncomplete,
     );
   }
 
@@ -1067,6 +1230,7 @@ export async function inspectPull(
     stale: plan.staleInConfig,
     settingsDrift,
     contentDrift,
+    contentDriftIncomplete,
   };
 }
 
@@ -1100,7 +1264,8 @@ export async function applyPull(
     reset: 0,
     settingsPulled: 0,
     contentPulled: 0,
-    failures: 0,
+    filesNotDownloaded: 0,
+    importsFailed: 0,
   };
 
   const newAssignments: Partial<Assignment>[] = [];
@@ -1113,6 +1278,13 @@ export async function applyPull(
     partRubrics?: Map<string, Rubric[]>;
   }> = new Map();
   const importedContentState: Record<string, string> = {};
+  /** Misses from incomplete imports, recorded in publish_history (AGENTS.md #9). */
+  const importMisses: DownloadFailure[] = [];
+  /** Imports that failed outright: not saved, but recorded in history (AGENTS.md #9). */
+  const importFailures: HistoryFailedEntity[] = [];
+  /** Marked directories a content-drift pull could not complete (marker kept). */
+  const driftStillIncomplete: HistoryFailedEntity[] = [];
+  const stillIncompleteSeen: HistoryFailedEntity[] = [];
 
   // ── Process orphaned assignments ──────────────────────────────────────────
   if (inspection.orphans.length > 0) {
@@ -1140,7 +1312,7 @@ export async function applyPull(
           : await resolver.resolveImportPath(issue, suggestedName);
 
         try {
-          const { assignment, contentState } = await importAssignment(
+          const { assignment, contentState, missingFiles } = await importAssignment(
             client,
             config.vocareum.course_id,
             orphan,
@@ -1157,11 +1329,26 @@ export async function applyPull(
           newAssignments.push(assignment);
           Object.assign(importedContentState, contentState);
           result.imported++;
-          events.emit({ level: 'success', message: `Imported "${orphan.name}" to ${finalDirName}/` });
+          if (missingFiles.length > 0) {
+            // Saved so the user keeps what did arrive, but never shown as a
+            // clean success: this is the line a 1,386-file loss hid behind.
+            result.filesNotDownloaded += missingFiles.length;
+            importMisses.push(...missingFiles);
+            events.emit({
+              level: 'warn',
+              message: `Imported "${orphan.name}" to ${finalDirName}/ INCOMPLETE: ` +
+                `${missingFiles.length} file${missingFiles.length === 1 ? '' : 's'} could not be downloaded`,
+            });
+          } else {
+            events.emit({ level: 'success', message: `Imported "${orphan.name}" to ${finalDirName}/` });
+          }
         } catch (error) {
-          events.emit({ level: 'error', message: `Failed to import: ${error instanceof Error ? error.message : 'Unknown'}` });
-          result.skipped++;
-          result.failures++;
+          // A failed import is not a skip the user asked for: counting it as one
+          // let a pull that imported nothing exit 0.
+          const reason = error instanceof Error ? error.message : 'Unknown';
+          events.emit({ level: 'error', message: `Failed to import "${orphan.name}": ${reason}` });
+          result.importsFailed++;
+          importFailures.push({ type: 'assignment', id: orphan.id, error: `import of "${orphan.name}" failed: ${reason}` });
         }
       } else if (action === 'exclude') {
         newExclusions.push(orphan.id);
@@ -1355,6 +1542,19 @@ export async function applyPull(
         for (const file of deleted) {
           events.emit({ level: 'plain', message: `    - ${file.filePath} (deleted on remote)` });
         }
+        for (const dir of partDrift.incompleteDirectories ?? []) {
+          events.emit({ level: 'plain', message: `    ! ${dir}/ (an earlier pull was incomplete; pulling completes it and unblocks push)` });
+        }
+        for (const dir of partDrift.stillIncompleteDirectories ?? []) {
+          events.emit({ level: 'plain', message: `    ! ${dir}/ (still incomplete: some remote files cannot be written locally, so pull cannot finish it and push still refuses it)` });
+          // Recorded whatever the user chooses below, so a history entry this
+          // run writes for other reasons never says success (round-4 review).
+          stillIncompleteSeen.push({
+            type: 'file',
+            id: path.join(drift.assignmentPath, partDrift.partPath === '.' ? '' : partDrift.partPath, dir),
+            error: 'still incomplete: some remote files could not be written locally; push still refuses it',
+          });
+        }
       }
 
       const action = await resolver.resolveContentDriftAction(issue);
@@ -1409,6 +1609,17 @@ export async function applyPull(
             const dir = fileDiff.filePath.split('/')[0] as DirectoryType;
             directories.add(dir);
           }
+          for (const dir of partDrift.incompleteDirectories ?? []) {
+            directories.add(dir);
+          }
+          for (const dir of partDrift.stillIncompleteDirectories ?? []) {
+            directories.delete(dir);
+            driftStillIncomplete.push({
+              type: 'file',
+              id: path.join(localBasePath, dir),
+              error: 'still incomplete: some remote files could not be written locally; push still refuses it',
+            });
+          }
 
           for (const dir of directories) {
             const stateKey = path.join(localBasePath, dir);
@@ -1422,8 +1633,13 @@ export async function applyPull(
           }
         }
 
-        result.contentPulled++;
-        events.emit({ level: 'success', message: `Pulled content changes for "${drift.assignmentName}"` });
+        const pulledSomething = drift.partsDrift.some(
+          pd => pd.fileDiffs.length > 0 || (pd.incompleteDirectories?.length ?? 0) > 0
+        );
+        if (pulledSomething) {
+          result.contentPulled++;
+          events.emit({ level: 'success', message: `Pulled content changes for "${drift.assignmentName}"` });
+        }
       } else if (action === 'keep') {
         events.emit({ level: 'plain', message: '  Keeping local files (will push to Vocareum on next push)' });
       } else {
@@ -1442,8 +1658,15 @@ export async function applyPull(
     assignmentsToReset.length > 0 ||
     settingsUpdates.size > 0;
 
+  // Deduplicate: an accepted part is in both lists.
+  const stillIncompleteFailures = [...new Map(
+    [...driftStillIncomplete, ...stillIncompleteSeen].map(f => [f.id, f])
+  ).values()];
+
   let newPublishHistory: PublishHistory[] | undefined;
-  if (Object.keys(importedContentState).length > 0) {
+  // A skipped or kept check writes nothing on its own (the help promises no
+  // changes then); only an entry written for other reasons reports it.
+  if (Object.keys(importedContentState).length > 0 || importFailures.length > 0 || driftStillIncomplete.length > 0) {
     const commitSha = await getCommitSha(workspaceRoot).catch(() => 'unknown');
     const gitUserName = await getGitUserName(workspaceRoot).catch(() => null);
     const publishedBy = gitUserName ?? 'pull-command';
@@ -1458,8 +1681,14 @@ export async function applyPull(
       timestamp: new Date().toISOString(),
       commit_sha: commitSha,
       published_by: publishedBy,
-      status: 'success',
+      // An import that missed files is a failed run, recorded as one (AGENTS.md
+      // #9). Its directories carry INCOMPLETE_PULL_MARKER, not a hash.
+      // A run with any miss or failed import is failed, even if others succeeded.
+      status: importMisses.length > 0 || importFailures.length > 0 || stillIncompleteFailures.length > 0 ? 'failed' : 'success',
       content_state: mergedContentState,
+      ...(importMisses.length > 0 || importFailures.length > 0 || stillIncompleteFailures.length > 0
+        ? { failed: [...importFailures, ...stillIncompleteFailures, ...historyFailuresFor(importMisses)] }
+        : {}),
     };
 
     newPublishHistory = [historyEntry];
@@ -1482,6 +1711,7 @@ export async function applyPull(
           ...updates.assignmentSettings,
         };
         clearObservedTopLevelSettings(mergedSettings, OBSERVED_ASSIGNMENT_SETTING_KEYS);
+        dropTypedCopiesOfUnreadableRemote(mergedSettings, updates.assignmentSettings._unknown_settings);
         if (updates.assignmentSettings._unknown_settings === undefined) {
           delete mergedSettings._unknown_settings;
         }
@@ -1505,6 +1735,7 @@ export async function applyPull(
               ...newPartSettings,
             };
             clearObservedTopLevelSettings(mergedPartSettings, OBSERVED_PART_SETTING_KEYS);
+            dropTypedCopiesOfUnreadableRemote(mergedPartSettings, newPartSettings._unknown_settings);
             if (newPartSettings._unknown_settings === undefined) {
               delete mergedPartSettings._unknown_settings;
             }

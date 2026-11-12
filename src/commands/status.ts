@@ -7,7 +7,9 @@
 import * as path from 'path';
 import { loadConfig } from '../core/config';
 import { resolveWorkspaceContext } from '../core/workspace';
-import { loadDotEnvIfPresent, isCI, getCIProvider, getAuthModeEnv, getOAuthClientId, getOAuthClientSecret } from '../utils/env';
+import { loadDotEnvIfPresent, isCI, getCIProvider, getAuthModeEnv, getOAuthClientId, getOAuthClientSecret, getV3ApiBaseUrl } from '../utils/env';
+import { isAllowlistedBaseUrl } from '../api/client';
+import { INVALID_URL_LABEL, canonicalBaseUrl, displayHost, hasUnsafeBaseUrlChars, normalizeApiBaseUrl, regionForBaseUrl, resolveV2ApiBaseUrl } from '../api/regions';
 import { CommandFailureError } from '../utils/command-failure';
 import { commandFailureFromError } from '../utils/failure-classifier';
 import { logger } from '../utils/logger';
@@ -17,7 +19,8 @@ import { TeeEventSink } from '../utils/tee-event-sink';
 import { buildReport, writeReport } from '../core/report';
 import { InteractivePrompter, NonInteractivePrompter } from '../core/services/context';
 import { inspectStatus, renderStatusHuman } from '../core/services/status-service';
-import type { RuntimeFacts } from '../core/services/context';
+import { INCOMPLETE_PULL_MARKER } from '../core/local-scan';
+import type { ApiTargetFacts, RuntimeFacts } from '../core/services/context';
 
 export interface StatusCommandOptions {
   config?: string;
@@ -28,6 +31,38 @@ export interface StatusCommandOptions {
   json?: boolean;
   /** Internal collector supplied by the CLI wrapper for --json failure envelopes. */
   eventCollector?: CollectingEventSink;
+}
+
+/**
+ * The host pull/push would send credentials to, resolved with the same
+ * precedence they use (minus the per-run --api-base-url flag). Never throws:
+ * an unallowlisted host is reported, not rejected — status is diagnostic.
+ *
+ * `base_url` is the canonical scheme://host/path: userinfo, query and fragment
+ * are dropped so a credential pasted into the URL never reaches stdout.
+ */
+function resolveApiTarget(authMode: 'token' | 'oauth', configBaseUrl: string | undefined): ApiTargetFacts {
+  if (authMode === 'oauth') {
+    const baseUrl = getV3ApiBaseUrl();
+    return {
+      base_url: canonicalBaseUrl(baseUrl) ?? INVALID_URL_LABEL,
+      host: displayHost(baseUrl),
+      region: regionForBaseUrl(baseUrl) ?? null,
+      source: process.env.VOCAREUM_API_V3_BASE_URL !== undefined ? 'env' : 'default',
+      allowlisted: isAllowlistedBaseUrl(baseUrl, 'v3'),
+      malformed: hasUnsafeBaseUrlChars(baseUrl),
+    };
+  }
+  const resolved = resolveV2ApiBaseUrl({ config: configBaseUrl });
+  const baseUrl = normalizeApiBaseUrl(resolved.baseUrl);
+  return {
+    base_url: canonicalBaseUrl(baseUrl) ?? INVALID_URL_LABEL,
+    host: displayHost(baseUrl),
+    region: regionForBaseUrl(baseUrl) ?? null,
+    source: resolved.source,
+    allowlisted: isAllowlistedBaseUrl(baseUrl, 'v2'),
+    malformed: hasUnsafeBaseUrlChars(baseUrl),
+  };
 }
 
 /**
@@ -61,6 +96,7 @@ async function statusCommandWithMode(options: StatusCommandOptions): Promise<voi
       authMode,
       credentialLabel,
       credentialsConfigured,
+      api: resolveApiTarget(authMode, config.vocareum.api_base_url),
     };
 
     const collector = options.eventCollector ?? new CollectingEventSink();
@@ -94,6 +130,7 @@ async function statusCommandWithMode(options: StatusCommandOptions): Promise<voi
         config_path: report.config_path,
         course: report.course,
         auth: report.auth,
+        api: report.api,
         runtime: report.runtime,
         git: report.git,
         last_push: report.last_push,
@@ -120,6 +157,10 @@ async function statusCommandWithMode(options: StatusCommandOptions): Promise<voi
     ];
     const templateCount = templates.length + legacyTemplateIds.length;
     const excludedCount = config.vocareum.excluded_assignments?.length ?? 0;
+    const incompleteDirectories = Object.entries(config.publish_history?.[0]?.content_state ?? {})
+      .filter(([, value]) => value === INCOMPLETE_PULL_MARKER)
+      .map(([key]) => key)
+      .sort();
 
     // Derive assignment/part counts from config — not from the scan — so that
     // human status stays fast (no filesystem traversal) and counts are correct
@@ -154,6 +195,7 @@ async function statusCommandWithMode(options: StatusCommandOptions): Promise<voi
       verbose: options.verbose,
       templateCount,
       excludedCount,
+      incompleteDirectories,
       assignmentCount: configAssignmentCount,
       linkedAssignmentCount: configLinkedAssignmentCount,
       totalPartCount: configTotalPartCount,

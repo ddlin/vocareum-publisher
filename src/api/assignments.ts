@@ -5,7 +5,7 @@
  * CRITICAL: All IDs are strings!
  */
 
-import { VocareumClient } from './client';
+import { VocareumClient, isOverloadError } from './client';
 import type {
   VocareumAssignmentResponse,
   AssignmentCopyResponse,
@@ -192,10 +192,18 @@ export async function waitForAssignmentObjId(
       );
     }
 
-    const txn = await client.request<TransactionResponse>({
-      method: 'GET',
-      url: `/transaction/${transactionId}`,
-    });
+    let txn: TransactionResponse;
+    try {
+      txn = await client.request<TransactionResponse>({
+        method: 'GET',
+        url: `/transaction/${transactionId}`,
+      }, { retryOverload: false });
+    } catch (error) {
+      // An overloaded sample says nothing about the copy: keep polling.
+      if (!isOverloadError(error)) { throw error; }
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      continue;
+    }
 
     if (txn.state === 'success') {
       return txn.objid;

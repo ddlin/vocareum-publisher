@@ -1,6 +1,6 @@
 {
   "name": "vocareum-publisher",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Publish assignment content from GitHub to Vocareum",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -58,8 +58,8 @@
     "inquirer": "^9.2.0",
     "js-yaml": "^4.1.0",
     "ora": "^7.0.0",
-    "simple-git": "^3.21.0",
-    "zod": "^3.22.0"
+    "simple-git": "^4.0.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/inquirer": "^9.0.7",

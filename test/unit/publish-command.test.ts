@@ -65,6 +65,7 @@ vi.mock('../../src/utils/env', () => ({
   getOAuthClientId: vi.fn().mockReturnValue(undefined),
   getOAuthClientSecret: vi.fn().mockReturnValue(undefined),
   getAuthModeEnv: vi.fn().mockReturnValue(undefined),
+  getApiBaseUrlEnv: vi.fn().mockReturnValue(undefined),
   getV3ApiBaseUrl: vi.fn().mockReturnValue('https://labs.vocareum.com/api/v3'),
   getOAuthTokenUrl: vi.fn().mockReturnValue('https://labs.vocareum.com/api/v3/oauth/token'),
 }));

@@ -11,7 +11,7 @@
 import { getCurrentBranch, getCommitSha, hasUncommittedChanges, isGitRepo } from '../../utils/git';
 import { scanLocalContent, latestHistoryEntry } from '../local-scan';
 import type { AssignmentScan, LocalScanResult } from '../local-scan';
-import type { StatusContext } from './context';
+import type { ApiTargetFacts, StatusContext } from './context';
 import type { EventSink } from './event-sink';
 
 export interface InspectStatusOptions {
@@ -49,6 +49,8 @@ export interface StatusReport {
     mode: 'token' | 'oauth';
     configured: boolean;
   };
+  /** API host pull/push would target (additive field; null if not resolved). */
+  api: ApiTargetFacts | null;
   runtime: string;
   git: { repo: true; branch: string; commit: string; dirty: boolean } | { repo: false };
   last_push: {
@@ -124,6 +126,7 @@ export async function inspectStatus(ctx: StatusContext, opts: InspectStatusOptio
       course_id: config.vocareum.course_id,
     },
     auth: { mode: authMode, configured: credentialsConfigured },
+    api: ctx.runtime.api ?? null,
     runtime: runtimeLabel,
     git: insideRepo ? { repo: true, branch, commit, dirty } : { repo: false },
     last_push: lastPush === undefined ? null : {
@@ -155,6 +158,9 @@ export interface RenderStatusHumanOptions {
   templateCount: number;
   /** Number of excluded assignment IDs. Required for human rendering. */
   excludedCount: number;
+  /** content_state keys an incomplete pull marked (push refuses them). Read
+   *  from config, so the human path stays scan-free (AGENTS.md #16). */
+  incompleteDirectories?: string[];
   /**
    * Config-derived assignment/part counts. Callers MUST compute these from
    * the persisted config (not from `report.assignments`) so that human status
@@ -202,6 +208,19 @@ export function renderStatusHuman(
   events.emit({ level: 'newline' });
   events.emit({ level: 'plain', message: 'Readiness' });
   events.emit({ level: 'plain', message: `- Auth (${authMode}): ${credentialLabel} ${report.auth.configured ? 'configured' : 'missing'}` });
+  if (report.api !== null) {
+    const api = report.api;
+    const region = api.region === null ? 'custom host' : api.region.toUpperCase();
+    const envVar = report.auth.mode === 'oauth' ? 'VOCAREUM_API_V3_BASE_URL' : 'VOCAREUM_API_BASE_URL';
+    const from = api.source === 'env' ? envVar
+      : api.source === 'config' ? 'vocareum.yaml'
+      : api.source === 'flag' ? '--api-base-url'
+      : 'default';
+    const gate = api.malformed
+      ? ' — MALFORMED: remove any query (?), fragment (#), credentials (user@) or whitespace; requests will be refused'
+      : api.allowlisted ? '' : ' — NOT allowlisted; requests will be refused unless VOCAREUM_ALLOW_CUSTOM_BASE_URL=1';
+    events.emit({ level: 'plain', message: `- API host: ${api.host} (${region}, from ${from})${gate}` });
+  }
   events.emit({ level: 'plain', message: `- Runtime: ${report.runtime}` });
 
   events.emit({ level: 'newline' });
@@ -222,6 +241,14 @@ export function renderStatusHuman(
 
   events.emit({ level: 'plain', message: `- Templates configured: ${options.templateCount}` });
   events.emit({ level: 'plain', message: `- Excluded assignment IDs: ${options.excludedCount}` });
+  const incomplete = options.incompleteDirectories ?? [];
+  if (incomplete.length > 0) {
+    events.emit({
+      level: 'warn',
+      message: `Incomplete pull: push refuses ${incomplete.length} director${incomplete.length === 1 ? 'y' : 'ies'} ` +
+        `until a complete pull (\`vocgit pull --batch --content --assignment <name>\`): ${incomplete.join(', ')}`,
+    });
+  }
 
   if (options.verbose === true && options.assignmentDetails.length > 0) {
     events.emit({ level: 'newline' });

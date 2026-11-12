@@ -12,6 +12,10 @@ import { LoggerEventSink } from '../utils/logger-event-sink';
 import type { AuthProvider } from './auth/auth-provider';
 import { RequestScheduler } from './scheduler';
 import { DEFAULT_THROTTLE, type ResolvedThrottle } from './throttle';
+import {
+  REGION_HOSTS, VOCAREUM_REGIONS, canonicalBaseUrl, hasUnsafeBaseUrlChars, normalizeApiBaseUrl,
+  redactUrlForDisplay,
+} from './regions';
 
 /**
  * Base error class for Vocareum API errors
@@ -101,14 +105,36 @@ export class ForbiddenError extends VocareumError {
  * Error for insecure API base URL configuration
  */
 export class InsecureBaseUrlError extends VocareumError {
-  constructor(url: string) {
+  /**
+   * @param url - the offending URL. Echoed only in redacted form
+   *   (scheme://host/path): a token pasted into userinfo or a query must not
+   *   reach the terminal or CI logs.
+   * @param malformed - true when the URL carries a query, fragment, userinfo,
+   *   backslash or whitespace. The override flag does not help there, so the
+   *   message says what to remove instead of suggesting it.
+   */
+  constructor(url: string, malformed = false) {
     super(
-      `Insecure API base URL: "${url}". ` +
-      `Only https://api.vocareum.com and https://labs.vocareum.com are allowed by default. ` +
-      `Set VOCAREUM_ALLOW_CUSTOM_BASE_URL=1 to override (use with caution).`,
+      `Insecure API base URL: "${redactUrlForDisplay(url)}". ` +
+      (malformed
+        ? `API base URLs must be a plain https://host[/api/vN] with no query (?), ` +
+          `fragment (#), credentials (user@), backslash or whitespace.`
+        : `Only the Vocareum API hosts are allowed by default: ` +
+          `https://api.vocareum.com and https://labs.vocareum.com (NA), ` +
+          `https://api.eu.vocareum.com (EU). ` +
+          `Set VOCAREUM_ALLOW_CUSTOM_BASE_URL=1 to override (use with caution).`),
       'INSECURE_BASE_URL'
     );
     this.name = 'InsecureBaseUrlError';
+  }
+}
+
+/** Reject a base URL the parser would validate differently from how axios
+ *  sends it. Runs before the override check: VOCAREUM_ALLOW_CUSTOM_BASE_URL
+ *  relaxes WHICH host is allowed, never whether the URL is well-formed. */
+export function assertWellFormedBaseUrl(baseUrl: string): void {
+  if (hasUnsafeBaseUrlChars(baseUrl)) {
+    throw new InsecureBaseUrlError(baseUrl, true);
   }
 }
 
@@ -121,25 +147,36 @@ function isRawApiResponse401(error: unknown): boolean {
 type ApiUnauthorizedFlag = { isApiResponseUnauthorized?: boolean };
 
 /** Canonical, allowed (host, version-path) base URLs, split by API version so
- *  an auth mode can be bound to its host (token→v2, oauth→v3). */
-const ALLOWED_V2_BASE_URLS: ReadonlySet<string> = new Set([
-  'https://api.vocareum.com/api/v2',
-]);
-const ALLOWED_V3_BASE_URLS: ReadonlySet<string> = new Set([
-  'https://labs.vocareum.com/api/v3',
-]);
+ *  an auth mode can be bound to its host (token→v2, oauth→v3). Derived from the
+ *  region table so a tenant's hosts are declared in exactly one place. */
+const ALLOWED_V2_BASE_URLS: ReadonlySet<string> = new Set(
+  VOCAREUM_REGIONS.map(r => REGION_HOSTS[r].v2BaseUrl),
+);
+const ALLOWED_V3_BASE_URLS: ReadonlySet<string> = new Set(
+  VOCAREUM_REGIONS.flatMap(r => {
+    const v3 = REGION_HOSTS[r].v3BaseUrl;
+    return v3 === undefined ? [] : [v3];
+  }),
+);
 const ALLOWED_BASE_URLS: ReadonlySet<string> = new Set([
   ...ALLOWED_V2_BASE_URLS,
   ...ALLOWED_V3_BASE_URLS,
 ]);
 
-/** Append /api/v2 when the base URL carries no /api/vN version path.
- *  Note: a bare host always normalizes to /api/v2 (the default). The v3 host
- *  (labs.vocareum.com) must be passed with its full /api/v3 path; a bare labs
- *  host would normalize to /api/v2 and then fail assertAllowedBaseUrl. */
-export function normalizeApiBaseUrl(baseUrl: string): string {
-  const trimmed = baseUrl.replace(/\/+$/, '');
-  return /\/api\/v\d+$/.test(trimmed) ? trimmed : `${trimmed}/api/v2`;
+export { normalizeApiBaseUrl };
+
+/** True when `baseUrl` (already normalized) is an exact allowlist entry for
+ *  `version`. Pure: ignores VOCAREUM_ALLOW_CUSTOM_BASE_URL and emits nothing —
+ *  for display (status), not for gating a request. */
+export function isAllowlistedBaseUrl(baseUrl: string, version: 'v2' | 'v3'): boolean {
+  if (hasUnsafeBaseUrlChars(baseUrl)) {
+    return false;
+  }
+  const canonical = canonicalBaseUrl(baseUrl);
+  if (canonical?.startsWith('https://') !== true) {
+    return false;
+  }
+  return (version === 'v2' ? ALLOWED_V2_BASE_URLS : ALLOWED_V3_BASE_URLS).has(canonical);
 }
 
 /**
@@ -153,6 +190,7 @@ export function normalizeApiBaseUrl(baseUrl: string): string {
  */
 export function assertAllowedBaseUrl(baseUrl: string, events?: EventSink): void {
   const sink: EventSink = events ?? new LoggerEventSink();
+  assertWellFormedBaseUrl(baseUrl);
   const allowCustom = process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL === '1';
   let parsed: URL;
   try { parsed = new URL(baseUrl); } catch { throw new InsecureBaseUrlError(baseUrl); }
@@ -189,6 +227,7 @@ export function assertAllowedBaseUrl(baseUrl: string, events?: EventSink): void 
 export function assertBaseUrlForVersion(baseUrl: string, version: 'v2' | 'v3', events?: EventSink): void {
   const sink: EventSink = events ?? new LoggerEventSink();
   const allowed = version === 'v2' ? ALLOWED_V2_BASE_URLS : ALLOWED_V3_BASE_URLS;
+  assertWellFormedBaseUrl(baseUrl);
   const allowCustom = process.env.VOCAREUM_ALLOW_CUSTOM_BASE_URL === '1';
   let parsed: URL;
   try { parsed = new URL(baseUrl); } catch { throw new InsecureBaseUrlError(baseUrl); }
@@ -212,6 +251,13 @@ export function assertBaseUrlForVersion(baseUrl: string, version: 'v2' | 'v3', e
 interface RetryOptions {
   maxRetries?: number;
   backoff?: number;
+  /**
+   * false: an overload answer is thrown at once instead of retried. Pollers
+   * pass this: they treat an overloaded sample as "no news" and sample again
+   * after their own delay, so a retry cycle inside each sample would only
+   * multiply the poll's run time. Other errors are still retried.
+   */
+  retryOverload?: boolean;
 }
 
 const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set([
@@ -297,6 +343,67 @@ function retryAfterFromAxiosError(error: unknown): number | undefined {
 }
 
 /**
+ * Vocareum's overload answer: HTTP 200 with a plain-text body such as
+ * "VOCAREUM-ERROR: Sorry, your access to Vocareum is temporarily unavailable
+ * due to heavy traffic, …" (probed 2026-11-11 on courses 215500 and 240788:
+ * 5 of 24 listing requests). Returned as data, a listing read it as an empty
+ * page: a directory looked empty, or a paged listing ended early, and drift
+ * read the lost names as remote deletions. It is an error.
+ */
+const OVERLOAD_BODY = /^\s*VOCAREUM-ERROR:/;
+
+/**
+ * Vocareum answered "temporarily unavailable" with an HTTP 200 text body.
+ * Status 503 is what it means, so the ordinary retry rules apply: retried for
+ * idempotent methods, not for a POST that may have landed. Pollers treat it
+ * as a sample that said nothing and keep polling.
+ */
+export class OverloadError extends APIError {
+  constructor(message: string, public retryAfter?: number) {
+    super(message, 503);
+    this.name = 'OverloadError';
+  }
+}
+
+/** True for the overload answer, however many retries it went through. */
+export function isOverloadError(error: unknown): error is OverloadError {
+  return error instanceof OverloadError;
+}
+
+function retryAfterFromHeaders(headers: unknown): number | undefined {
+  if (headers === undefined || headers === null || typeof headers !== 'object') { return undefined; }
+  const accessor = headers as { get?: (name: string) => unknown };
+  const value: unknown = typeof accessor.get === 'function'
+    ? accessor.get('retry-after')
+    : Object.entries(headers).find(([key]) => key.toLowerCase() === 'retry-after')?.[1];
+  return parseRetryAfter(value);
+}
+
+/**
+ * The overload error for a response, or undefined when the body is a real
+ * answer. The server text is redacted like any other error text: it is not
+ * debug-gated, and it can end up in warnings and publish_history.
+ */
+function overloadError(data: unknown, headers: unknown): OverloadError | undefined {
+  if (typeof data !== 'string' || !OVERLOAD_BODY.test(data)) { return undefined; }
+  // Redact first, then shorten: a cut inside "https://user:secret@host"
+  // would leave a fragment the URL redaction no longer recognises.
+  const retryAfter = retryAfterFromHeaders(headers);
+  return new OverloadError(
+    `Vocareum is overloaded: ${sanitizeLogString(data.trim()).slice(0, 300)}`,
+    retryAfter === undefined ? undefined : Math.min(retryAfter, OVERLOAD_MAX_RETRY_AFTER_S),
+  );
+}
+
+/**
+ * A server-sent Retry-After on the overload answer is honoured up to this
+ * many seconds. The retry budget is three attempts, so an uncapped value
+ * could hold a command for days; a longer outage fails after the budget and
+ * the user re-runs.
+ */
+const OVERLOAD_MAX_RETRY_AFTER_S = 60;
+
+/**
  * Sleep for a given number of milliseconds
  */
 function sleep(ms: number): Promise<void> {
@@ -305,12 +412,64 @@ function sleep(ms: number): Promise<void> {
 
 const REDACT_KEY = /^(authorization|client_secret|access_token|refresh_token|id_token|password|secret|token)$/i;
 const REDACT_FORM_PARAM = /((?:^|&)(?:authorization|client_secret|access_token|refresh_token|id_token|password|secret|token)=)[^&]*/gi;
+/**
+ * An absolute http(s) URL, including the JSON-escaped form (`https:\/\/…`).
+ * The class always matches to the next whitespace, quote or angle bracket and
+ * never fails, so matching is linear in the input (no rescans per `https://`).
+ */
+const ABSOLUTE_URL = /https?:(?:\/\/|\\\/\\\/)[^\s"'<>]*/gi;
+/** Punctuation that usually ends a sentence rather than a URL. */
+const URL_TRAILING_PUNCTUATION = new Set(['.', ',', ';', ':', '!', ')', ']', '}']);
 
 /**
- * Sanitize a value for logging (redact secrets recursively in objects, arrays, and form strings)
+ * The run of sentence punctuation at the end of `text`. A scan from the end,
+ * not the regex `/[.,;:!)\]}]+$/`: unanchored at the start, that regex
+ * retried at every character of a long punctuation run that does not reach
+ * the end, so redacting a URL followed by 200,000 dots and a letter took
+ * 23 s. Error text from the server is scrubbed whole, so this must be linear.
+ */
+function trailingPunctuation(text: string): string {
+  let i = text.length;
+  while (i > 0 && URL_TRAILING_PUNCTUATION.has(text[i - 1])) { i -= 1; }
+  return text.slice(i);
+}
+/**
+ * Credential parameters of signed URLs, wherever they appear — after a quote
+ * or line break that ended the URL match early, or in a protocol-relative or
+ * otherwise unrecognised URL. Names: S3 (`X-Amz-*`, `AWSAccessKeyId`,
+ * `Signature`), CloudFront (`Signature`, `Policy`, `Key-Pair-Id`), generic
+ * (`sig`, `signature`, `token`).
+ */
+const SIGNED_URL_PARAM = /((?:^|[?&\s"'\\])(?:X-Amz-[A-Za-z-]+|AWSAccessKeyId|Signature|Policy|Key-Pair-Id|sig|token)=)[^&\s"'\\]*/gi;
+
+/**
+ * Redact one absolute URL: drop user-info (`user:pass@`) and the whole query
+ * string, keeping scheme, host and path. Signed download URLs carry their
+ * credential in the query (S3's `X-Amz-*`, the files API's `download_url`),
+ * and the parameter names vary by issuer, so the whole query goes.
+ */
+function redactUrl(match: string): string {
+  const trailing = trailingPunctuation(match);
+  let url = trailing.length > 0 ? match.slice(0, -trailing.length) : match;
+  url = url.replace(/^(https?:(?:\/\/|\\\/\\\/))[^/\\@]*@/i, '$1[REDACTED]@');
+  const q = url.indexOf('?');
+  if (q !== -1) { url = `${url.slice(0, q)}?[REDACTED]`; }
+  return url + trailing;
+}
+
+/** Redact secrets in a free-text string (log line, error message). */
+export function sanitizeLogString(text: string): string {
+  return text
+    .replace(ABSOLUTE_URL, redactUrl)
+    .replace(SIGNED_URL_PARAM, '$1[REDACTED]')
+    .replace(REDACT_FORM_PARAM, '$1[REDACTED]');
+}
+
+/**
+ * Sanitize a value for logging (redact secrets recursively in objects, arrays, form strings, and URL query strings)
  */
 export function sanitizeForLog(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
-  if (typeof value === 'string') { return value.replace(REDACT_FORM_PARAM, '$1[REDACTED]'); }
+  if (typeof value === 'string') { return sanitizeLogString(value); }
   if (Array.isArray(value)) { return value.map((v) => sanitizeForLog(v, seen)); }
   if (value && typeof value === 'object') {
     if (seen.has(value)) { return '[Circular]'; }
@@ -424,17 +583,20 @@ export class VocareumClient {
         this.events.emit({ level: 'debug', message: 'API request', data: sanitizeForLog(config) });
         const response = await this.scheduler.schedule(() => this.axios.request<T>(config));
         this.events.emit({ level: 'debug', message: `API response: ${response.status}`, data: sanitizeForLog({ data: response.data }) });
+        const overloaded = overloadError(response.data, response.headers);
+        if (overloaded !== undefined) { throw overloaded; }
         return response.data;
       } catch (error) {
         const wrapped = this.wrapError(error);
         if (isRawApiResponse401(error)) {
           (wrapped as VocareumError & ApiUnauthorizedFlag).isApiResponseUnauthorized = true;
         }
+        if (wrapped instanceof OverloadError && options.retryOverload === false) { throw wrapped; }
         const retryable = isRetryable(wrapped, method) || isRetryable(error, method);
         if (a === maxRetries - 1 || !retryable) { throw wrapped; }
         // A server-provided Retry-After takes precedence over exponential backoff.
         const retryAfter = retryAfterFromAxiosError(error) ??
-          (wrapped instanceof RateLimitError ? wrapped.retryAfter : undefined);
+          (wrapped instanceof RateLimitError || wrapped instanceof OverloadError ? wrapped.retryAfter : undefined);
         const retryAfterMs = retryAfter !== undefined ? retryAfter * 1000 : undefined;
         await sleep(retryAfterMs ?? backoff * Math.pow(2, a));
       }
@@ -456,7 +618,9 @@ export class VocareumClient {
       const status = error.response?.status;
       const data = error.response?.data as { message?: string; error?: { message?: string } } | undefined;
       // Vocareum API returns errors as { error: { message: "..." } } or { message: "..." }
-      const message = data?.error?.message ?? data?.message ?? error.message;
+      // Error text and bodies end up in warnings and error output, which are
+      // not debug-gated: never let a signed URL's credentials through.
+      const message = sanitizeLogString(data?.error?.message ?? data?.message ?? error.message);
 
       // Try to detect resource type from URL for better error messages
       const url = error.config?.url ?? '';
@@ -478,7 +642,7 @@ export class VocareumClient {
                 'Generate a new token at: Profile > Settings > Personal Access Tokens')
             );
           }
-          return new APIError(message, status, data, retryableTransport);
+          return new APIError(message, status, sanitizeForLog(data), retryableTransport);
         case 401:
           return new AuthenticationError(
             message + '\n\n' + (this.authProvider.unauthorizedHint ??
@@ -494,7 +658,7 @@ export class VocareumClient {
             retryAfterFromAxiosError(error)
           );
         default:
-          return new APIError(message, status, data, retryableTransport);
+          return new APIError(message, status, sanitizeForLog(data), retryableTransport);
       }
     }
 

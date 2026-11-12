@@ -5,6 +5,7 @@ exports[`golden: status > --verbose human output includes Assignment Details (no
 
 Readiness
 - Auth (token): API key missing
+- API host: api.vocareum.com (NA, from vocareum.yaml)
 - Runtime: local
 
 Workspace
@@ -28,6 +29,7 @@ exports[`golden: status > human output is stable 1`] = `
 
 Readiness
 - Auth (token): API key missing
+- API host: api.vocareum.com (NA, from vocareum.yaml)
 - Runtime: local
 
 Workspace

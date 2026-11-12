@@ -76,7 +76,7 @@ const ELITE_LABTYPES = [
  */
 export function detectArchitecture(labtype: string | null | undefined): 'elite' | 'container' {
   if (!labtype) { return 'container'; }
-  return ELITE_LABTYPES.includes(labtype.toLowerCase()) ? 'elite' : 'container';
+  return ELITE_LABTYPES.includes(labtype.trim().toLowerCase()) ? 'elite' : 'container';
 }
 
 /**
@@ -220,6 +220,54 @@ const GradingVisibilitySchema = z.union([
   z.enum(['all', 'assigned']).transform((value) => value.toUpperCase() as 'ALL' | 'ASSIGNED'),
 ]);
 
+/** Case-insensitive enum that always yields the API's upper-case spelling. */
+function upperEnum<const T extends readonly [string, ...string[]]>(
+  values: T
+): z.ZodType<T[number], string> {
+  const allowed = new Set<string>(values);
+  const isAllowed = (x: string): x is T[number] => allowed.has(x);
+  return z.string().transform((v, ctx) => {
+    const upper = v.trim().toUpperCase();
+    if (!isAllowed(upper)) {
+      ctx.addIssue({ code: 'custom', message: `must be one of ${values.join(', ')} (got "${v}")` });
+      return z.NEVER;
+    }
+    return upper;
+  });
+}
+
+// Allowed values come from the API's own 400 messages (probe, 2026-11-10).
+const PeerScheduleModeSchema = upperEnum(['SCHEDULED', 'MANUAL', 'AUTO'] as const);
+const ReviewCalcSchema = upperEnum(['AVERAGE', 'MEDIAN', 'MAXIMUM'] as const);
+const ReviewPenaltyRuleSchema = upperEnum(['STUDENT_SCORE', 'MAX_SCORE'] as const);
+/** True for a real calendar date written as YYYY-MM-DD (rejects 2026-13-40). */
+export function isCalendarDate(v: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { return false; }
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+}
+
+/**
+ * The API accepts only a real bare date here (an ISO datetime and 2026-13-40
+ * are both rejected). loadConfig parses YAML without implicit timestamps, so an
+ * unquoted `2026-12-01` arrives as the string it reads as.
+ */
+const PeerReviewDateSchema = z.string().refine(isCalendarDate, 'must be a real date in YYYY-MM-DD format');
+
+/**
+ * A whole number in [min, max], given as a number or a numeric string. Unlike
+ * z.coerce.number(), "" / true / [] are rejected instead of becoming 0 or 1,
+ * so a hand-edit typo can never turn into a real write.
+ */
+function wholeNumber(min: number, max?: number): z.ZodType<number, unknown> {
+  let n = z.number().int().min(min);
+  if (max !== undefined) { n = n.max(max); }
+  return z.preprocess(
+    (v) => (typeof v === 'string' && /^\s*-?\d+(\.\d+)?\s*$/.test(v) ? Number(v) : v),
+    n
+  );
+}
+
 /**
  * Remote fields observed from Vocareum but not written by vocgit push.
  * Pull/import may update this bucket to document server state without turning
@@ -276,6 +324,8 @@ export const PartSettingsSchema = z
     lab_interface: LabInterfaceConfigSchema.nullish(),
     /** Maximum users for Databricks labs (API returns string, coerce to number) */
     databricks_maxusers: z.coerce.number().nullish(),
+    /** Container labs only (ignored on Vocareum Standard). API returns string, coerce to number. */
+    cleanup_time: wholeNumber(0).nullish(),
     /** Tags for the part (API returns object, but older configs may have empty array) */
     tags: z.union([z.array(z.string()), z.record(z.string(), TagValueSchema)]).nullish(),
     /** Pass-through bucket for settings vocgit does not formally understand.
@@ -400,6 +450,35 @@ export const AssignmentSettingsSchema = z
     send_webhook: z.boolean().nullish(),
     /** Enable live code comments */
     live_code_comments: z.boolean().nullish(),
+    // ── Peer review (field report #5; probed writable 2026-11-10) ──
+    /**
+     * Enable peer review. While it is false the three options below are
+     * pushed as false: Vocareum rejects them as true and resets them to false
+     * when the toggle is turned off.
+     */
+    peer_review_toggle: z.boolean().nullish(),
+    /** SCHEDULED, MANUAL or AUTO */
+    peer_schedule_mode: PeerScheduleModeSchema.nullish(),
+    /** YYYY-MM-DD; null clears it */
+    peer_review_start_date: PeerReviewDateSchema.nullish(),
+    /** YYYY-MM-DD; null clears it */
+    peer_review_end_date: PeerReviewDateSchema.nullish(),
+    /** Only takes effect while peer review is enabled */
+    peer_hide_code: z.boolean().nullish(),
+    /** Only takes effect while peer review is enabled */
+    peer_gallery: z.boolean().nullish(),
+    /** Only takes effect while peer review is enabled */
+    peer_grading_toggle: z.boolean().nullish(),
+    /** Reviews each student writes (1-10) */
+    reviews_number: wholeNumber(1, 10).nullish(),
+    /** Guidance text shown to reviewers */
+    reviewguide: z.string().nullish(),
+    /** Penalty percentage for not completing reviews (0-100) */
+    reviewpenalty: wholeNumber(0, 100).nullish(),
+    /** STUDENT_SCORE or MAX_SCORE */
+    reviewpenalty_percentrule: ReviewPenaltyRuleSchema.nullish(),
+    /** AVERAGE, MEDIAN or MAXIMUM */
+    reviewcalc: ReviewCalcSchema.nullish(),
     /** Pass-through bucket for settings vocgit does not formally understand.
      *  Populated by mapAssignmentSettings from unknown API response fields;
      *  spread back into outgoing API payloads on publish. See spec

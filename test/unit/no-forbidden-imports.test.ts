@@ -110,6 +110,9 @@ describe('architecture guards', () => {
     const NON_DIAGNOSTIC_CODES = new Set([
       'report_serialization_failed', 'partial_failure', 'command_failed',
       'internal', 'usage', 'auth', 'transient', 'findings', 'partial',
+      // zod's issue code for a refinement (`ctx.addIssue({ code: 'custom' })`)
+      // in config validation: a third vocabulary, never emitted as an event.
+      'custom',
     ]);
     const offenders: string[] = [];
     for (const file of walk('src')) {

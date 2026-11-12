@@ -41,20 +41,25 @@ export function validateSchema<T>(schema: ZodSchema<T>, data: unknown): T {
 /**
  * Get a hint for common validation errors
  */
-function getErrorHint(path: string, message: string): string | null {
+function getErrorHint(path: string, rawMessage: string): string | null {
+  // zod 4 words these as "Invalid input: expected string, received number".
+  const message = rawMessage.toLowerCase();
   // Tags field type mismatch
-  if (path.includes('tags') && message.includes('Expected')) {
+  if (path.includes('tags') && message.includes('expected')) {
     return 'Hint: tags should be an object like { key: "value" } or an empty array []';
   }
   // ID type mismatch
-  if ((path.includes('_id') || path.includes('Id')) && message.includes('Expected string')) {
+  // zod 4 reports a missing field as "expected string, received undefined"
+  // (zod 3 said "Required"); quoting is not the fix for an absent ID.
+  if ((path.includes('_id') || path.includes('Id')) && message.includes('expected string') && !message.includes('received undefined')) {
     return 'Hint: All IDs must be strings (e.g., "12345" not 12345)';
   }
   // Array vs object mismatch
-  if (message.includes('Expected array, received object')) {
+  if (message.includes('expected array, received object')) {
     return 'Hint: This field expects an array [...] but got an object {...}';
   }
-  if (message.includes('Expected object, received array')) {
+  // zod 4 names z.record fields "record" where zod 3 said "object".
+  if (message.includes('expected object, received array') || message.includes('expected record, received array')) {
     return 'Hint: This field expects an object {...} but got an array [...]';
   }
   return null;
@@ -64,7 +69,7 @@ function getErrorHint(path: string, message: string): string | null {
  * Format Zod errors into a readable message with helpful hints
  */
 export function formatZodError(error: ZodError): string {
-  const messages = error.errors.map((err) => {
+  const messages = error.issues.map((err) => {
     const path = err.path.join('.');
     const baseMsg = path ? `${path}: ${err.message}` : err.message;
     const hint = getErrorHint(path, err.message);
