@@ -1495,7 +1495,18 @@ export async function listDirectoryBounded(
       );
     }
     const { parsed: batch, raw } = await fetchListPage(client, url, apiDirPath, page);
-    if (batch.length === 0) { return { names, complete: true, rawPages, sizes }; }
+    if (batch.length === 0) {
+      // Only a truly empty page ends the listing. A page whose elements all
+      // failed to parse is not the terminator: keep it (the root guard
+      // refuses on any element that does not qualify) and report incomplete.
+      // parseFileListResponse already throws on such a page today; this keeps
+      // the collector safe if the parser ever stops doing so.
+      if (raw.length > 0) {
+        rawPages.push(raw);
+        return { names, complete: false, rawPages, sizes };
+      }
+      return { names, complete: true, rawPages, sizes };
+    }
     rawPages.push(raw);
     let added = 0;
     for (const entry of batch) {

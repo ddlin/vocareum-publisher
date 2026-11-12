@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { listDirectoryBounded, NotAFileListingError } from '../../src/api/content';
 import { OverloadError, type VocareumClient } from '../../src/api/client';
+import { resolveCourseRootEvidence, ROOT_LISTING_FAILED } from '../../src/core/course-architecture';
 
 /** Pages of entries per dir; an unlisted page answers an empty listing. */
 function fake(pages: Record<string, unknown[][]>) {
@@ -54,6 +55,21 @@ describe('listDirectoryBounded', () => {
   it('propagates NotAFileListingError', async () => {
     const { client } = fake({ '/d': [[{ error: 'x' }]] });
     await expect(listDirectoryBounded(client, 'c', 'a', 'p', '/d', { remaining: 9 })).rejects.toBeInstanceOf(NotAFileListingError);
+  });
+
+  it('review trace F1: a later page that is not empty but yields no names never ends the listing as complete', async () => {
+    const { client, calls } = fake({ '/': [['resource', 'work'], [{ foo: 1 }], []] });
+    // The parser refuses a page of entries with no names (NotAFileListingError)
+    // before the collector's own guard against a parsed-empty, raw-nonempty page.
+    await expect(listDirectoryBounded(client, 'c', 'a', 'p', '/', { remaining: 1000 }))
+      .rejects.toBeInstanceOf(NotAFileListingError);
+    // Nothing after the unparseable page is read.
+    expect(calls.map(c => c.page)).toEqual([0, 1]);
+    // The root guard therefore never reads it as Elite.
+    const evidence = await resolveCourseRootEvidence(
+      (partId) => listDirectoryBounded(client, 'c', 'a', partId, '/', { remaining: 1000 }), 'p', new Map(), 'c',
+    );
+    expect(evidence).toEqual({ kind: 'unknown', detail: expect.stringContaining(ROOT_LISTING_FAILED) });
   });
 
   it('propagates OverloadError', async () => {
