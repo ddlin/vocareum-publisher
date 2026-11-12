@@ -1,6 +1,7 @@
 import type { Config, PublishHistory } from '../../types/config';
 import type { ReconciliationPlan } from '../../types/state';
 import type { RubricSyncPlan } from '../../types/api';
+import type { PullZipSettings } from '../../utils/zip-switches';
 
 // Per-invocation options (NOT in the context — the context is the durable
 // environment; the request is what this call does). Mirror today's options.
@@ -18,6 +19,9 @@ export interface PushRequest {
 export interface PullRequest {
   batch?: boolean; nonInteractive?: boolean; skipContent?: boolean;
   content?: boolean; assignment?: string[]; part?: string[]; verbose?: boolean;
+  /** Zip download settings, resolved by the command before any request.
+   *  Absent: every directory is walked file by file, as before. */
+  zip?: PullZipSettings;
 }
 
 // Canonical, immutable description of EVERY intended mutation (review P0 #1/#3).

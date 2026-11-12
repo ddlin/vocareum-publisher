@@ -5,8 +5,10 @@
  *
  * CRITICAL: Content upload uses part PUT with content[].zipcontent payload.
  */
-import axios from 'axios';
+import axios, { type AxiosInstance } from 'axios';
 import { VocareumClient, APIError, VocareumError, isOverloadError, sanitizeLogString } from './client';
+import { newZipPartState, normaliseListedName, tryZipDirectory } from './zip-directory';
+import type { PullZipSettings } from '../utils/zip-switches';
 import type { DirectoryType } from '../types/config';
 import { DEFAULT_PART_DIRECTORIES } from '../types/config';
 import type { UploadResult, FileMap, FileInfo } from '../types/api';
@@ -124,7 +126,8 @@ export function resolveMaxDownloadFiles(env: NodeJS.ProcessEnv = process.env): n
   return n;
 }
 
-interface DownloadBudget {
+/** The running count and byte totals of one download, and where skipped entries go. */
+export interface DownloadBudget {
   /** Per-walk collector for entries a non-strict walk skipped. */
   failures?: DownloadFailure[];
   /** Vocareum-managed link entries the walk left out (see isVocareumManagedLink). */
@@ -832,6 +835,11 @@ export async function uploadContent(
  */
 export const MAX_DOWNLOAD_DEPTH = 10;
 
+/** The depth cut's failure text, shared by the walk and the zip path's commit. */
+const DEPTH_CUT_REASON =
+  `directory nesting exceeds the ${MAX_DOWNLOAD_DEPTH}-level download limit; ` +
+  `it and anything below it were NOT downloaded`;
+
 /**
  * Consecutive identical path segments that make a path a CYCLE CANDIDATE.
  *
@@ -900,6 +908,11 @@ export function downloadContent(
      *  out (e.g. `lib/publicdata`), so a caller comparing against local files
      *  does not read their absence as a remote deletion. */
     managedLinks?: string[];
+    /** Download each directory as one verified zip, falling back to the walk.
+     *  Absent, or `enabled: false`: the walk exactly as before. `now` and
+     *  `http` are injectable for tests (defaults: `performance.now()` and a
+     *  fresh bare axios instance, never the client's). */
+    zip?: PullZipSettings & { now?: () => number; http?: AxiosInstance };
   }
 ): Promise<FileMap> {
   return (async (): Promise<FileMap> => {
@@ -916,10 +929,31 @@ export function downloadContent(
     };
 
     const strict = options?.strict === true;
+    const zip = options?.zip?.enabled === true ? options.zip : undefined;
+    // One state per part per call: quarantine and seen ETags never outlive it.
+    const zipState = zip !== undefined ? newZipPartState() : undefined;
+    const zipHttp = zip !== undefined ? (zip.http ?? axios.create()) : undefined;
+    const zipNow = zip?.now ?? ((): number => performance.now());
     for (let i = 0; i < dirs.length; i++) {
       const directory = dirs[i];
       const baseApiPath = toApiDirPath(directory, architecture);
       try {
+        if (zip !== undefined && zipState !== undefined && zipHttp !== undefined) {
+          const outcome = await tryZipDirectory({
+            client, courseId, assignmentId, partId, directory, baseApiPath,
+            downloaded, budget, timeoutMs: zip.timeoutMs, now: zipNow, http: zipHttp, state: zipState,
+            isMissingDirectory: (error, apiDirPath) => isHttp400(error) &&
+              missingDirectoryMessageMatches(error instanceof Error ? error.message : String(error), apiDirPath),
+            recordDepthCut: (filemapKey) => recordDownloadFailure(
+              client, budget, strict, filemapKey, DEPTH_CUT_REASON, partId, 'truncated'
+            ),
+            walk: (relativePath, depth, preListed, only) => downloadDirectoryTree(
+              client, courseId, assignmentId, partId, directory, baseApiPath, relativePath, depth,
+              downloaded, strict, budget, preListed, only
+            ),
+          });
+          if (outcome === 'used') { continue; }
+        }
         await downloadDirectoryTree(
           client, courseId, assignmentId, partId, directory, baseApiPath, '', 0, downloaded, strict, budget
         );
@@ -970,7 +1004,11 @@ async function downloadDirectoryTree(
   strict: boolean,
   budget: DownloadBudget,
   /** Entries the caller already listed for this directory (saves a request). */
-  preListed?: FileInfo[]
+  preListed?: FileInfo[],
+  /** Zip handoff only: process just these names (normalised, one trailing `/`
+   *  stripped); every other entry is skipped with no charge, fetch or failure.
+   *  `preListed` stays the full listing, for the cycle comparison. */
+  only?: ReadonlySet<string>
 ): Promise<void> {
   const apiDirPath = relativePath ? `${baseApiPath}/${relativePath}` : baseApiPath;
   // Only the part's own declared directory is worth warning about; deeper
@@ -980,6 +1018,8 @@ async function downloadDirectoryTree(
   );
 
   for (const entry of entries) {
+    // First statement: a skipped name must never reach the budget charge below.
+    if (only !== undefined && !only.has(normaliseListedName(entry.path))) { continue; }
     const entryRelPath = relativePath ? `${relativePath}/${entry.path}` : entry.path;
     const filemapKey = `${directory}/${entryRelPath}`;
 
@@ -1003,11 +1043,7 @@ async function downloadDirectoryTree(
         // Truncating the walk drops files — the caller must not see a clean
         // pull. Warn without --verbose (a debug line here once hid an entire
         // course's nested assets) and record it as a failure.
-        recordDownloadFailure(
-          client, budget, strict, filemapKey,
-          `directory nesting exceeds the ${MAX_DOWNLOAD_DEPTH}-level download limit; ` +
-          `it and anything below it were NOT downloaded`, partId, 'truncated'
-        );
+        recordDownloadFailure(client, budget, strict, filemapKey, DEPTH_CUT_REASON, partId, 'truncated');
         return;
       }
       await downloadDirectoryTree(

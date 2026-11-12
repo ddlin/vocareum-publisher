@@ -48,6 +48,7 @@ import { rubricsEqual, describeRubricChanges, type RubricChangeSummary } from '.
 import { UsageError } from '../../utils/command-failure';
 import { createRubricFetcher, type RubricFetcher } from './rubric-fetcher';
 import { warnEvent, type WarnFn } from '../diagnostics';
+import type { PullZipSettings } from '../../utils/zip-switches';
 
 // ── Re-exported helpers (used by pull.ts resolver) ──────────────────────────
 
@@ -630,7 +631,8 @@ async function importAssignment(
   reporter: UnknownFieldReporter | undefined,
   workspaceRoot: string,
   events: EventSink,
-  rubricFetcher?: RubricFetcher
+  rubricFetcher?: RubricFetcher,
+  zip?: PullZipSettings,
 ): Promise<ImportResult> {
   const assignmentId = orphan.id;
   // localPath is user-typed at the import prompt — confine it before any writes.
@@ -688,7 +690,7 @@ async function importAssignment(
         part.id,
         downloadPlan.directories,
         downloadPlan.architecture,
-        { failures: partFailures }
+        { failures: partFailures, zip }
       );
       missingFiles.push(...partFailures.map(f => ({
         path: partPath === '.' ? path.join(localPath, f.path) : path.join(localPath, partPath, f.path),
@@ -977,6 +979,8 @@ export async function detectContentDrift(
   /** Receives each assignment whose check was skipped, so the caller can
    *  report the drift result as incomplete rather than clean. */
   skipped?: ContentDriftSkip[],
+  /** Zip download settings; absent means the walk. */
+  zip?: PullZipSettings,
 ): Promise<AssignmentContentDrift[]> {
   const driftList: AssignmentContentDrift[] = [];
   const excludedIds = new Set(config.vocareum.excluded_assignments ?? []);
@@ -1009,7 +1013,7 @@ export async function detectContentDrift(
           configPart.part_id,
           downloadPlan.directories,
           downloadPlan.architecture,
-          { strict: true, managedLinks }
+          { strict: true, managedLinks, zip }
         );
 
         const fileDiffs: FileDiff[] = [];
@@ -1244,6 +1248,7 @@ export async function inspectPull(
       warnFn,
       scoped.partIds,
       contentDriftIncomplete,
+      req.zip,
     );
   }
 
@@ -1346,7 +1351,8 @@ export async function applyPull(
             reporter,
             workspaceRoot,
             events,
-            rubricFetcher
+            rubricFetcher,
+            req.zip,
           );
 
           newAssignments.push(assignment);

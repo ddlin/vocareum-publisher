@@ -176,8 +176,7 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
     loadDotEnvIfPresent(path.join(workspaceRoot, '.env'));
     // Validated before auth or any request so a typo fails fast. A bare
     // ConfigError (not CommandFailureError) classifies as usage, exit 2.
-    // Threaded to downloadContent via options.zip in a later task.
-    resolvePullZipSettings();
+    const zip = resolvePullZipSettings();
     const config = await loadConfig(configPath);
 
     validatePullContentFlags(options);
@@ -208,6 +207,7 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
       content: options.content,
       assignment: options.assignment,
       part: options.part,
+      zip,
     };
 
     logger.info('Scanning for assignment sync issues...');
