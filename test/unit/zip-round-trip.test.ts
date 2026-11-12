@@ -42,6 +42,7 @@ import {
   install,
   type Installed,
 } from '../helpers/fake-vocareum-tree';
+import { buildZip } from '../helpers/zip-fixture';
 
 vi.mock('../../src/utils/git', () => ({
   // Plain functions: afterEach's restoreAllMocks must not strip these.
@@ -635,7 +636,10 @@ describe('S30 round-trip matrix: placeholder and type changes', () => {
     expect(run.inspection.contentDriftIncomplete).toEqual([]);
   });
 
-  it('file → directory after the zip was built: the zip file is kept (zip-only deviation); the next pull corrects it', async () => {
+  it.each([
+    ['via zip', true],
+    ['with zip off (the walk)', false],
+  ])('file → directory after the zip was built: the zip file is kept (zip-only deviation); the next pull, %s, corrects it', async (_label, zipOnSecond) => {
     const w = await imported(labTree().file('/voc/startercode/x', 'v1\n'));
     w.tree.file('/voc/startercode/x', 'v2\n');
     w.tree.onWritten = (job) => {
@@ -647,14 +651,20 @@ describe('S30 round-trip matrix: placeholder and type changes', () => {
     expect(zipNotUsed(first.events)).toEqual([]);
     expect(diffs(first)).toEqual([{ filePath: 'startercode/x', status: 'modified' }]);
     expect(await w.read('startercode/x')).toBe('v2\n');
+    expect(state(first.config)[KEY('startercode')]).toBe(await w.hash('startercode'));
+    expect(history(first.config)?.status).toBe('success');
 
-    const second = await w.drift(w.zip());
+    const startsBefore = starts(w);
+    const second = await w.drift(zipOnSecond ? w.zip() : w.zipFromEnv({ VOCAREUM_PULL_ZIP: 'off' }));
+    expect(starts(w) > startsBefore).toBe(zipOnSecond);
     expect(zipNotUsed(second.events)).toEqual([]);
     expect(diffs(second)).toEqual([
       { filePath: 'startercode/x', status: 'deleted' },
       { filePath: 'startercode/x/y', status: 'added' },
     ]);
     expect(await w.read('startercode/x/y')).toBe('why\n');
+    expect(state(second.config)[KEY('startercode')]).toBe(await w.hash('startercode'));
+    expect(history(second.config)?.status).toBe('success');
   });
 
   it.each([
@@ -687,6 +697,88 @@ describe('S30 round-trip matrix: placeholder and type changes', () => {
     walked.tree.remove('/voc/startercode/d').file('/voc/startercode/d', 'now a file\n');
     const walkRun = await walked.drift(walked.zipFromEnv({ VOCAREUM_PULL_ZIP: 'off' }));
     expect(walkRun.inspection.contentDriftIncomplete).toEqual(run.inspection.contentDriftIncomplete);
+  });
+});
+
+describe('S30 round-trip matrix: settle check and identical zips (service level)', () => {
+  /** Answer every poll for `dir` with success at once, before the job's own object lands. */
+  function earlySuccess(w: World, dir: string, onStart?: () => void): void {
+    w.tree.intercept = (kind, p) => {
+      if (kind === 'start' && p === dir) { onStart?.(); }
+      if (kind === 'poll' && p === dir) { return { state: 'success', message: w.tree.signedUrl() }; }
+      return undefined;
+    };
+  }
+
+  it('changed: our own job write lands after we pinned an older object — object_settle_changed, quarantined, walked', async () => {
+    // Jobs take 3 s, so our write lands between the pin and the settle point (success + 5 s).
+    const w = await imported(new FakeVocareumTree({ jobMs: 3_000 })
+      .file('/voc/startercode/main.py', 'print(1)\n')
+      .file('/voc/startercode/util/helpers.py', 'def h(): pass\n')
+      .file('/voc/docs/README.md', '# Lab\n'));
+    // The older object: this directory's previous content, same names, never seen in this run.
+    const older = w.tree.buildZipFor('/voc/startercode');
+    w.tree.file('/voc/startercode/main.py', 'print(2)\n');
+    earlySuccess(w, '/voc/startercode', () => { w.tree.writeObject(performance.now(), older); });
+
+    const run = await w.drift(w.zip());
+    expect(zipNotUsed(run.events)).toEqual(quarantinedAfter({ reason: 'object_settle_changed' }));
+    // The older object's bytes were never taken: the walk saw the new main.py.
+    expect(diffs(run)).toEqual([{ filePath: 'startercode/main.py', status: 'modified' }]);
+    expect(await w.read('startercode/main.py')).toBe('print(2)\n');
+    expect(w.tree.requests('start')).toHaveLength(2 + 1);
+
+    // On disk equals the walk's view.
+    w.tree.intercept = () => undefined;
+    const walk = await w.drift(w.zipFromEnv({ VOCAREUM_PULL_ZIP: 'off' }));
+    expect(walk.inspection.contentDrift).toEqual([]);
+    expect(walk.inspection.contentDriftIncomplete).toEqual([]);
+  });
+
+  it("changed: another directory's object pinned, names equal, our write lands before the settle point — rejected at the settle check", async () => {
+    const w = await imported(new FakeVocareumTree({ jobMs: 3_000 })
+      .file('/voc/startercode/main.py', 'print(1)\n')
+      .file('/voc/docs/README.md', '# Lab\n'));
+    w.tree.file('/voc/docs/README.md', '# Lab v2\n');
+    // Another directory's zip on the shared object, with docs' names but not its bytes.
+    const foreign = buildZip([{ name: 'README.md', data: 'some other directory\n' }]);
+    earlySuccess(w, '/voc/docs', () => { w.tree.writeObject(performance.now(), foreign); });
+
+    const run = await w.drift(w.zip());
+    expect(zipNotUsed(run.events)).toEqual([
+      { part_id: PART, directory: 'docs', reason: 'object_settle_changed', quarantined: true },
+      ...['data', 'private', 'lib', 'asnlib'].map((directory) => ({ part_id: PART, directory, reason: 'quarantined', quarantined: false })),
+    ]);
+    expect(diffs(run)).toEqual([{ filePath: 'docs/README.md', status: 'modified' }]);
+    expect(await w.read('docs/README.md')).toBe('# Lab v2\n');
+    expect(state(run.config)[KEY('docs')]).toBe(await w.hash('docs'));
+  });
+
+  it('unchanged: two directories of a part with byte-identical zips — the second is object_stale, quarantined, walked; same files as the walk', async () => {
+    const identical = (): FakeVocareumTree => new FakeVocareumTree()
+      .file('/voc/startercode/README.md', 'same\n')
+      .file('/voc/startercode/sub/a.txt', 'a\n')
+      .file('/voc/docs/README.md', 'same\n')
+      .file('/voc/docs/sub/a.txt', 'a\n');
+    const w = await world(identical());
+    const run = await w.import(w.zip());
+    expect(zipNotUsed(run.events)).toEqual([
+      { part_id: PART, directory: 'docs', reason: 'object_stale', quarantined: true },
+      ...['data', 'private', 'lib', 'asnlib'].map((directory) => ({ part_id: PART, directory, reason: 'quarantined', quarantined: false })),
+    ]);
+    // Pin, then 5 retries: six ranged GETs for docs, after startercode's pin and settle.
+    expect(w.tree.requests('s3-range').length).toBe(2 + 6);
+    // Only docs is walked (the walk tries `sub` as a file first, as always).
+    expect(w.tree.requests('fetch').map((e) => e.path).sort()).toEqual(['docs/README.md', 'docs/sub', 'docs/sub/a.txt']);
+    expect(history(run.config)?.status).toBe('success');
+
+    const walked = await world(identical());
+    const walkRun = await walked.import(walked.zipFromEnv({ VOCAREUM_PULL_ZIP: 'off' }));
+    for (const dir of ['startercode', 'docs']) {
+      expect(await w.hash(dir)).toBe(await walked.hash(dir));
+      expect(state(run.config)[KEY(dir)]).toBe(state(walkRun.config)[KEY(dir)]);
+    }
+    expect(await w.read('docs/sub/a.txt')).toBe('a\n');
   });
 });
 
