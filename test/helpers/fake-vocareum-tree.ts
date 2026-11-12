@@ -79,6 +79,9 @@ export interface FakeTreeOptions {
   deflate?: boolean;
   /** Listings return `{path, size}` objects instead of bare names. */
   listedSizes?: boolean;
+  /** How a listing of a FILE path is answered: HTTP 400 "doesn't exist" (default),
+   *  or `[]`, as an empty directory answers (spec step 7, G-F7: the server may do either). */
+  fileListing?: 'empty' | '400';
   /** How long a job takes before its object is written (ms). */
   jobMs?: number;
   /** S3 round trip (ms). */
@@ -123,6 +126,7 @@ export class FakeVocareumTree {
       explicitDirs: opts.explicitDirs ?? true,
       deflate: opts.deflate ?? false,
       listedSizes: opts.listedSizes ?? false,
+      fileListing: opts.fileListing ?? '400',
       jobMs: opts.jobMs ?? 400,
       s3RoundTrip: opts.s3RoundTrip ?? 100,
     };
@@ -251,6 +255,7 @@ export class FakeVocareumTree {
       if (hit instanceof Error) { throw hit; }
       if (hit !== undefined) { return ok(config, hit); }
       const r = this.resolve(dir);
+      if (r?.node.kind === 'file' && this.opts.fileListing === 'empty') { return ok(config, { files: [] }); }
       if (r === undefined || r.node.kind !== 'dir') { throw httpError(config, 400, `${dir} doesn't exist`); }
       const names = [...r.node.children.entries()].filter(([name]) => !name.startsWith('.'));
       const slice = names.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);

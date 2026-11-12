@@ -6,6 +6,7 @@
  * alone (zip off) on an identical tree and compare.
  */
 import zlib from 'node:zlib';
+import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   downloadContent,
@@ -413,6 +414,38 @@ describe('downloadContent zip path: scenario contract', () => {
     expect(r.events.some((e) => e.message.startsWith('Skipping cyclic path startercode/x/x/x'))).toBe(true);
   });
 
+  it('S29a: a lone empty public/ listing [] — handed to the walk, which ends it as today; charged once at the exact cap', async () => {
+    const make = (): FakeVocareumTree => new FakeVocareumTree()
+      .file('/voc/startercode/a.txt', 'a')
+      .dir('/voc/startercode/public');
+    const tree = make();
+    // The walk's own count: a.txt and public. A second charge would trip the cap.
+    const r = await pull(tree, ['startercode'], { limits: { maxFiles: 2 } });
+    const walk = await pull(make(), ['startercode'], { zip: false, limits: { maxFiles: 2 } });
+    expect(zipNotUsed(r.events)).toEqual([]);
+    expect(r.failures).toEqual([]);
+    expect(r.files).toEqual(walk.files);
+    expect(r.files).toEqual({ 'startercode/a.txt': Buffer.from('a') });
+    // Step 7 listed public ([]), then the walk tried it as a file and listed it again.
+    expect(tree.requests('fetch').map((e) => e.path)).toEqual(['startercode/public']);
+    expect(tree.requests('list', '/voc/startercode/public')).toHaveLength(2);
+  });
+
+  it('S29a: the same, but public became a file after the zip was built and its listing answers [] — the walk fetches the file; charged once', async () => {
+    const tree = new FakeVocareumTree({ fileListing: 'empty' })
+      .file('/voc/startercode/a.txt', 'a')
+      .dir('/voc/startercode/public');
+    tree.onWritten = () => { tree.remove('/voc/startercode/public').file('/voc/startercode/public', 'now a file'); };
+    const r = await pull(tree, ['startercode'], { limits: { maxFiles: 2 } });
+    expect(zipNotUsed(r.events)).toEqual([]);
+    expect(r.failures).toEqual([]);
+    expect(r.files).toEqual({
+      'startercode/a.txt': Buffer.from('a'),
+      'startercode/public': Buffer.from('now a file'),
+    });
+    expect(tree.requests('fetch').map((e) => e.path)).toEqual(['startercode/public']);
+  });
+
   it('S31: a transient walk failure (ECONNRESET) on a file the zip delivers — the zip has it, no failure', async () => {
     const reset = (kind: string, path: string): Error | undefined => (kind === 'download' && path === 'startercode/README.md'
       ? Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) : undefined);
@@ -471,6 +504,43 @@ describe('downloadContent zip path: review focus', () => {
     expect(tree.requests('start')).toHaveLength(1);
     expect(r.files).toEqual(walk.files);
     expect(r.failures).toEqual(walk.failures);
+  });
+});
+
+describe('downloadContent zip path: robustness', () => {
+  it('an unexpected throw in steps 2–8 quarantines the part, emits one zip_not_used and walks (I5)', async () => {
+    const make = (): FakeVocareumTree => s1Tree(true).file('/voc/data/x.csv', '1,2');
+    const tree = make();
+    // A response whose header accessor throws: no step catches this one.
+    tree.s3Intercept = (kind, n) => (kind === 's3-range' && n === 1
+      ? { status: 206, headers: { get: () => { throw new Error('header accessor exploded'); } }, data: Readable.from([Buffer.from('x')]) }
+      : undefined);
+    // Exactly the walk's count: a charge left behind would trip it.
+    const walk = await pull(make(), ['startercode', 'data'], { zip: false });
+    const count = Object.keys(walk.files!).length + 2; // + sub, sub/deeper
+    const r = await pull(tree, ['startercode', 'data'], { limits: { maxFiles: count } });
+    expect(r.error).toBeUndefined();
+    expect(zipNotUsed(r.events)).toEqual([
+      { part_id: PART, directory: 'startercode', reason: 'zip_invalid', quarantined: true },
+      { part_id: PART, directory: 'data', reason: 'quarantined', quarantined: false },
+    ]);
+    expect(r.files).toEqual(walk.files);
+    expect(r.failures).toEqual([]);
+    expect(tree.requests('start')).toHaveLength(1);
+  });
+
+  it('the deadline timer is disposed once a used directory is done; none is left pending', async () => {
+    const r = await pull(s1Tree(true), ['startercode']);
+    expect(zipNotUsed(r.events)).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('the deadline timer is disposed after a fallback too', async () => {
+    const tree = s1Tree(true);
+    tree.intercept = (kind) => (kind === 'start' ? new Error('start refused') : undefined);
+    const r = await pull(tree, ['startercode']);
+    expect(zipNotUsed(r.events)).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

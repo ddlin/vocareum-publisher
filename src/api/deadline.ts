@@ -22,6 +22,8 @@ export interface Deadline {
   readonly signal: AbortSignal;
   /** Milliseconds left on the monotonic clock; zero or less once passed. */
   remainingMs(): number;
+  /** Clear the pending timer once the work it bounds is over. Does not abort the signal. */
+  dispose(): void;
 }
 
 /** setTimeout fires at once for a delay above 2^31 - 1 ms; never arm it beyond that. */
@@ -39,14 +41,21 @@ export function createDeadline(ms: number, now: () => number = () => performance
   const end = now() + ms;
   const controller = new AbortController();
   const fire = (): void => { controller.abort(new DeadlineError(`Deadline of ${ms} ms exceeded`)); };
+  let timer: ReturnType<typeof setTimeout> | undefined;
   if (ms <= 0) {
     fire();
   } else {
     // unref: a pending deadline must not keep the process alive after the work is done.
-    const timer = setTimeout(fire, Math.min(ms, MAX_TIMER_MS));
+    timer = setTimeout(fire, Math.min(ms, MAX_TIMER_MS));
     (timer as { unref?: () => void }).unref?.();
   }
-  return { signal: controller.signal, remainingMs: () => end - now() };
+  return {
+    signal: controller.signal,
+    remainingMs: () => end - now(),
+    dispose: (): void => {
+      if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
+    },
+  };
 }
 
 /**

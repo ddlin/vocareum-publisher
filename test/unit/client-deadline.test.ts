@@ -77,6 +77,18 @@ describe('deadline primitives', () => {
     expect(d.signal.reason).toBeInstanceOf(DeadlineError);
   });
 
+  it('dispose clears the pending timer and never aborts', () => {
+    vi.useFakeTimers();
+    const d = createDeadline(1_000);
+    expect(vi.getTimerCount()).toBe(1);
+    d.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(5_000);
+    expect(d.signal.aborted).toBe(false);
+    d.dispose(); // idempotent
+    createDeadline(0).dispose(); // no timer to clear
+  });
+
   it('a deadline of 0 ms is aborted at once', () => {
     const d = createDeadline(0);
     expect(d.signal.aborted).toBe(true);

@@ -14,7 +14,7 @@
 import type { AxiosInstance } from 'axios';
 import type { VocareumClient } from './client';
 import { listDirectoryBounded, type DownloadBudget } from './content';
-import { createDeadline } from './deadline';
+import { createDeadline, type Deadline } from './deadline';
 import { runZipJob } from './zip-job';
 import { downloadPinned, pinObject, settleCheck, type ZipObjectContext } from './zip-object';
 import { readZip } from './zip-reader';
@@ -161,12 +161,69 @@ export async function tryZipDirectory(args: ZipDirectoryArgs): Promise<'used' | 
   // From the start request on, any outcome but "used" quarantines the part:
   // a job of ours may still be writing the shared object.
   const deadline = createDeadline(args.timeoutMs, args.now);
+  try {
+    let prepared: Prepared | ZipNotUsedReason;
+    try {
+      prepared = await prepareZip(args, deadline);
+    } catch {
+      // Every step reports its own reason; a throw is a defect or an
+      // unforeseen answer. Nothing was committed (I5), and a job of ours may
+      // still be writing, so it is a rejection like any other.
+      prepared = 'zip_invalid';
+    }
+    if (typeof prepared === 'string') { return notUsed(prepared, true); }
+    const { filtered, plan, listings, count, bytes } = prepared;
+
+    // Step 9: commit, then hand the missing names to the walk.
+    budget.files += count;
+    budget.bytes += bytes;
+    for (const [path, buf] of filtered.files) { args.downloaded[`${directory}/${path}`] = buf; }
+    for (const cut of [...filtered.depthCut].sort()) { args.recordDepthCut(`${directory}/${cut}`); }
+
+    const handoff = new Map<string, Set<string>>();
+    for (const source of [plan.missing, plan.handoffEmpty]) {
+      for (const [dir, names] of source) {
+        const set = handoff.get(dir) ?? new Set<string>();
+        for (const name of names) { set.add(name); }
+        handoff.set(dir, set);
+      }
+    }
+    for (const dir of [...handoff.keys()].sort()) {
+      // preListed is the full step-7 listing: the cycle comparison needs it whole.
+      const entries = listings.get(dir)?.entries ?? [];
+      await args.walk(dir, segments(dir), entries, handoff.get(dir)!);
+    }
+    return 'used';
+  } finally {
+    // The deadline bounds steps 2–6 only; its timer must not outlive the directory.
+    deadline.dispose();
+  }
+}
+
+/** Steps 2–8 passed: everything step 9 commits and hands off. Nothing is committed yet. */
+interface Prepared {
+  filtered: ReturnType<typeof filterStaging>;
+  plan: ReturnType<typeof planReconcile>;
+  listings: Map<string, ReadListing>;
+  count: number;
+  bytes: number;
+}
+
+/**
+ * Steps 2–8 for one directory. Writes nothing but the part's seen-ETag set
+ * (inside `pinObject`); returns the plan to commit, or why the zip is not used.
+ */
+async function prepareZip(
+  args: ZipDirectoryArgs, deadline: Deadline,
+): Promise<Prepared | ZipNotUsedReason> {
+  const { client, partId, baseApiPath, budget, state } = args;
+  const limits = budget.limits;
 
   // Steps 2–3: start, poll, check the URL.
   const job = await runZipJob(
     client, { courseId: args.courseId, assignmentId: args.assignmentId, partId }, baseApiPath, deadline, args.now,
   );
-  if ('reason' in job) { return notUsed(job.reason, true); }
+  if ('reason' in job) { return job.reason; }
 
   // Step 4: pin, then download. Step 4a: settle, before inflation.
   const ctx: ZipObjectContext = {
@@ -179,11 +236,11 @@ export async function tryZipDirectory(args: ZipDirectoryArgs): Promise<'used' | 
     success: job.success,
   };
   const pinned = await pinObject(job.url, ctx);
-  if ('reason' in pinned) { return notUsed(pinned.reason, true); }
+  if ('reason' in pinned) { return pinned.reason; }
   const body = await downloadPinned(job.url, pinned.sample, ctx);
-  if (!Buffer.isBuffer(body)) { return notUsed(body.reason, true); }
+  if (!Buffer.isBuffer(body)) { return body.reason; }
   const settled = await settleCheck(job.url, pinned.sample, ctx);
-  if (settled !== true) { return notUsed(settled.reason, true); }
+  if (settled !== true) { return settled.reason; }
 
   // Step 5: read into a staging area, under the remaining budget.
   const staging = await readZip(body, {
@@ -192,11 +249,11 @@ export async function tryZipDirectory(args: ZipDirectoryArgs): Promise<'used' | 
     maxTotalBytes: limits.maxTotalBytes - budget.bytes,
     signal: deadline.signal,
   });
-  if ('reason' in staging) { return notUsed(staging.reason, true); }
+  if ('reason' in staging) { return staging.reason; }
 
   // Step 6: filter the way the walk sees the tree.
   const filtered = filterStaging(staging);
-  if (filtered.cyclePattern) { return notUsed('cycle_pattern', true); }
+  if (filtered.cyclePattern) { return 'cycle_pattern'; }
 
   // Step 7: re-list every kept directory and the root, one running total across all.
   const counter = { remaining: limits.maxFiles - budget.files };
@@ -207,9 +264,9 @@ export async function tryZipDirectory(args: ZipDirectoryArgs): Promise<'used' | 
     try {
       listing = await readBounded(args, dir === '' ? baseApiPath : `${baseApiPath}/${dir}`, counter);
     } catch {
-      return notUsed('listing_failed', true);
+      return 'listing_failed';
     }
-    if (listing === 'over_budget') { return notUsed('listing_over_budget', true); }
+    if (listing === 'over_budget') { return 'listing_over_budget'; }
     listings.set(dir, listing);
   }
   const plan = planReconcile(
@@ -217,8 +274,8 @@ export async function tryZipDirectory(args: ZipDirectoryArgs): Promise<'used' | 
     new Map([...listings].map(([dir, l]) => [dir, l.names])),
     { sizes: new Map([...listings].map(([dir, l]) => [dir, l.sizes])), maxFileBytes: limits.maxFileBytes },
   );
-  if (plan.mismatch) { return notUsed('name_mismatch', true); }
-  if (plan.listedOverLimit) { return notUsed('listed_size_over_limit', true); }
+  if (plan.mismatch) { return 'name_mismatch'; }
+  if (plan.listedOverLimit) { return 'listed_size_over_limit'; }
 
   // Step 8: the commit must fit. Missing names are not pre-charged: the
   // handoff charges them once, and trips a limit exactly as the walk does.
@@ -226,27 +283,7 @@ export async function tryZipDirectory(args: ZipDirectoryArgs): Promise<'used' | 
   for (const buf of filtered.files.values()) { bytes += buf.length; }
   const count = filtered.files.size + plan.keptDirsToCharge.size + filtered.depthCut.size;
   if (budget.files + count > limits.maxFiles || budget.bytes + bytes > limits.maxTotalBytes) {
-    return notUsed('budget', true);
+    return 'budget';
   }
-
-  // Step 9: commit, then hand the missing names to the walk.
-  budget.files += count;
-  budget.bytes += bytes;
-  for (const [path, buf] of filtered.files) { args.downloaded[`${directory}/${path}`] = buf; }
-  for (const cut of [...filtered.depthCut].sort()) { args.recordDepthCut(`${directory}/${cut}`); }
-
-  const handoff = new Map<string, Set<string>>();
-  for (const source of [plan.missing, plan.handoffEmpty]) {
-    for (const [dir, names] of source) {
-      const set = handoff.get(dir) ?? new Set<string>();
-      for (const name of names) { set.add(name); }
-      handoff.set(dir, set);
-    }
-  }
-  for (const dir of [...handoff.keys()].sort()) {
-    // preListed is the full step-7 listing: the cycle comparison needs it whole.
-    const entries = listings.get(dir)?.entries ?? [];
-    await args.walk(dir, segments(dir), entries, handoff.get(dir)!);
-  }
-  return 'used';
+  return { filtered, plan, listings, count, bytes };
 }
