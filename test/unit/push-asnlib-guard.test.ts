@@ -78,6 +78,9 @@ let rootRequests: RootRequest[] = [];
 let otherRequests: string[] = [];
 /** Body for each page of the root listing; returning [] ends it. */
 let rootBody: (url: string, page: number) => unknown = pagesOf(CONTAINER);
+/** Directory listings other than the root (sync-deletes planning); off by default. */
+let answerListings = false;
+let listingDirs: string[] = [];
 
 function pagesOf(names: unknown[]): (url: string, page: number) => unknown {
   return (_url, page) => (page === 0 ? names : []);
@@ -90,6 +93,12 @@ const client = {
       rootRequests.push({ url: cfg.url, page });
       return rootBody(cfg.url, page);
     }
+    if (answerListings && typeof cfg.params?.dir === 'string') {
+      // Every directory lists one remote-only file, so a listed directory
+      // would always plan a deletion.
+      listingDirs.push(cfg.params.dir);
+      return (cfg.params.page ?? 0) === 0 ? ['old.py'] : [];
+    }
     otherRequests.push(cfg.url);
     throw new Error(`unexpected request ${cfg.url}`);
   }),
@@ -99,6 +108,7 @@ const client = {
 
 let root: string;
 let uploads: { partId: string; dir: string }[] = [];
+let syncCalls: { partId: string; dir: string; options: { syncDeletes?: boolean; plannedDeletePaths?: string[] } }[] = [];
 
 async function writeFiles(rel: string, files: Record<string, string>): Promise<void> {
   for (const [name, content] of Object.entries(files)) {
@@ -114,7 +124,10 @@ beforeEach(async () => {
   await fs.writeFile(path.join(root, 'vocareum.yaml'), 'placeholder: true\n');
   rootRequests = [];
   otherRequests = [];
+  answerListings = false;
+  listingDirs = [];
   uploads = [];
+  syncCalls = [];
   rootBody = pagesOf(CONTAINER);
   m.getCourse.mockResolvedValue({ id: COURSE, name: 'Course' });
   m.getAssignment.mockImplementation(async (_c: unknown, _course: string, id: string) => ({ id, name: id, courseid: COURSE }));
@@ -127,9 +140,10 @@ beforeEach(async () => {
   // successful upload leaves stored state equal to local state.
   m.syncDirectory.mockImplementation(async (
     _client: unknown, _course: string, _aid: string, partId: string, local: string, dir: DirectoryType,
-    options: { excludePatterns?: string[] },
+    options: { excludePatterns?: string[]; syncDeletes?: boolean; plannedDeletePaths?: string[] },
   ) => {
     uploads.push({ partId, dir });
+    syncCalls.push({ partId, dir, options });
     return { succeeded: [], failed: [], directoryHash: await calculateDirectoryHash(local, options.excludePatterns ?? []) };
   });
 });
@@ -730,5 +744,55 @@ describe('matrix: alias, push ... / push guard ...', () => {
     expect(rootRequests).toEqual([]);
     expect(plan.assignments[0].parts[0].changedDirectories).toContain('asnlib');
     expect(otherRequests).toEqual([]);
+  });
+});
+
+// ── --sync-deletes with a refused asnlib ──────────────────────────────────────
+
+describe('--sync-deletes with a refused asnlib (Container course)', () => {
+  it('update: startercode deletions are planned and synced; no listing or delete names asnlib', async () => {
+    const labs: Lab[] = [{ path: 'lab1', assignmentId: 'a1', partId: 'p1' }];
+    await writeFiles('lab1/part1', { 'startercode/main.py': 'print(1)\n', 'asnlib/grader.py': 'v1\n' });
+    remoteFrom(labs);
+    const history = await historyFor(labs, {
+      [path.join('lab1', 'part1', 'startercode')]: 'old-hash',
+      [path.join('lab1', 'part1', 'asnlib')]: 'old-hash',
+    });
+    rootBody = pagesOf(CONTAINER);
+    answerListings = true;
+    const run = await push(makeConfig(labs, history), { syncDeletes: true });
+
+    expect(part(run.plan).blockedDirectories).toEqual([{ dir: 'asnlib', reason: 'container-asnlib' }]);
+    // The deletion planning ran: startercode was listed and its remote-only file planned.
+    expect(listingDirs.length).toBeGreaterThan(0);
+    expect(new Set(listingDirs)).toEqual(new Set(['/voc/startercode']));
+    expect(part(run.plan).deletePaths).toEqual(['startercode/old.py']);
+    expect(otherRequests).toEqual([]);
+    expect(syncCalls.map((c) => [c.dir, c.options.syncDeletes, c.options.plannedDeletePaths]))
+      .toEqual([['startercode', true, ['old.py']]]);
+    expect(blockedEvents(run.events)).toHaveLength(1);
+    expect(run.history?.content_state?.['lab1/part1/asnlib']).toBe(PUSH_INCOMPLETE_MARKER);
+  });
+
+  it('create: the new part reconciles deletions for startercode only; no listing or delete names asnlib', async () => {
+    await writeFiles('lab1/part1', { 'startercode/main.py': 'a\n', 'asnlib/g.py': 'a\n' });
+    await writeFiles('lab2/part1', { 'startercode/main.py': 'b\n', 'asnlib/g.py': 'b\n' });
+    m.copyAssignment.mockResolvedValue({ assignment_id: 'a2', parts: [{ part_id: 'p2', seqnum: '0' }] });
+    const labs: Lab[] = [
+      { path: 'lab1', assignmentId: 'a1', partId: 'p1' },
+      { path: 'lab2', assignmentId: null, partId: null, template: 'tmpl-9' },
+    ];
+    remoteFrom(labs);
+    rootBody = pagesOf(CONTAINER);
+    answerListings = true;
+    const run = await push(makeConfig(labs, await historyFor([labs[0]]), { template_assignment_id: 'tmpl-9' }), { syncDeletes: true });
+
+    expect(part(run.plan, 1).blockedDirectories).toEqual([{ dir: 'asnlib', reason: 'container-asnlib' }]);
+    expect(part(run.plan, 1).reconcileDeleteDirectories).toEqual(['startercode']);
+    expect(listingDirs.filter((d) => d.includes('asnlib'))).toEqual([]);
+    expect(otherRequests).toEqual([]);
+    expect(syncCalls.map((c) => [c.partId, c.dir, c.options.syncDeletes])).toEqual([['p2', 'startercode', true]]);
+    expect(blockedEvents(run.events)[0].data).toEqual({ part_id: 'p2', directory: 'asnlib', reason: 'container-asnlib' });
+    expect(run.history?.content_state?.['lab2/part1/asnlib']).toBe(PUSH_INCOMPLETE_MARKER);
   });
 });
