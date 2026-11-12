@@ -25,7 +25,17 @@ export interface ReadZipOptions {
   maxFileBytes: number;
   maxTotalBytes: number;
   signal: AbortSignal;
+  /**
+   * Monotonic time left on the directory's deadline. The abort signal is a
+   * timer, and a buffer-backed stored entry can drain through stream
+   * callbacks without the timers phase getting a turn, so the reader also
+   * checks this per chunk and immediately before success.
+   */
+  remainingMs?: () => number;
 }
+
+/** Bytes processed between event-loop yields, so the deadline timer can run. */
+const YIELD_EVERY_BYTES = 8 * 1024 * 1024;
 
 const INVALID: ZipReadFailure = { reason: 'zip_invalid' };
 const OVER_BUDGET: ZipReadFailure = { reason: 'zip_over_budget' };
@@ -228,7 +238,8 @@ function preflightEntries(entries: yauzl.Entry[], opts: ReadZipOptions): Planned
  *   Never throws.
  */
 export async function readZip(buf: Buffer, opts: ReadZipOptions): Promise<StagingSet | ZipReadFailure> {
-  if (opts.signal.aborted) {return DEADLINE;}
+  const expired = (): boolean => opts.signal.aborted || (opts.remainingMs !== undefined && opts.remainingMs() <= 0);
+  if (expired()) {return DEADLINE;}
   const cd = locateCentralDirectory(buf);
   if (cd === undefined) {return INVALID;}
   if (cd.count > opts.maxEntries) {return OVER_BUDGET;}
@@ -260,6 +271,7 @@ export async function readZip(buf: Buffer, opts: ReadZipOptions): Promise<Stagin
         else {pending.push(p);}
       }
       let totalWritten = 0;
+      let sinceYield = 0;
 
       // Every callback body below is guarded: a synchronous throw inside an
       // event callback (Buffer.allocUnsafe or a copy failing under memory
@@ -268,7 +280,11 @@ export async function readZip(buf: Buffer, opts: ReadZipOptions): Promise<Stagin
       const next = (i: number): void => {
         try {
           if (settled) {return;}
-          if (i === pending.length) { finish({ files, dirs }); return; }
+          if (i === pending.length) {
+            // Success is decided here, so the clock is read here too.
+            finish(expired() ? DEADLINE : { files, dirs });
+            return;
+          }
           const { entry, name } = pending[i];
           const size = entry.uncompressedSize;
           // Every byte is overwritten before the buffer is kept (written === size).
@@ -283,6 +299,7 @@ export async function readZip(buf: Buffer, opts: ReadZipOptions): Promise<Stagin
               stream.on('data', (chunk: Buffer) => {
                 try {
                   if (settled) {return;}
+                  if (expired()) { finish(DEADLINE); return; }
                   if (written + chunk.length > size || totalWritten + chunk.length > opts.maxTotalBytes) {
                     finish(INVALID);
                     return;
@@ -291,6 +308,14 @@ export async function readZip(buf: Buffer, opts: ReadZipOptions): Promise<Stagin
                   written += chunk.length;
                   totalWritten += chunk.length;
                   crc = crc32Update(crc, chunk);
+                  sinceYield += chunk.length;
+                  if (sinceYield >= YIELD_EVERY_BYTES) {
+                    // Give the event loop a turn (the deadline timer among
+                    // others) before the next chunk.
+                    sinceYield = 0;
+                    stream.pause();
+                    setImmediate(() => { if (!settled) { stream.resume(); } });
+                  }
                 } catch {
                   finish(INVALID);
                 }

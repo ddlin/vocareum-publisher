@@ -254,6 +254,7 @@ async function prepareZip(
     maxFileBytes: limits.maxFileBytes,
     maxTotalBytes: limits.maxTotalBytes - budget.bytes,
     signal: deadline.signal,
+    remainingMs: () => deadline.remainingMs(),
   });
   if ('reason' in staging) { return staging.reason; }
 

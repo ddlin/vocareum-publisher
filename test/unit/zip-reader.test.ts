@@ -366,6 +366,62 @@ describe('readZip deadline', () => {
   });
 });
 
+describe('readZip: the monotonic deadline is checked during processing (review: Codex F3)', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  /** Hook each entry stream: `on` receives the stream before readZip attaches its own listeners. */
+  function hookStreams(on: (stream: Readable) => void): void {
+    const original = yauzl.ZipFile.prototype.openReadStream;
+    vi.spyOn(yauzl.ZipFile.prototype, 'openReadStream').mockImplementation(function (
+      this: yauzl.ZipFile, entry: yauzl.Entry, ...rest: unknown[]
+    ) {
+      const cb = rest[rest.length - 1] as (err: Error | null, stream: Readable) => void;
+      const wrapped = (err: Error | null, stream: Readable): void => {
+        if (err === null) { on(stream); }
+        cb(err, stream);
+      };
+      (original as (e: yauzl.Entry, c: typeof wrapped) => void).call(this, entry, wrapped);
+    });
+  }
+
+  it('time running out between chunks, with no abort fired, gives deadline', async () => {
+    let expired = false;
+    hookStreams((stream) => { stream.once('data', () => { expired = true; }); });
+    const buf = buildZip([{ name: 'big', data: randomBytes(4_000_000) }]);
+    const r = await readZip(buf, { ...BIG, signal: new AbortController().signal, remainingMs: () => (expired ? 0 : 1) });
+    expect('reason' in r ? r.reason : 'files').toBe('deadline');
+  });
+
+  it('time running out after the last chunk, with no abort fired, gives deadline, not success', async () => {
+    let expired = false;
+    hookStreams((stream) => { stream.once('end', () => { expired = true; }); });
+    const buf = buildZip([{ name: 'a.txt', data: 'a' }]);
+    const r = await readZip(buf, { ...BIG, signal: new AbortController().signal, remainingMs: () => (expired ? 0 : 1) });
+    expect('reason' in r ? r.reason : 'files').toBe('deadline');
+  });
+
+  it('a 64 MiB stored entry with 30 ms left gives deadline (real clock and deadline timer)', async () => {
+    const { createDeadline } = await import('../../src/api/deadline');
+    const buf = buildZip([{ name: 'large.bin', data: Buffer.alloc(64 * 1024 * 1024, 7) }]);
+    const deadline = createDeadline(30);
+    try {
+      const r = await readZip(buf, { ...BIG, signal: deadline.signal, remainingMs: deadline.remainingMs });
+      // Not toEqual on r: a failing diff of a 64 MiB staging set exhausts the heap.
+      expect('reason' in r ? r.reason : 'files').toBe('deadline');
+    } finally {
+      deadline.dispose();
+    }
+  });
+
+  it('with time left the same archive reads in full', async () => {
+    const data = Buffer.alloc(20 * 1024 * 1024, 7);
+    const r = await readZip(buildZip([{ name: 'large.bin', data }]), {
+      ...BIG, signal: new AbortController().signal, remainingMs: () => 1,
+    });
+    expect(staged(r).files.get('large.bin')?.equals(data)).toBe(true);
+  });
+});
+
 describe('readZip: a synchronous throw inside a stream callback (memory pressure)', () => {
   // Buffer.allocUnsafe or a copy can throw under memory pressure. Inside a yauzl
   // or stream callback that throw would escape readZip as an uncaught exception
