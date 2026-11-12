@@ -50,7 +50,6 @@
   },
   "homepage": "https://github.com/ddlin/vocareum-publisher#readme",
   "dependencies": {
-    "@types/yauzl": "3.4.0",
     "axios": "^1.6.0",
     "chalk": "^4.1.2",
     "commander": "^11.1.0",
@@ -67,6 +66,7 @@
     "@types/inquirer": "^9.0.7",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.10.0",
+    "@types/yauzl": "3.4.0",
     "@typescript-eslint/eslint-plugin": "^8.61.0",
     "@typescript-eslint/parser": "^8.61.0",
     "@vitest/coverage-v8": "^3.2.6",
