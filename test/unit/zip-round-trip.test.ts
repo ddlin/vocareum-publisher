@@ -667,6 +667,26 @@ describe('S30 round-trip matrix: placeholder and type changes', () => {
     expect(history(second.config)?.status).toBe('success');
   });
 
+  it('case-only rename on a case-insensitive filesystem: remote Main.py replaces local main.py; apply keeps the file with the remote bytes', async (ctx) => {
+    const w = await imported();
+    // Only a case-insensitive filesystem makes main.py and Main.py one file,
+    // which is where writing before deleting lost it.
+    const probe = path.join(w.root, 'CaseProbe');
+    await fs.writeFile(probe, '');
+    const insensitive = await fs.access(path.join(w.root, 'caseprobe')).then(() => true, () => false);
+    await fs.rm(probe);
+    if (!insensitive) { ctx.skip(); }
+
+    w.tree.remove('/voc/startercode/main.py').file('/voc/startercode/Main.py', 'print(2)\n');
+    const run = await w.drift(w.zip());
+    expect(zipNotUsed(run.events)).toEqual([]);
+    expect(diffs(run).map((d) => d.filePath)).toContain('startercode/main.py');
+    expect(await w.read('startercode/Main.py')).toBe('print(2)\n');
+    expect(await fs.readdir(w.abs('startercode'))).toContain('Main.py');
+    expect(state(run.config)[KEY('startercode')]).toBe(await w.hash('startercode'));
+    expect(history(run.config)?.status).toBe('success');
+  });
+
   it.each([
     ['empty' as const, 'name_mismatch'],
     ['400' as const, 'listing_failed'],
