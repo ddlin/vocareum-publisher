@@ -150,6 +150,7 @@ describe('a page whose body is not a listing fails the listing; it never reads a
     ['an error object without files', { status: 'error', message: 'temporarily unavailable' }],
     ['an object with a non-array files field', { files: 'none' }],
     ['null', null],
+    ['a files array with no file names in it', { files: [{ status: 'error' }] }],
   ];
 
   it.each(bodies)('%s on page 0 throws instead of reporting an empty directory', async (_label, body) => {

@@ -329,21 +329,51 @@ function retryAfterFromAxiosError(error: unknown): number | undefined {
 /**
  * Vocareum's overload answer: HTTP 200 with a plain-text body such as
  * "VOCAREUM-ERROR: Sorry, your access to Vocareum is temporarily unavailable
- * due to heavy traffic, …" (probed 2026-11-11 on courses 215500 and 240788).
- * Returned as data, a listing read it as an empty page: a directory looked
- * empty, or a paged listing ended early, and drift read the lost names as
- * remote deletions. It is an error.
+ * due to heavy traffic, …" (probed 2026-11-11 on courses 215500 and 240788:
+ * 5 of 24 listing requests). Returned as data, a listing read it as an empty
+ * page: a directory looked empty, or a paged listing ended early, and drift
+ * read the lost names as remote deletions. It is an error.
  */
 const OVERLOAD_BODY = /^\s*VOCAREUM-ERROR:/;
 
 /**
- * The overload error for a response body, or undefined when the body is a
- * real answer. Status 503 is what the body means, so the ordinary retry rules
- * apply: retried for idempotent methods, not for a POST that may have landed.
+ * Vocareum answered "temporarily unavailable" with an HTTP 200 text body.
+ * Status 503 is what it means, so the ordinary retry rules apply: retried for
+ * idempotent methods, not for a POST that may have landed. Pollers treat it
+ * as a sample that said nothing and keep polling.
  */
-function overloadError(data: unknown): APIError | undefined {
+export class OverloadError extends APIError {
+  constructor(message: string, public retryAfter?: number) {
+    super(message, 503);
+    this.name = 'OverloadError';
+  }
+}
+
+/** True for the overload answer, however many retries it went through. */
+export function isOverloadError(error: unknown): error is OverloadError {
+  return error instanceof OverloadError;
+}
+
+function retryAfterFromHeaders(headers: unknown): number | undefined {
+  if (headers === undefined || headers === null || typeof headers !== 'object') { return undefined; }
+  const accessor = headers as { get?: (name: string) => unknown };
+  const value: unknown = typeof accessor.get === 'function'
+    ? accessor.get('retry-after')
+    : Object.entries(headers).find(([key]) => key.toLowerCase() === 'retry-after')?.[1];
+  return parseRetryAfter(value);
+}
+
+/**
+ * The overload error for a response, or undefined when the body is a real
+ * answer. The server text is redacted like any other error text: it is not
+ * debug-gated, and it can end up in warnings and publish_history.
+ */
+function overloadError(data: unknown, headers: unknown): OverloadError | undefined {
   if (typeof data !== 'string' || !OVERLOAD_BODY.test(data)) { return undefined; }
-  return new APIError(`Vocareum is overloaded: ${data.trim().slice(0, 300)}`, 503);
+  return new OverloadError(
+    `Vocareum is overloaded: ${sanitizeLogString(data.trim().slice(0, 300))}`,
+    retryAfterFromHeaders(headers),
+  );
 }
 
 /**
@@ -488,7 +518,7 @@ export class VocareumClient {
         this.events.emit({ level: 'debug', message: 'API request', data: sanitizeForLog(config) });
         const response = await this.scheduler.schedule(() => this.axios.request<T>(config));
         this.events.emit({ level: 'debug', message: `API response: ${response.status}`, data: sanitizeForLog({ data: response.data }) });
-        const overloaded = overloadError(response.data);
+        const overloaded = overloadError(response.data, response.headers);
         if (overloaded !== undefined) { throw overloaded; }
         return response.data;
       } catch (error) {
@@ -500,7 +530,7 @@ export class VocareumClient {
         if (a === maxRetries - 1 || !retryable) { throw wrapped; }
         // A server-provided Retry-After takes precedence over exponential backoff.
         const retryAfter = retryAfterFromAxiosError(error) ??
-          (wrapped instanceof RateLimitError ? wrapped.retryAfter : undefined);
+          (wrapped instanceof RateLimitError || wrapped instanceof OverloadError ? wrapped.retryAfter : undefined);
         const retryAfterMs = retryAfter !== undefined ? retryAfter * 1000 : undefined;
         await sleep(retryAfterMs ?? backoff * Math.pow(2, a));
       }

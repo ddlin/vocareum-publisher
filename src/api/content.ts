@@ -6,7 +6,7 @@
  * CRITICAL: Content upload uses part PUT with content[].zipcontent payload.
  */
 import axios from 'axios';
-import { VocareumClient, APIError, VocareumError } from './client';
+import { VocareumClient, APIError, VocareumError, isOverloadError, sanitizeLogString } from './client';
 import type { DirectoryType } from '../types/config';
 import { DEFAULT_PART_DIRECTORIES } from '../types/config';
 import type { UploadResult, FileMap, FileInfo } from '../types/api';
@@ -182,7 +182,7 @@ export class NotAFileListingError extends APIError {
 
 function describeBody(response: unknown): string {
   if (response === null) { return 'null'; }
-  if (typeof response === 'string') { return `text: ${JSON.stringify(response.trim().slice(0, 120))}`; }
+  if (typeof response === 'string') { return `text: ${JSON.stringify(sanitizeLogString(response.trim().slice(0, 120)))}`; }
   if (typeof response === 'object') { return `object with keys ${JSON.stringify(Object.keys(response).slice(0, 10))}`; }
   return typeof response;
 }
@@ -240,6 +240,11 @@ function parseFileListResponse(response: unknown): ParsedFileEntry[] {
     }
   }
 
+  if (rawFiles.length > 0 && parsed.length === 0) {
+    // Entries, none of them a name: an error shape inside the array, not an
+    // empty page. Reading it as the end would truncate the listing.
+    throw new NotAFileListingError(`a list of ${rawFiles.length} entries with no file names`);
+  }
   return parsed;
 }
 
@@ -562,10 +567,20 @@ export async function waitForPartUpdateTransaction(
   const delayMs = options.delayMs ?? PART_UPDATE_POLL_DELAY_MS;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const txn = await client.request<TransactionResponse>({
-      method: 'GET',
-      url: `/transaction/${transactionId}`,
-    });
+    let txn: TransactionResponse;
+    try {
+      txn = await client.request<TransactionResponse>({
+        method: 'GET',
+        url: `/transaction/${transactionId}`,
+      });
+    } catch (error) {
+      // An overloaded sample says nothing about the job: keep polling, as an
+      // unreadable sample was before. Failing here would abandon a running
+      // upload and skip its later chunks.
+      if (!isOverloadError(error)) { throw error; }
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      continue;
+    }
 
     if (txn.state === 'success') {
       return;

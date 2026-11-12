@@ -77,12 +77,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the first page, the directory looked empty; on a later page, the listing ended
   early. Pull then missed those files without marking the import incomplete, and
   `pull --content` read them as deleted on Vocareum, so `--batch` could delete
-  the local copies. Such an answer is now an error, retried like a 503 for
-  requests that are safe to repeat. A listing whose answer has no file list
-  fails, instead of reading as empty. If the retries run out, pull records the
-  directory as a failure and marks it incomplete, and `pull --content` skips the
-  assignment rather than planning deletions. (Seen on 6 of 24 requests in one
-  probe.)
+  the local copies. (Seen on 5 of 24 listing requests in one probe.)
+
+  Such an answer is now an error, handled like an HTTP 503:
+  - GET, PUT and DELETE requests are retried (3 attempts in all, honouring a
+    `Retry-After` header); a POST is not, because it may have taken effect.
+  - Polls of a running job (upload, settings update, assignment copy) treat it
+    as "no news yet" and keep polling, as before, instead of giving up on the
+    job.
+  - A listing whose answer has no file list, or only entries without names,
+    fails instead of reading as empty.
+
+  If the retries run out on a listing, nothing is read as deleted. For a
+  directory inside a part's folder, pull records a failure and marks that
+  folder incomplete. For a part's top-level folder, the import of that
+  assignment fails and is recorded as failed. `pull --content` skips the
+  assignment rather than planning deletions.
 - **Directories with more than 100 entries are read in full.** Vocareum's file
   listing returns at most 100 names per request and pages the rest, without
   saying so; vocgit read only the first page. In any directory with more than
