@@ -247,6 +247,24 @@ describe('downloadContent zip path: scenario contract', () => {
     expect(codes(r.events)).not.toContain('download_truncated');
   });
 
+  it('review trace F4: a listing that names `x` and `x/` charges and fetches the missing name once', async () => {
+    const tree = new FakeVocareumTree().file('/voc/startercode/k1.txt', 'one');
+    let written = false;
+    tree.onWritten = () => { tree.file('/voc/startercode/m.txt', 'late'); written = true; };
+    // After the zip is built, the root listing spells the new name both ways.
+    tree.intercept = (kind, p) => {
+      if (kind !== 'list' || p !== '/voc/startercode' || !written) { return undefined; }
+      const page = tree.requests('list', p).at(-1)?.page ?? 0;
+      return { files: page === 0 ? ['k1.txt', 'm.txt', 'm.txt/'] : [] };
+    };
+    const r = await pull(tree, ['startercode']);
+    expect(zipNotUsed(r.events)).toEqual([]);
+    expect(r.failures).toEqual([]);
+    expect(r.files!['startercode/m.txt']).toEqual(Buffer.from('late'));
+    // One fetch: the second spelling is not processed (charged or fetched) again.
+    expect(tree.requests('fetch')).toHaveLength(1);
+  });
+
   it('S13: byte cap, alias content charged twice — caps never exceeded, INCOMPLETE', async () => {
     const tree = new FakeVocareumTree({ deflate: true })
       .file('/voc/docs/README.md', 'a'.repeat(10_000))

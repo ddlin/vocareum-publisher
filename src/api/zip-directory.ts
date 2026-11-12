@@ -81,9 +81,10 @@ interface ReadListing {
 }
 
 /**
- * Read one listing with the bounded collector. Names are deduplicated (the
- * collector keeps repeats) and normalised; the raw entries keep the listing's
- * own spelling, so a handoff walks exactly what the walk would have listed.
+ * Read one listing with the bounded collector. Names are normalised and
+ * deduplicated on the normalised name (the collector keeps repeats, and `x`
+ * and `x/` are one entry); the raw entries keep the first spelling listed, so
+ * a handoff charges and fetches each name once.
  */
 async function readBounded(
   args: ZipDirectoryArgs, apiDirPath: string, counter: { remaining: number },
@@ -95,15 +96,14 @@ async function readBounded(
   const entries: FileInfo[] = [];
   const names = new Set<string>();
   const sizes = new Map<string, number>();
-  const raw = new Set<string>();
   for (const name of listed.names) {
-    if (raw.has(name)) { continue; }
-    raw.add(name);
     const size = listed.sizes.get(name) ?? 0;
-    entries.push({ path: name, size });
     const normalised = normaliseListedName(name);
-    names.add(normalised);
+    // The largest listed size of any spelling still counts toward the size rule.
     sizes.set(normalised, Math.max(size, sizes.get(normalised) ?? 0));
+    if (names.has(normalised)) { continue; }
+    names.add(normalised);
+    entries.push({ path: name, size });
   }
   return { entries, names: [...names], sizes };
 }
