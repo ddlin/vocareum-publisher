@@ -828,7 +828,7 @@ export async function uploadContent(
  * is charged for every listed entry; this is secondary defense, so it carries
  * headroom rather than hugging the known-deepest layout.
  */
-const MAX_DOWNLOAD_DEPTH = 10;
+export const MAX_DOWNLOAD_DEPTH = 10;
 
 /**
  * Consecutive identical path segments that make a path a CYCLE CANDIDATE.
@@ -847,10 +847,6 @@ const MAX_DOWNLOAD_DEPTH = 10;
  */
 const CYCLE_REPEAT_THRESHOLD = 3;
 
-/**
- * True when a relative path ends in CYCLE_REPEAT_THRESHOLD identical segments,
- * i.e. the walk is going in circles rather than descending real content.
- */
 /** True when two listings name exactly the same entries (order-insensitive). */
 function sameEntryNames(a: FileInfo[], b: FileInfo[]): boolean {
   if (a.length !== b.length) {
@@ -860,7 +856,12 @@ function sameEntryNames(a: FileInfo[], b: FileInfo[]): boolean {
   return b.every(e => names.has(e.path));
 }
 
-function isCyclicPath(relativePath: string): boolean {
+/**
+ * True when a relative path ends in CYCLE_REPEAT_THRESHOLD identical segments,
+ * i.e. the walk is going in circles rather than descending real content.
+ * Exported so the zip pull applies the walk's exact pattern (spec step 6).
+ */
+export function isCyclicPath(relativePath: string): boolean {
   const segments = relativePath.split('/');
   if (segments.length < CYCLE_REPEAT_THRESHOLD) {
     return false;
