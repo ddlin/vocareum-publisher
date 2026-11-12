@@ -50,6 +50,7 @@
   },
   "homepage": "https://github.com/ddlin/vocareum-publisher#readme",
   "dependencies": {
+    "@types/yauzl": "3.4.0",
     "axios": "^1.6.0",
     "chalk": "^4.1.2",
     "commander": "^11.1.0",
@@ -59,6 +60,7 @@
     "js-yaml": "^4.1.0",
     "ora": "^7.0.0",
     "simple-git": "^4.0.2",
+    "yauzl": "3.4.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

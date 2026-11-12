@@ -13,6 +13,7 @@ import { resolveAuthProvider } from '../api/auth/cli-auth-options';
 import { resolveThrottle } from '../api/throttle';
 import { logger } from '../utils/logger';
 import { loadDotEnvIfPresent, isCI } from '../utils/env';
+import { resolvePullZipSettings } from '../utils/zip-switches';
 import { prompt, promptChoice } from '../utils/prompts';
 import { UnknownFieldReporter } from '../utils/unknown-field-reporter';
 import { withSession } from '../core/session';
@@ -173,6 +174,10 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
 
   try {
     loadDotEnvIfPresent(path.join(workspaceRoot, '.env'));
+    // Validated before auth or any request so a typo fails fast. A bare
+    // ConfigError (not CommandFailureError) classifies as usage, exit 2.
+    // Threaded to downloadContent via options.zip in a later task.
+    resolvePullZipSettings();
     const config = await loadConfig(configPath);
 
     validatePullContentFlags(options);
