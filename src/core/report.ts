@@ -7,6 +7,7 @@
  * reshaping pull's payload bumps only pull's.
  */
 import { classifyFailure } from '../utils/failure-classifier';
+import { sanitizeForLog, sanitizeLogString } from '../api/client';
 import { CommandFailureError } from '../utils/command-failure';
 import { collectDiagnostics, type Diagnostic } from './diagnostics';
 import type { CollectingEventSink, ServiceEvent } from './services/event-sink';
@@ -68,9 +69,18 @@ export function buildReport(args: {
     result: args.result,
     generated_at: new Date().toISOString(),
     retryable: error?.retryable ?? false,
-    payload: args.payload,
-    diagnostics: collectDiagnostics(args.events),
-    error,
+    // The document goes to stdout and CI logs. Redact it as a whole, here, so
+    // no command's payload can carry a credential: settings (including
+    // `_unknown_settings` and remote values) reached pull and push --json
+    // verbatim. Credential-named keys and URL query strings are removed; the
+    // document is output only, never applied back.
+    payload: sanitizeForLog(args.payload) as Record<string, unknown>,
+    diagnostics: collectDiagnostics(args.events).map((d) => ({
+      ...d,
+      message: sanitizeLogString(d.message),
+      ...(d.data !== undefined ? { data: sanitizeForLog(d.data) as Record<string, unknown> } : {}),
+    })),
+    error: error === null ? null : { ...error, message: sanitizeLogString(error.message) },
   };
 }
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { scanLocalContent, detectChangedDirectories, assertConfinedToWorkspace, INCOMPLETE_PULL_MARKER } from '../../src/core/local-scan';
+import { scanLocalContent, detectChangedDirectories, assertConfinedToWorkspace, INCOMPLETE_PULL_MARKER, PUSH_INCOMPLETE_MARKER } from '../../src/core/local-scan';
 import { calculateDirectoryHash } from '../../src/utils/files';
 import type { Config } from '../../src/types/config';
 
@@ -466,6 +466,22 @@ describe('scanLocalContent', () => {
     expect(result.assignments[0].parts[0].directories[0]).toEqual({ directory: 'startercode', status: 'error' });
     expect(result.summary.synced).toBe(0);
     expect(result.summary.error).toBe(1);
+  });
+
+  it('a push-incomplete directory needs publishing (not synced, not blocked), even with unchanged files', async () => {
+    const key = path.join('lab1', 'part1', 'startercode');
+    const config = makeConfig({
+      publish_history: [{
+        timestamp: '2026-11-11T00:00:00Z', commit_sha: 'x', published_by: 'push', status: 'failed',
+        content_state: { [key]: PUSH_INCOMPLETE_MARKER },
+      }],
+    });
+    const result = await scanLocalContent(config, tempDir);
+    expect(result.assignments[0].parts[0].directories[0]).toEqual({ directory: 'startercode', status: 'needs_publish' });
+    const { changedDirs, blockedDirs } = await detectChangedDirectories(
+      'lab1', 'part1', ['startercode'], config.publish_history![0], false, ['.gitkeep', '**/.gitkeep'], tempDir);
+    expect(changedDirs).toEqual(['startercode']);
+    expect(blockedDirs).toEqual([]);
   });
 
   it('reads content_state from the newest history entry even when it is failed', async () => {

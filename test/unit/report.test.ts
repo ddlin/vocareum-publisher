@@ -61,8 +61,9 @@ describe('writeReport', () => {
   });
 
   it('emits a minimal envelope when the payload cannot be serialized', () => {
-    const cyclic: Record<string, unknown> = {};
-    cyclic.self = cyclic;
+    // A BigInt, not a cycle: buildReport's redaction turns a cycle into
+    // "[Circular]", but JSON.stringify still throws on a BigInt.
+    const cyclic: Record<string, unknown> = { n: BigInt(1) };
     const chunks: string[] = [];
     const spy = vi.spyOn(process.stdout, 'write').mockImplementation((s) => { chunks.push(String(s)); return true; });
     try {
@@ -133,11 +134,39 @@ describe('writeReport failure signalling', () => {
 
   it('returns false when it fell back, so the caller can fail the command', () => {
     // Previously this printed "failed" to stdout and the process still exited 0.
-    const cyclic: Record<string, unknown> = {};
-    cyclic.self = cyclic;
+    // A BigInt, not a cycle: buildReport's redaction turns a cycle into
+    // "[Circular]", but JSON.stringify still throws on a BigInt.
+    const cyclic: Record<string, unknown> = { n: BigInt(1) };
     const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     try {
       expect(writeReport(buildReport({ ...base, result: 'applied', payload: cyclic }))).toBe(false);
     } finally { spy.mockRestore(); }
+  });
+});
+
+describe('buildReport redacts the whole document', () => {
+  // Settings (including `_unknown_settings` and remote values) reached pull
+  // and push --json verbatim: a token or a signed URL in them was printed.
+  it('removes credential-named keys and URL query strings at any depth', () => {
+    const settings = {
+      description: 'ok',
+      _unknown_settings: { token: 'TOP_SECRET', download_url: 'https://bucket.test/f?X-Amz-Signature=SIGNED_SECRET' },
+    };
+    const doc = buildReport({
+      command: 'push',
+      result: 'reported',
+      payload: { intent: { assignments: [{ settingsPayload: settings }] }, again: settings },
+      events: [{ level: 'warn', code: 'download_failed', message: 'see https://h/x?token=MSG_SECRET', data: { part_id: 'p', file: 'https://h/f?sig=DATA_SECRET' } }],
+      error: { code: 'internal', message: 'failed at https://u:PW_SECRET@h/x', retryable: false },
+    });
+    const json = JSON.stringify(doc);
+    expect(json).not.toMatch(/TOP_SECRET|SIGNED_SECRET|MSG_SECRET|DATA_SECRET|PW_SECRET/);
+    expect(json).toMatch(/"description":"ok"/);
+  });
+
+  it('prints an object referenced twice in full both times (not "[Circular]")', () => {
+    const shared = { name: 'Lab 1' };
+    const doc = buildReport({ command: 'pull', result: 'no-op', payload: { a: shared, b: shared }, events: [] });
+    expect(doc.payload).toEqual({ a: { name: 'Lab 1' }, b: { name: 'Lab 1' } });
   });
 });

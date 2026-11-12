@@ -112,10 +112,22 @@ async function fixCommandInner(options: FixOptions): Promise<void> {
       }
       if (repairable.length === 0) { break; }
 
+      // Parents before children: a folder is asked about before anything inside
+      // it, so a "no" is known before a nested repair would create it anyway.
+      repairable.sort((a, b) => (a.path ?? '').split('/').length - (b.path ?? '').split('/').length);
+
       logger.info(`Found ${repairable.length} missing folder(s).`);
       for (const error of repairable) {
         const folderPath = error.path;
         attempted.add(folderPath);
+        // Creating anything inside a declined folder would create the declined
+        // folder itself (mkdir -p). Respect the "no": skip it, and say why.
+        const insideDeclined = remaining.find((r) =>
+          r.reason === 'declined' && folderPath.startsWith(`${r.path}/`));
+        if (insideDeclined !== undefined) {
+          remaining.push({ path: folderPath, reason: 'declined', detail: `inside declined folder ${insideDeclined.path}` });
+          continue;
+        }
         // Validator paths are workspace-relative — create under the workspace
         // root, and never outside it (defense in depth: the validator already
         // refuses to classify escaping paths as missing_folder).

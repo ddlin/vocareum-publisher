@@ -470,15 +470,27 @@ export function sanitizeLogString(text: string): string {
  */
 export function sanitizeForLog(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
   if (typeof value === 'string') { return sanitizeLogString(value); }
-  if (Array.isArray(value)) { return value.map((v) => sanitizeForLog(v, seen)); }
-  if (value && typeof value === 'object') {
+  if (Array.isArray(value)) {
     if (seen.has(value)) { return '[Circular]'; }
     seen.add(value);
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = REDACT_KEY.test(k) ? '[REDACTED]' : sanitizeForLog(v, seen);
+    try { return value.map((v) => sanitizeForLog(v, seen)); } finally { seen.delete(value); }
+  }
+  if (value && typeof value === 'object') {
+    // `seen` holds the ANCESTORS of this node only (removed on the way out), so
+    // a real cycle is caught but the same object referenced twice -- e.g. one
+    // settings object in two places of a --json payload -- is printed twice
+    // rather than as "[Circular]".
+    if (seen.has(value)) { return '[Circular]'; }
+    seen.add(value);
+    try {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = REDACT_KEY.test(k) ? '[REDACTED]' : sanitizeForLog(v, seen);
+      }
+      return out;
+    } finally {
+      seen.delete(value);
     }
-    return out;
   }
   return value;
 }

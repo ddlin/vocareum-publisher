@@ -24,7 +24,7 @@ import type {
 import type { HistorySettingChange, HistoryFileChange, HistoryRubricChange, AssignmentSettings } from '../../types/config';
 import type { PublishResult, ReconciliationPlan } from '../../types/state';
 import { reconcile, displayPlan } from '../reconciler';
-import { assertConfinedToWorkspace, publishExcludePatterns } from '../local-scan';
+import { assertConfinedToWorkspace, publishExcludePatterns, PUSH_INCOMPLETE_MARKER } from '../local-scan';
 import { calculateDirectoryHash, readFile as readTextFile } from '../../utils/files';
 import { copyAssignment, getAssignment, updateAssignment } from '../../api/assignments';
 import { updateCourse } from '../../api/courses';
@@ -1376,6 +1376,10 @@ export async function executePush(
 
             if (uploadRes.failed.length > 0) {
               events.emit({ level: 'warn', message: `Some files failed to upload in ${dir}` });
+              // Never leave the previous hash: it may already equal the local
+              // directory (a --force-all push), and then the next push would
+              // never retry what failed here. See PUSH_INCOMPLETE_MARKER.
+              result.contentState[dirKey] = PUSH_INCOMPLETE_MARKER;
               for (const failedFile of uploadRes.failed) {
                 result.failed.push({
                   type: 'file',
@@ -1421,6 +1425,9 @@ export async function executePush(
             }
           } catch (error) {
             events.emit({ level: 'error', message: `Failed to upload ${dir} for part ${partId}`, data: { error } });
+            // A throw (e.g. a partial multi-chunk upload) leaves the directory in
+            // an unknown state: mark it so the next push re-plans it.
+            result.contentState[path.join(action.assignment.path, partAction.part.path, dir)] = PUSH_INCOMPLETE_MARKER;
             result.failed.push({ type: 'file', id: `${partId}/${dir}`, error });
             result.success = false;
             if (abortOnError) { shouldAbort = true; break assignmentLoop; }
