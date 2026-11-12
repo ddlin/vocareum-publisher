@@ -492,13 +492,20 @@ Summary:
 
 #### Zip download of directories
 
-Content pull downloads each directory as one zip when it can, which is much faster than fetching files one by one. If the zip cannot be trusted, that directory is pulled file by file instead. The result is the same files either way.
+Content pull downloads each directory as one zip when it can, which is much faster than fetching files one by one. If the zip cannot be trusted, that directory is pulled file by file instead.
+
+Differences from file-by-file download:
+
+- **Directory aliases are kept.** On a Container course, `asnlib/public/docs` and `asnlib/publicdata` arrive through the zip, although the file-by-file download cannot fetch them. They duplicate `docs` and `data` locally, as independent copies.
+- **Drift now covers `asnlib`.** `asnlib` is compared like any readable directory. A file deleted on Vocareum is reported `deleted`. A local file under `asnlib` that Vocareum lacks is also reported `deleted`, and applying the pull removes it, with no prompt under `--batch`.
+- **Snapshot.** The zip is the directory at the moment Vocareum built it. If a file is replaced by a directory of the same name after that, the old file is kept until the next pull.
+- **Transient errors.** A file that a file-by-file download would lose to a server error (5xx) or a dropped connection can arrive intact through the zip.
 
 - Zip is **on by default**. Set `VOCAREUM_PULL_ZIP=0` (or `false`, `off`, `no`) to turn it off.
 - `VOCAREUM_ZIP_TIMEOUT_MS` sets how long one directory's zip may take. The default is 600000 (10 minutes). It accepts 1000 to 3600000.
 - An invalid value for either variable exits 2 (usage), before any request is sent.
 - A small directory can take up to about 8 seconds longer than a file-by-file pull. vocgit waits to confirm the zip file did not change while it was read.
-- When a zip is rejected, vocgit warns with `zip_not_used` and pulls the rest of that part file by file. Each later directory of that part reports the reason `quarantined`.
+- When a zip is not used, vocgit warns with `zip_not_used` and pulls that directory file by file. A rejection after the zip job starts also pulls the rest of that part file by file, and each later directory of that part reports the reason `quarantined`. The checks before the job starts (`listing_failed`, `listing_over_budget`, `listed_size_over_limit`) affect only that directory.
 
 **Remaining risk.** Vocareum writes every zip of a part to one shared file name per user. vocgit checks that the file is the one it asked for, but three cases cannot be fully ruled out:
 

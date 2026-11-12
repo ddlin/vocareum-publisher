@@ -19,8 +19,11 @@ the EU tenant work but never published; it is folded in here.)
   take up to about 8 s longer because of the settle check. Run one pull per part
   per user at a time; the README lists the remaining risk.
 - **`zip_not_used` (warn) and `directory_blocked` (error) diagnostics**, with
-  closed reason sets. After a zip rejection the rest of that part is pulled file
-  by file, and each later directory reports `quarantined`.
+  closed reason sets. After a zip rejection that happens once the zip job has
+  started, the rest of that part is pulled file by file, and each later
+  directory reports `quarantined`. A directory whose zip is not used because of
+  the checks before the job starts (`listing_failed`, `listing_over_budget`,
+  `listed_size_over_limit`) is pulled file by file on its own.
 - **`--json` on `pull`, `push`, `status`, `validate` and `fix`.** stdout carries
   exactly one versioned envelope; human output moves to stderr. `--json` implies
   `--non-interactive`.
@@ -86,6 +89,15 @@ the EU tenant work but never published; it is folded in here.)
   (`base_url`, `host`, `region`, `source`, `allowlisted`, `malformed`).
 
 ### Changed
+- **Pull keeps directory-alias content, and drift now compares `asnlib`.** On a
+  Container course the zip delivers `asnlib/public/docs` and `asnlib/publicdata`,
+  which file-by-file download could not fetch; they are kept, duplicating `docs`
+  and `data` locally. Strict drift used to fail on those entries and skip the
+  assignment, so `asnlib` was never compared. Now it is compared like any
+  readable directory: a remote deletion is reported `deleted`, and a local file
+  under `asnlib` that the remote lacks is also reported `deleted` and removed by
+  apply (with no prompt under `--batch`). The README lists the other differences
+  from file-by-file download.
 - **Push refuses `asnlib` unless the course root is positively Elite.** On a
   Container course an upload could replace the `docs`/`data` aliases. A refused
   `asnlib` is marked `push-incomplete`, retried on the next push, and reported as
