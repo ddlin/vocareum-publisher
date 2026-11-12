@@ -144,7 +144,9 @@ async function statusCommandWithMode(options: StatusCommandOptions): Promise<voi
         events: collector.drain(),
       }));
       if (!ok) {
-        throw new CommandFailureError('Status report serialization failed');
+        // writeReport already wrote its fallback envelope: reportWritten, or the
+        // entrypoint writes a second document (AGENTS.md constraint 19).
+        throw new CommandFailureError('Status report serialization failed', 'internal', true);
       }
       return;
     }

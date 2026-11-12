@@ -166,12 +166,20 @@ export async function syncDirectory(
               failedDeletions += 1;
               uploadResult.failed.push({
                 path: file.path,
-                error: `Deletion rejected by the API; ${file.path} is still present remotely`,
+                // Not "still present": a refusal from an overloaded server says
+                // nothing about the file. What is known is that it was not
+                // confirmed deleted.
+                error: `Deletion of ${file.path} was not confirmed; it may still be present remotely`,
               });
             }
           } catch (error) {
+            // deleteFile reports refusals by returning false; a throw is
+            // unexpected, but it is still a deletion that did not happen.
+            failedDeletions += 1;
+            const reason = error instanceof Error ? error.message : 'Unknown';
             events.emit({ level: 'warn', code: 'delete_sync_failed', data: { part_id: partId, path: file.path },
-              message: `Failed to delete ${file.path}: ${error instanceof Error ? error.message : 'Unknown'}` });
+              message: `Failed to delete ${file.path}: ${reason}` });
+            uploadResult.failed.push({ path: file.path, error: `Deletion of ${file.path} failed: ${reason}` });
           }
         }
 
@@ -180,7 +188,7 @@ export async function syncDirectory(
             level: 'warn',
             message:
               `Deleted ${uploadResult.deleted.length} of ${filesToDelete.length} files; ` +
-              `${failedDeletions} could not be removed and are still present remotely`,
+              `${failedDeletions} were not confirmed deleted and may still be present remotely`,
           });
         } else {
           events.emit({ level: 'success', message: `Deleted ${uploadResult.deleted.length} files` });
@@ -189,8 +197,18 @@ export async function syncDirectory(
     } catch (error) {
       // No path here: this is the whole-sync failure, not a single file. `data` is
       // a closed set per code, but an optional field may legitimately be absent.
+      const reason = error instanceof Error ? error.message : 'Unknown';
       events.emit({ level: 'warn', code: 'delete_sync_failed', data: { part_id: partId },
-        message: `Sync deletions failed: ${error instanceof Error ? error.message : 'Unknown'}` });
+        message: `Sync deletions failed: ${reason}` });
+      // Every CLI --sync-deletes push lists the remote directory here to find
+      // what to delete. If that fails, `failed` must say so: push advances the
+      // directory hash only when `failed` is empty, and an advanced hash means
+      // the next push never re-plans the deletions that were not made.
+      // Empty path: the failure is the directory's (history id `<part>/<dir>/`).
+      uploadResult.failed.push({
+        path: '',
+        error: `${directoryType}: deletions were not synced (${reason}); the next push retries them`,
+      });
     }
   }
 

@@ -59,14 +59,18 @@ program.exitOverride();
 // Checked here rather than by dropping isDefault, so bare `vocgit` still shows
 // status. Only a non-flag first argument that is not a known command is
 // rejected.
-const KNOWN_COMMANDS = new Set(['init', 'new', 'validate', 'fix', 'pull', 'status', 'push']);
+// `help` is Commander's built-in command (`vocgit help push`): not registered
+// with .command(), but listed by `vocgit --help`, so it must pass the guard.
+const KNOWN_COMMANDS = new Set(['init', 'new', 'validate', 'fix', 'pull', 'status', 'push', 'help']);
 const firstArg = process.argv[2];
 if (firstArg !== undefined && !firstArg.startsWith('-') && !KNOWN_COMMANDS.has(firstArg)) {
   const message = `unknown command '${firstArg}'`;
   if (process.argv.includes('--json')) {
     writeJsonDocument({
       schema_version: '1.0',
-      command: 'status',
+      // null, not 'status': no command ran, and naming one would tell an agent
+      // that `status` failed when the typo was for `push`.
+      command: null,
       result: 'failed',
       generated_at: new Date().toISOString(),
       retryable: false,
@@ -449,7 +453,53 @@ Examples:
 /** The five commands that emit an envelope; used to label a pre-dispatch usage error. */
 const JSON_COMMANDS = new Set(['pull', 'push', 'status', 'validate', 'fix']);
 
-program.parseAsync().catch((error) => {
+/**
+ * The failure document for an invocation that never reached a command. `command`
+ * names the intended command when argv shows one, and is null otherwise: an
+ * agent that asked for --json gets a document either way, never empty stdout,
+ * and never a document that names a command that did not run.
+ */
+function writeUsageEnvelope(message: string): void {
+  const requested = process.argv.slice(2).find((a) => JSON_COMMANDS.has(a)) ?? null;
+  writeJsonDocument({
+    schema_version: '1.0',
+    command: requested,
+    result: 'failed',
+    generated_at: new Date().toISOString(),
+    retryable: false,
+    payload: { payload_schema_version: 1 },
+    diagnostics: [],
+    error: { code: 'usage', message, retryable: false },
+  });
+}
+
+/**
+ * `vocgit status --config --json`: Commander takes `--json` as the VALUE of
+ * --config, so the command runs without JSON mode and a failure writes no
+ * document. Reject it as a usage error before parsing.
+ */
+function jsonSwallowedByOption(): string | undefined {
+  const valueFlags = new Set<string>();
+  for (const cmd of [program, ...program.commands]) {
+    for (const opt of cmd.options) {
+      if (opt.required || opt.optional) {
+        if (opt.long !== undefined) { valueFlags.add(opt.long); }
+        if (opt.short !== undefined) { valueFlags.add(opt.short); }
+      }
+    }
+  }
+  const argv = process.argv.slice(2);
+  const i = argv.findIndex((a, idx) => a === '--json' && idx > 0 && valueFlags.has(argv[idx - 1]));
+  return i === -1 ? undefined : argv[i - 1];
+}
+
+const swallowedBy = jsonSwallowedByOption();
+if (swallowedBy !== undefined) {
+  const message = `option '${swallowedBy}' needs a value; '--json' was taken as its value`;
+  writeUsageEnvelope(message);
+  process.stderr.write(`error: ${message}\n`);
+  process.exitCode = 2;
+} else program.parseAsync().catch((error) => {
   if (error instanceof CommandFailureError) {
     process.exitCode = error.exitCode;   // command already rendered its error
     return;
@@ -465,18 +515,8 @@ program.parseAsync().catch((error) => {
     // identifiable from argv -- the envelope's `command` field is a closed set,
     // so an invocation with no recognisable command gets the exit code without
     // a document rather than a document with an invented command.
-    const requested = process.argv.slice(2).find((a) => JSON_COMMANDS.has(a));
-    if (process.argv.includes('--json') && requested !== undefined) {
-      writeJsonDocument({
-        schema_version: '1.0',
-        command: requested,
-        result: 'failed',
-        generated_at: new Date().toISOString(),
-        retryable: false,
-        payload: { payload_schema_version: 1 },
-        diagnostics: [],
-        error: { code: 'usage', message: error.message, retryable: false },
-      });
+    if (process.argv.includes('--json')) {
+      writeUsageEnvelope(error.message);
     }
     process.exitCode = 2;
     return;

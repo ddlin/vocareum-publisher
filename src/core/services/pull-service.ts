@@ -356,6 +356,9 @@ export interface PullInspection {
   /** Assignments whose content drift check was skipped. When non-empty the
    *  drift result is incomplete — never report it as "no sync issues". */
   contentDriftIncomplete?: ContentDriftSkip[];
+  /** Assignments whose settings could not be read. When non-empty the
+   *  settings drift result is incomplete — never report it as "no sync issues". */
+  settingsDriftIncomplete?: ContentDriftSkip[];
 }
 
 export interface PullResult {
@@ -795,7 +798,9 @@ async function detectSettingsDrift(
   skipAssignmentIds: Set<string>,
   warnFn: (msg: string) => void,
   reporter?: UnknownFieldReporter,
-  rubricFetcher?: RubricFetcher
+  rubricFetcher?: RubricFetcher,
+  /** Collects assignments whose settings could not be read: unknown, not clean. */
+  skipped?: ContentDriftSkip[],
 ): Promise<AssignmentSettingsDrift[]> {
   const driftList: AssignmentSettingsDrift[] = [];
   const excludedIds = new Set(config.vocareum.excluded_assignments ?? []);
@@ -923,6 +928,11 @@ async function detectSettingsDrift(
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       warnFn(`Could not fetch settings for assignment "${assignment.name}" (ID: ${assignment.assignment_id}): ${message}`);
+      // An unread assignment is unknown, not in sync: the pull must not print
+      // "No sync issues found" or exit 0 over it (an overloaded server made
+      // exactly that happen), and a later push would overwrite a remote change
+      // this check never saw.
+      skipped?.push({ assignmentName: assignment.name, reason: message });
       continue;
     }
   }
@@ -1204,7 +1214,10 @@ export async function inspectPull(
     shouldSyncRubrics(config),
     warnFn
   );
-  const settingsDrift = await detectSettingsDrift(config, client, staleAssignmentIds, warnFn, reporter, rubricFetcher);
+  const settingsDriftIncomplete: ContentDriftSkip[] = [];
+  const settingsDrift = await detectSettingsDrift(
+    config, client, staleAssignmentIds, warnFn, reporter, rubricFetcher, settingsDriftIncomplete,
+  );
 
   let contentDrift: AssignmentContentDrift[] = [];
   const contentDriftIncomplete: ContentDriftSkip[] = [];
@@ -1231,6 +1244,7 @@ export async function inspectPull(
     settingsDrift,
     contentDrift,
     contentDriftIncomplete,
+    settingsDriftIncomplete,
   };
 }
 

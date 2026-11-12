@@ -31,6 +31,7 @@ import {
 } from '../core/services/pull-service';
 import type {
   PullResult,
+  PullInspection,
   PullResolver,
   PullIssueOrphan,
   PullIssueStale,
@@ -87,6 +88,26 @@ const EMPTY_PULL_RESULT: PullResult = {
   filesNotDownloaded: 0,
   importsFailed: 0,
 };
+
+/**
+ * The public shape of a pull inspection (spec section 3.3: an explicit
+ * projection, never an internal type). The inspection carries every
+ * downloaded remote file (`remoteFiles`, Buffers) so apply can write them;
+ * serialized raw, `pull --content --json` put the course's files on stdout.
+ * The document keeps the diff (paths and statuses) and a count.
+ */
+export function serializePullInspection(inspection: PullInspection): unknown {
+  return {
+    ...inspection,
+    contentDrift: inspection.contentDrift.map((assignment) => ({
+      ...assignment,
+      partsDrift: assignment.partsDrift.map(({ remoteFiles, ...part }) => ({
+        ...part,
+        remoteFileCount: Object.keys(remoteFiles).length,
+      })),
+    })),
+  };
+}
 
 export interface PullOptions {
   config?: string;
@@ -197,13 +218,21 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
       const hasStale = inspection.stale.length > 0;
       const hasSettingsDrift = inspection.settingsDrift.length > 0;
       const hasContentDrift = inspection.contentDrift.length > 0;
-      const driftSkipped = inspection.contentDriftIncomplete ?? [];
-      if (driftSkipped.length > 0) {
+      const contentSkipped = inspection.contentDriftIncomplete ?? [];
+      if (contentSkipped.length > 0) {
         incomplete.push(
-          `content drift check skipped for ${driftSkipped.length} assignment(s): ` +
-          driftSkipped.map(d => `"${d.assignmentName}"`).join(', ')
+          `content drift check skipped for ${contentSkipped.length} assignment(s): ` +
+          contentSkipped.map(d => `"${d.assignmentName}"`).join(', ')
         );
       }
+      const settingsSkipped = inspection.settingsDriftIncomplete ?? [];
+      if (settingsSkipped.length > 0) {
+        incomplete.push(
+          `settings could not be read for ${settingsSkipped.length} assignment(s): ` +
+          settingsSkipped.map(d => `"${d.assignmentName}"`).join(', ')
+        );
+      }
+      const driftSkipped = [...contentSkipped, ...settingsSkipped];
 
       if (!hasOrphans && !hasStale && !hasSettingsDrift && !hasContentDrift) {
         // A skipped drift check is "unknown", not "clean": this line once
@@ -346,7 +375,7 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
       const ok = writeReport(buildReport({
         command: 'pull',
         result: outcome.result,
-        payload: { payload_schema_version: 1, inspection, applied: pullResult },
+        payload: { payload_schema_version: 1, inspection: serializePullInspection(inspection), applied: pullResult },
         events: collector.drain(),
       }));
       // reportWritten: true on both throws -- a document is already on stdout

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pullResultToOutcome } from '../../src/commands/pull';
+import { pullResultToOutcome, serializePullInspection } from '../../src/commands/pull';
 
 describe('pull outcome mapping', () => {
   const empty = {
@@ -10,7 +10,8 @@ describe('pull outcome mapping', () => {
     reset: 0,
     settingsPulled: 0,
     contentPulled: 0,
-    failures: 0,
+    filesNotDownloaded: 0,
+    importsFailed: 0,
   };
 
   it('no findings and nothing applied is a clean no-op', () => {
@@ -67,5 +68,31 @@ describe('resolved findings are not findings (spec §5.1)', () => {
     expect(applied.skipped).toBe(0);
     expect(pullResultToOutcome(applied, { hasFindings: applied.skipped > 0, failures: applied.failures }).result)
       .toBe('applied');
+  });
+});
+
+describe('pull --json inspection projection', () => {
+  // The inspection holds every downloaded remote file (remoteFiles: FileMap of
+  // Buffers) so apply can write them. Serialized raw, `pull --content --json`
+  // put the course's grading scripts and hidden tests on stdout, byte by byte.
+  it('carries the diff, never the file contents', () => {
+    const secret = Buffer.from('HIDDEN_TEST_SOLUTION');
+    const inspection = {
+      orphans: [], stale: [], settingsDrift: [],
+      contentDrift: [{
+        assignmentId: 'a1', assignmentName: 'lab1', assignmentPath: 'lab1',
+        partsDrift: [{
+          partId: 'p1', partName: 'Part 1', partPath: 'part1',
+          fileDiffs: [{ filePath: 'scripts/grade.sh', status: 'modified' as const }],
+          remoteFiles: { 'scripts/grade.sh': secret },
+          directories: ['scripts' as const],
+        }],
+      }],
+    };
+    const json = JSON.stringify(serializePullInspection(inspection as never));
+    expect(json).not.toMatch(/HIDDEN_TEST_SOLUTION|"type":"Buffer"/);
+    expect(json).not.toMatch(/remoteFiles/);
+    expect(json).toMatch(/scripts\/grade\.sh/);
+    expect(json).toMatch(/"remoteFileCount":1/);
   });
 });

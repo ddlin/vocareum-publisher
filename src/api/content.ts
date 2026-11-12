@@ -590,15 +590,18 @@ export async function waitForPartUpdateTransaction(
     }
     if (txn.state === 'error' || txn.state === 'failed') {
       throw new APIError(
-        txn.message ?? `Part update transaction failed (txn=${transactionId})`
+        sanitizeLogString(txn.message ?? `Part update transaction failed (txn=${transactionId})`)
       );
     }
 
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
 
+  // Retryable (exit 4): the job is still pending, and replaying the upload is
+  // safe because its first chunk resets the directory.
   throw new APIError(
-    `Timed out after ${maxAttempts * delayMs}ms waiting for part update (txn=${transactionId})`
+    `Timed out after ${maxAttempts * delayMs}ms waiting for part update (txn=${transactionId})`,
+    undefined, undefined, true,
   );
 }
 
@@ -636,6 +639,9 @@ export class PartialUploadError extends APIError {
       `so a full replay is safe.`,
       undefined,
       cause,
+      // A replay is safe; whether it can help depends on why the chunk failed
+      // (an overload or timeout: yes; an invalid target: no).
+      cause instanceof APIError && cause.retryable,
     );
     this.name = 'PartialUploadError';
   }
@@ -742,7 +748,7 @@ export async function uploadContent(
         });
       } else if (response.state === 'error' || response.state === 'failed') {
         throw new APIError(
-          response.message ?? `Part update failed (part=${partId}, dir=${directory})`
+          sanitizeLogString(response.message ?? `Part update failed (part=${partId}, dir=${directory})`)
         );
       } else if (isChunkedUpload && !missingTransactionWarned) {
         // No transactionid means we cannot confirm this chunk actually landed
@@ -1046,6 +1052,9 @@ async function downloadDirectoryTree(
             client, courseId, assignmentId, partId, `${baseApiPath}/${entryRelPath}`, false
           );
         } catch (listError) {
+          // Strict mode: throw the listing's own error, so its category (an
+          // overload is transient, exit 4) survives instead of a generic wrap.
+          if (strict) { throw listError; }
           // One unlistable subdirectory must not abort the rest of the part.
           recordDownloadFailure(
             client, budget, strict, filemapKey,

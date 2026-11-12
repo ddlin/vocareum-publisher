@@ -207,7 +207,8 @@ describe('pullCommand settings drift behavior', () => {
   it('should warn when settings fetch fails for an assignment', async () => {
     getAssignmentMock.mockRejectedValue(new Error('network error'));
 
-    await pullCommand({ nonInteractive: true });
+    // Unknown is not clean: the pull warns AND fails as partial (exit 6).
+    await expect(pullCommand({ nonInteractive: true })).rejects.toMatchObject({ exitCode: 6 });
 
     expect(loggerWarnMock).toHaveBeenCalledWith(
       'Could not fetch settings for assignment "Lab 1" (ID: asn-1): network error'
@@ -515,9 +516,14 @@ describe('pullCommand content-drift gating', () => {
     vi.clearAllMocks();
     process.env.VOCAREUM_API_KEY = 'token';
     isCIMock.mockReturnValue(false);
-    loadConfigMock.mockResolvedValue(twoAssignmentConfig);
+    // Settings drift is out of scope here. Skip it the honest way: a settings
+    // read that FAILS now makes the pull incomplete (exit 6), as it should.
+    loadConfigMock.mockResolvedValue({
+      ...twoAssignmentConfig,
+      publish_options: { ...twoAssignmentConfig.publish_options, sync_settings: false },
+    });
     updateConfigMock.mockResolvedValue(undefined);
-    getAssignmentMock.mockRejectedValue(new Error('skip settings drift'));
+    getAssignmentMock.mockRejectedValue(new Error('settings are not read in these tests'));
     reconcileMock.mockResolvedValue({
       config: twoAssignmentConfig, course: { type: 'skip' }, assignments: [],
       summary: { coursesToUpdate: 0, assignmentsToCreate: 0, assignmentsToUpdate: 0, assignmentsWithDiscoveredIds: 0, assignmentsToSkip: 0, partsToCreate: 0, partsToUpdate: 0, estimatedApiCalls: 0 },
@@ -698,6 +704,19 @@ describe('pullCommand — incomplete content drift check', () => {
     expect(loggerSuccessMock).not.toHaveBeenCalledWith('No sync issues found.');
     // Logged once by the command (AGENTS.md #14); the entrypoint does not re-log.
     expect(vi.mocked(logger.error)).toHaveBeenCalledTimes(1);
+  });
+
+  it('an assignment whose settings cannot be read is unknown, not clean: exit 6, no "No sync issues"', async () => {
+    // Before: the settings read failed (e.g. Vocareum overloaded past the
+    // retries), the pull warned, printed "No sync issues found." and exited 0.
+    getAssignmentMock.mockRejectedValue(new Error('Vocareum is overloaded: VOCAREUM-ERROR: heavy traffic'));
+    const run = pullCommand({ nonInteractive: true });
+    await expect(run).rejects.toMatchObject({
+      name: 'CommandFailureError',
+      exitCode: 6,
+      message: expect.stringMatching(/settings could not be read for 1 assignment\(s\): "lab1"/),
+    });
+    expect(loggerSuccessMock).not.toHaveBeenCalledWith('No sync issues found.');
   });
 
   it('a check that completes with no drift is still clean and exits 0', async () => {

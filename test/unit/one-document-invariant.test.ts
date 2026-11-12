@@ -112,6 +112,22 @@ describe('CommandFailureError.reportWritten', () => {
   });
 });
 
+describe('a serialization failure never adds a second document', () => {
+  it('every "report serialization failed" throw passes reportWritten: true', async () => {
+    // writeReport has already written its fallback envelope when it returns
+    // false. status threw without the flag, so the entrypoint wrote a second.
+    const { readdirSync, readFileSync } = await import('fs');
+    const offenders: string[] = [];
+    for (const name of readdirSync('src/commands')) {
+      const source = readFileSync(`src/commands/${name}`, 'utf8');
+      for (const m of source.matchAll(/new CommandFailureError\(\s*'[^']*serialization failed'([^)]*)\)/g)) {
+        if (!/,\s*true\s*$/.test(m[1])) { offenders.push(`${name}: ${m[0]}`); }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe('commands are self-contained under --json', () => {
   it('every command that accepts --json wraps itself in withJsonMode', async () => {
     // The CLI wrapper also wraps, but a direct caller (test, embedded use) gets
@@ -139,8 +155,9 @@ describe('an unknown command is rejected, not silently run as status', () => {
     // `.command('new [path]')` carries an argument spec, so the name must be
     // matched up to a space or the closing quote -- a stricter pattern silently
     // omits it and makes this test fail for the wrong reason.
-    const registered = [...source.matchAll(/\.command\('([a-z]+)(?:\s[^']*)?'/g)]
-      .map((m) => m[1]).sort();
+    // Plus `help`, Commander's built-in command, which `vocgit --help` lists.
+    const registered = [...[...source.matchAll(/\.command\('([a-z]+)(?:\s[^']*)?'/g)]
+      .map((m) => m[1]), 'help'].sort();
     // A command registered but missing from the guard would be rejected as
     // unknown; one in the guard but unregistered would be silently accepted.
     expect(guarded).toEqual(registered);
