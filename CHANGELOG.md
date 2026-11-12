@@ -70,6 +70,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error through.
 
 ### Fixed
+- **An overloaded Vocareum no longer reads as an empty directory.** Under heavy
+  traffic, Vocareum answers HTTP 200 with a text message ("VOCAREUM-ERROR: Sorry,
+  your access to Vocareum is temporarily unavailable due to heavy traffic…")
+  instead of a listing. vocgit read that answer as a listing with no names. On
+  the first page, the directory looked empty; on a later page, the listing ended
+  early. Pull then missed those files without marking the import incomplete, and
+  `pull --content` read them as deleted on Vocareum, so `--batch` could delete
+  the local copies. Such an answer is now an error, retried like a 503 for
+  requests that are safe to repeat. A listing whose answer has no file list
+  fails, instead of reading as empty. If the retries run out, pull records the
+  directory as a failure and marks it incomplete, and `pull --content` skips the
+  assignment rather than planning deletions. (Seen on 6 of 24 requests in one
+  probe.)
 - **Directories with more than 100 entries are read in full.** Vocareum's file
   listing returns at most 100 names per request and pages the rest, without
   saying so; vocgit read only the first page. In any directory with more than

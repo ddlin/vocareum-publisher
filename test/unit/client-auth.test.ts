@@ -521,3 +521,68 @@ describe('VocareumClient throttle scheduling', () => {
     }
   });
 });
+
+/**
+ * Under load Vocareum answers HTTP 200 with a plain-text body instead of JSON
+ * (probed 2026-11-11 on courses 215500 and 240788: 6 of 24 listing requests).
+ * Returned as data, a listing read it as an empty page: a directory looked
+ * empty, or a paged listing ended early, and drift read the lost names as
+ * remote deletions. It must be an error, retried like a 503.
+ */
+const THROTTLE_BODY =
+  'VOCAREUM-ERROR: Sorry, your access to Vocareum is temporarily unavailable due to heavy traffic, ' +
+  'you may re-connect later. If issues persist, please contact Vocareum technical support\n';
+
+describe('a 200 response whose body is a VOCAREUM-ERROR text', () => {
+  it('is retried for a GET, and the retry\'s answer is returned', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    let calls = 0;
+    setAdapter(client, async (config: unknown) => {
+      calls += 1;
+      const data = calls === 1 ? THROTTLE_BODY : { files: ['a.txt'] };
+      return { data, status: 200, statusText: 'OK', headers: {}, config };
+    });
+    const out = await client.request<{ files: string[] }>({ method: 'GET', url: '/x' }, { backoff: 1 });
+    expect(out).toEqual({ files: ['a.txt'] });
+    expect(calls).toBe(2);
+  });
+
+  it('throws a 503 APIError naming the overload once retries run out; it is never returned as data', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    let calls = 0;
+    setAdapter(client, async (config: unknown) => {
+      calls += 1;
+      return { data: THROTTLE_BODY, status: 200, statusText: 'OK', headers: {}, config };
+    });
+    await expect(client.request({ method: 'GET', url: '/x' }, { backoff: 1 }))
+      .rejects.toMatchObject({ name: 'APIError', statusCode: 503, message: expect.stringMatching(/heavy traffic/) });
+    expect(calls).toBe(3);
+  });
+
+  it('is an error but is not retried for a non-idempotent POST (it may have been applied)', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    let calls = 0;
+    setAdapter(client, async (config: unknown) => {
+      calls += 1;
+      return { data: THROTTLE_BODY, status: 200, statusText: 'OK', headers: {}, config };
+    });
+    await expect(client.request({ method: 'POST', url: '/x', data: {} }, { backoff: 1 }))
+      .rejects.toMatchObject({ statusCode: 503 });
+    expect(calls).toBe(1);
+  });
+
+  it('is recognised with leading whitespace', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    setAdapter(client, async (config: unknown) =>
+      ({ data: `\n  ${THROTTLE_BODY}`, status: 200, statusText: 'OK', headers: {}, config }));
+    await expect(client.request({ method: 'GET', url: '/x' }, { maxRetries: 1 }))
+      .rejects.toMatchObject({ statusCode: 503 });
+  });
+
+  it('leaves other string bodies alone', async () => {
+    const client = new VocareumClient(new FakeProvider(), NO_THROTTLE);
+    setAdapter(client, async (config: unknown) =>
+      ({ data: 'plain text answer', status: 200, statusText: 'OK', headers: {}, config }));
+    expect(await client.request({ method: 'GET', url: '/x' })).toBe('plain text answer');
+  });
+});

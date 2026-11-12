@@ -168,17 +168,40 @@ interface ParsedFileEntry {
   directory?: string;
 }
 
+/**
+ * A body that is not a file listing. Distinct from an empty listing: reading
+ * it as "no names" would make a directory look empty, or end a paged listing
+ * early, and drift would plan the lost names as remote deletions.
+ */
+export class NotAFileListingError extends APIError {
+  constructor(what: string) {
+    super(`The API answer is not a file listing (${what}); refusing to read it as an empty directory`);
+    this.name = 'NotAFileListingError';
+  }
+}
+
+function describeBody(response: unknown): string {
+  if (response === null) { return 'null'; }
+  if (typeof response === 'string') { return `text: ${JSON.stringify(response.trim().slice(0, 120))}`; }
+  if (typeof response === 'object') { return `object with keys ${JSON.stringify(Object.keys(response).slice(0, 10))}`; }
+  return typeof response;
+}
+
 function parseFileListResponse(response: unknown): ParsedFileEntry[] {
-  let rawFiles: unknown[] = [];
+  let rawFiles: unknown[];
   if (Array.isArray(response)) {
     rawFiles = response;
   } else if (response !== null && typeof response === 'object') {
     const obj = response as {
-      files?: unknown[];
-      data?: unknown[];
-      items?: unknown[];
+      files?: unknown;
+      data?: unknown;
+      items?: unknown;
     };
-    rawFiles = obj.files ?? obj.data ?? obj.items ?? [];
+    const list = obj.files ?? obj.data ?? obj.items;
+    if (!Array.isArray(list)) { throw new NotAFileListingError(describeBody(response)); }
+    rawFiles = list;
+  } else {
+    throw new NotAFileListingError(describeBody(response));
   }
 
   const parsed: ParsedFileEntry[] = [];

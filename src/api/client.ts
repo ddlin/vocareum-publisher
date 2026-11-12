@@ -327,6 +327,26 @@ function retryAfterFromAxiosError(error: unknown): number | undefined {
 }
 
 /**
+ * Vocareum's overload answer: HTTP 200 with a plain-text body such as
+ * "VOCAREUM-ERROR: Sorry, your access to Vocareum is temporarily unavailable
+ * due to heavy traffic, …" (probed 2026-11-11 on courses 215500 and 240788).
+ * Returned as data, a listing read it as an empty page: a directory looked
+ * empty, or a paged listing ended early, and drift read the lost names as
+ * remote deletions. It is an error.
+ */
+const OVERLOAD_BODY = /^\s*VOCAREUM-ERROR:/;
+
+/**
+ * The overload error for a response body, or undefined when the body is a
+ * real answer. Status 503 is what the body means, so the ordinary retry rules
+ * apply: retried for idempotent methods, not for a POST that may have landed.
+ */
+function overloadError(data: unknown): APIError | undefined {
+  if (typeof data !== 'string' || !OVERLOAD_BODY.test(data)) { return undefined; }
+  return new APIError(`Vocareum is overloaded: ${data.trim().slice(0, 300)}`, 503);
+}
+
+/**
  * Sleep for a given number of milliseconds
  */
 function sleep(ms: number): Promise<void> {
@@ -468,6 +488,8 @@ export class VocareumClient {
         this.events.emit({ level: 'debug', message: 'API request', data: sanitizeForLog(config) });
         const response = await this.scheduler.schedule(() => this.axios.request<T>(config));
         this.events.emit({ level: 'debug', message: `API response: ${response.status}`, data: sanitizeForLog({ data: response.data }) });
+        const overloaded = overloadError(response.data);
+        if (overloaded !== undefined) { throw overloaded; }
         return response.data;
       } catch (error) {
         const wrapped = this.wrapError(error);

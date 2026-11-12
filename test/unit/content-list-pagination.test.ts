@@ -43,6 +43,8 @@ interface FakeOptions {
   overlap?: boolean;
   /** API dir path → the page number that answers "doesn't exist" (the directory vanished mid-listing). */
   vanishOnPage?: Record<string, number>;
+  /** API dir path → page number → a body that is not a listing (what the client passes through as data). */
+  oddBodyOnPage?: Record<string, Record<number, unknown>>;
 }
 
 function fakeClient(opts: FakeOptions) {
@@ -54,6 +56,8 @@ function fakeClient(opts: FakeOptions) {
       listCalls.push({ dir, page });
       const all = opts.dirs[dir];
       if (all === undefined || opts.vanishOnPage?.[dir] === (page ?? 0)) { throw new APIError(`${dir} doesn't exist`, 400); }
+      const odd = opts.oddBodyOnPage?.[dir];
+      if (odd !== undefined && (page ?? 0) in odd) { return odd[page ?? 0]; }
       const size = opts.pageSize ?? PAGE;
       const ignores = opts.ignorePage === true || (Array.isArray(opts.ignorePage) && opts.ignorePage.includes(dir));
       const p = ignores ? 0 : (page ?? 0);
@@ -134,6 +138,45 @@ describe('listFiles reads every page', () => {
     const { client, listCalls } = fakeClient({ dirs: {} });
     expect(await listFiles(client, 'c', 'a', 'p', 'startercode', 'container')).toEqual([]);
     expect(listCalls).toHaveLength(1);
+  });
+});
+
+describe('a page whose body is not a listing fails the listing; it never reads as an empty page', () => {
+  // The client turns a VOCAREUM-ERROR text body into an error, but any other
+  // body without a listing array must not read as "no more names" either:
+  // on page 0 that is an empty directory, on a later page a truncated one.
+  const bodies: Array<[string, unknown]> = [
+    ['a text body', 'VOCAREUM-ERROR: Sorry, your access to Vocareum is temporarily unavailable due to heavy traffic'],
+    ['an error object without files', { status: 'error', message: 'temporarily unavailable' }],
+    ['an object with a non-array files field', { files: 'none' }],
+    ['null', null],
+  ];
+
+  it.each(bodies)('%s on page 0 throws instead of reporting an empty directory', async (_label, body) => {
+    const { client } = fakeClient({ dirs: { '/voc/startercode': names(5) }, oddBodyOnPage: { '/voc/startercode': { 0: body } } });
+    await expect(listFiles(client, 'c', 'a', 'p', 'startercode', 'container')).rejects.toThrow(/not a file listing/);
+  });
+
+  it.each(bodies)('%s on page 1 throws instead of ending the listing after 100 names', async (_label, body) => {
+    const { client } = fakeClient({ dirs: { '/voc/startercode': names(150) }, oddBodyOnPage: { '/voc/startercode': { 1: body } } });
+    await expect(listFiles(client, 'c', 'a', 'p', 'startercode', 'container')).rejects.toThrow(/not a file listing/);
+  });
+
+  it('an empty files array is still an empty page (the end, or an empty directory)', async () => {
+    const { client } = fakeClient({ dirs: { '/voc/startercode': [] } });
+    expect(await listFiles(client, 'c', 'a', 'p', 'startercode', 'container')).toEqual([]);
+  });
+
+  it('strict mode: a non-listing body on a later page throws, so drift plans no deletions', async () => {
+    const { client } = fakeClient({ dirs: { '/voc/startercode': names(150) }, oddBodyOnPage: { '/voc/startercode': { 1: { status: 'error' } } } });
+    await expect(downloadContent(client, 'c', 'a', 'p', ['startercode'], 'container', { strict: true })).rejects.toThrow();
+  });
+
+  it('pull records the directory as a failure (marked incomplete), not as a short listing', async () => {
+    const { client } = fakeClient({ dirs: { '/voc/startercode': ['sub'], '/voc/startercode/sub': names(150, 's') }, oddBodyOnPage: { '/voc/startercode/sub': { 1: null } } });
+    const failures: DownloadFailure[] = [];
+    await downloadContent(client, 'c', 'a', 'p', ['startercode'], 'container', { failures });
+    expect(failures.map((f) => f.path)).toEqual(['startercode/sub']);
   });
 });
 
