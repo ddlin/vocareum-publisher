@@ -90,6 +90,30 @@ export interface ContentDriftPromptDeps {
 }
 
 /**
+ * The drift prompt's course-root lookup. The drift's own part is a part of the
+ * destination course, so its root is what the push guard would list; the
+ * listing names the drift's own assignment and part IDs.
+ *
+ * @param client - The Vocareum client.
+ * @param courseId - The destination course ID (string).
+ * @param cache - Per-run evidence cache, shared with nothing else in pull.
+ */
+export function rootEvidenceLookup(
+  client: VocareumClient,
+  courseId: string,
+  cache: Map<string, RootEvidence>,
+): (issue: PullIssueContentDrift) => Promise<RootEvidence> {
+  return (issue) => resolveCourseRootEvidence(
+    (partId) => listDirectoryBounded(
+      client, courseId, issue.drift.assignmentId, partId, '/', { remaining: ROOT_LISTING_CAP },
+    ),
+    issue.drift.partsDrift[0]?.partId,
+    cache,
+    courseId,
+  );
+}
+
+/**
  * Decides one assignment's content-drift action. Under --batch and
  * non-interactive mode nothing is asked and no lookup runs. Interactively, when
  * the drift includes `asnlib` and the course is not positively Elite (including
@@ -387,16 +411,7 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
             batch,
             nonInteractive,
             events: pullCtx.events,
-            // The drift's own part is a part of the destination course; its
-            // root is what the push guard would list.
-            lookupRootEvidence: (driftIssue) => resolveCourseRootEvidence(
-              (partId) => listDirectoryBounded(
-                client, config.vocareum.course_id, driftIssue.drift.assignmentId, partId, '/', { remaining: ROOT_LISTING_CAP },
-              ),
-              driftIssue.drift.partsDrift[0]?.partId,
-              rootEvidenceCache,
-              config.vocareum.course_id,
-            ),
+            lookupRootEvidence: rootEvidenceLookup(client, config.vocareum.course_id, rootEvidenceCache),
           });
         },
 
