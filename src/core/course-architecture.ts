@@ -109,12 +109,17 @@ export function classifyCourseRoot(rawPages: unknown[][], complete: boolean): Ro
  * @param evidencePartId - A part of the destination course, if any exists.
  * @param cache - Per-run cache keyed by course ID.
  * @param courseId - The destination course ID (string).
+ * @param evidenceLabel - The evidence part's workspace path (assignment and
+ *   part), named in a failed listing's detail. The detail is cached with the
+ *   failure, so a later part of the run still names the part actually listed:
+ *   a stale part there would otherwise refuse every push with no hint why.
  */
 export async function resolveCourseRootEvidence(
   list: (partId: string) => Promise<RootListing>,
   evidencePartId: string | undefined,
   cache: Map<string, RootEvidence>,
   courseId: string,
+  evidenceLabel?: string,
 ): Promise<RootEvidence> {
   const cached = cache.get(courseId);
   if (cached) { return cached; }
@@ -128,7 +133,8 @@ export async function resolveCourseRootEvidence(
     result = classifyCourseRoot(rawPages, complete);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    result = unknown(`${ROOT_LISTING_FAILED}: ${sanitizeLogString(message)}`);
+    const through = evidenceLabel !== undefined ? ` (listed through the part at \`${evidenceLabel}\`)` : '';
+    result = unknown(`${ROOT_LISTING_FAILED}${through}: ${sanitizeLogString(message)}`);
   }
   cache.set(courseId, result);
   return result;

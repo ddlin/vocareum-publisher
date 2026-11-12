@@ -312,7 +312,7 @@ describe('S32: asnlib changed on an existing part', () => {
     expect(asnlibUploads()).toEqual([]);
     const [blocked] = blockedEvents(run.events);
     expect(blocked.data).toMatchObject({ reason: 'container-asnlib', directory: 'asnlib' });
-    expect(blocked.message).toMatch(/^Not pushing `lab1\/part1\/asnlib`: the course root listing failed: .*socket hang up/);
+    expect(blocked.message).toMatch(/^Not pushing `lab1\/part1\/asnlib`: the course root listing failed \(listed through the part at `lab1\/part1`\): .*socket hang up/);
     // A failed listing may be passing: refused this time, checked again next push.
     expect(blocked.message).toMatch(/refused this time\. The next push checks the course root again\./);
     expect(blocked.message).not.toMatch(/every push/);
@@ -464,6 +464,18 @@ describe('S34: create path', () => {
       expect(r.url).not.toContain('tmpl-9');
       expect(r.url).not.toContain('other-course');
     }
+  });
+
+  it('review trace F2: on create, a failed root listing names the part it listed through', async () => {
+    const labs = await createWorld();
+    remoteFrom(labs);
+    rootBody = () => { throw new Error('socket hang up'); };
+    const run = await push(makeConfig(labs, await historyFor([labs[0]])));
+    expect(asnlibUploads()).toEqual([]);
+    const [blocked] = blockedEvents(run.events);
+    expect(blocked.message).toMatch(
+      /^Not pushing `lab2\/part1\/asnlib`: the course root listing failed \(listed through the part at `lab1\/part1`\): .*socket hang up/,
+    );
   });
 
   async function firstPushWorld(): Promise<{ labs: Lab[]; first: Run }> {

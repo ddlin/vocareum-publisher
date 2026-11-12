@@ -141,6 +141,8 @@ interface AsnlibGuardState {
 interface EvidencePart {
   assignmentId: string;
   partId: string;
+  /** Workspace path of the part (assignment path / part path), for the refusal message. */
+  label: string;
 }
 
 /**
@@ -155,7 +157,9 @@ function firstConfiguredPart(assignments: Assignment[]): EvidencePart | undefine
     if (assignmentId === null || assignmentId === undefined || assignmentId === '') { continue; }
     for (const part of assignment.parts) {
       const partId = part.part_id;
-      if (partId !== null && partId !== undefined && partId !== '') { return { assignmentId, partId }; }
+      if (partId !== null && partId !== undefined && partId !== '') {
+        return { assignmentId, partId, label: path.join(assignment.path, part.path) };
+      }
     }
   }
   return undefined;
@@ -185,6 +189,7 @@ async function asnlibRefusal(
     evidence?.partId,
     guard.cache,
     guard.courseId,
+    evidence?.label,
   );
   if (result.kind === 'elite') { return undefined; }
   const head = `Not pushing \`${dirKey}\``;
@@ -499,7 +504,11 @@ export async function reconcile(
             detected.changedDirs,
             blockedDirs,
             // On update the part itself is the evidence.
-            () => ({ assignmentId: remoteAssignmentId, partId: mapping.apiPartId }),
+            () => ({
+              assignmentId: remoteAssignmentId,
+              partId: mapping.apiPartId,
+              label: path.join(configAssignment.path, configPart.path),
+            }),
             path.join(configAssignment.path, configPart.path, 'asnlib'),
           );
           if (asnlibRefusalMessage !== undefined) {
