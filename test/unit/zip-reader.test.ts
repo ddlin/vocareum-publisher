@@ -402,3 +402,31 @@ describe('readZip: a synchronous throw inside a stream callback (memory pressure
     expect(await read(buf)).toEqual({ reason: 'zip_invalid' });
   });
 });
+
+describe('readZip: a synchronous throw in the yauzl open and entry callbacks', () => {
+  // The same guard as the stream callbacks: a throw there would escape readZip
+  // as an uncaught exception and leave its promise unsettled.
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  function failReadEntry(onCall: number): void {
+    const real = yauzl.ZipFile.prototype.readEntry;
+    let calls = 0;
+    vi.spyOn(yauzl.ZipFile.prototype, 'readEntry').mockImplementation(function (this: yauzl.ZipFile) {
+      calls += 1;
+      if (calls === onCall) { throw new RangeError('readEntry failed'); }
+      return real.call(this);
+    });
+  }
+
+  it('in the fromBuffer callback body (its first readEntry)', async () => {
+    failReadEntry(1);
+    const buf = buildZip([{ name: 'a.txt', data: 'a' }, { name: 'b.txt', data: 'b' }]);
+    expect(await read(buf)).toEqual({ reason: 'zip_invalid' });
+  });
+
+  it('in the entry handler (the readEntry after an entry)', async () => {
+    failReadEntry(2);
+    const buf = buildZip([{ name: 'a.txt', data: 'a' }, { name: 'b.txt', data: 'b' }]);
+    expect(await read(buf)).toEqual({ reason: 'zip_invalid' });
+  });
+});

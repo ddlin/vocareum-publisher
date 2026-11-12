@@ -320,29 +320,39 @@ export async function readZip(buf: Buffer, opts: ReadZipOptions): Promise<Stagin
 
     try {
       yauzl.fromBuffer(buf, { lazyEntries: true, strictFileNames: true, validateEntrySizes: true }, (err, zf) => {
-        if (settled) { zf?.close(); return; }
-        if (err !== null) { finish(INVALID); return; }
-        zipfile = zf;
-        // yauzl must be reading the same central directory we span-checked.
-        if (zf.entryCount !== cd.count) { finish(INVALID); return; }
-        const entries: yauzl.Entry[] = [];
-        zf.on('error', () => { finish(INVALID); });
-        zf.on('entry', (entry: yauzl.Entry) => {
-          if (settled) {return;}
-          entries.push(entry);
+        // Guarded like every callback below: yauzl calls this asynchronously,
+        // so the outer try/catch cannot see a throw from here.
+        try {
+          if (settled) { zf?.close(); return; }
+          if (err !== null) { finish(INVALID); return; }
+          zipfile = zf;
+          // yauzl must be reading the same central directory we span-checked.
+          if (zf.entryCount !== cd.count) { finish(INVALID); return; }
+          const entries: yauzl.Entry[] = [];
+          zf.on('error', () => { finish(INVALID); });
+          zf.on('entry', (entry: yauzl.Entry) => {
+            try {
+              if (settled) {return;}
+              entries.push(entry);
+              zf.readEntry();
+            } catch {
+              finish(INVALID);
+            }
+          });
+          zf.once('end', () => {
+            try {
+              if (settled) {return;}
+              const planned = preflightEntries(entries, opts);
+              if ('reason' in planned) { finish(planned); return; }
+              inflateAll(zf, planned);
+            } catch {
+              finish(INVALID);
+            }
+          });
           zf.readEntry();
-        });
-        zf.once('end', () => {
-          try {
-            if (settled) {return;}
-            const planned = preflightEntries(entries, opts);
-            if ('reason' in planned) { finish(planned); return; }
-            inflateAll(zf, planned);
-          } catch {
-            finish(INVALID);
-          }
-        });
-        zf.readEntry();
+        } catch {
+          finish(INVALID);
+        }
       });
     } catch {
       // yauzl throws synchronously only for impossible sizes; treat as invalid.
