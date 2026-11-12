@@ -44,6 +44,10 @@ import type {
   ContentDriftAction,
 } from '../core/services/pull-service';
 import { CommandFailureError, type FailureCategory } from '../utils/command-failure';
+import type { EventSink } from '../core/services/event-sink';
+import type { AssignmentContentDrift } from '../core/services/pull-service';
+import { resolveCourseRootEvidence, type RootEvidence } from '../core/course-architecture';
+import { listDirectoryBounded } from '../api/content';
 
 // Re-export helpers that tests/other code may import from pull.ts
 export {
@@ -56,6 +60,75 @@ export {
   validatePullContentFlags,
   scopeAssignmentsForContent,
 } from '../core/services/pull-service';
+
+/** Root listing cap, as in the push guard: more names than this is not evidence. */
+const ROOT_LISTING_CAP = 1000;
+
+const ASNLIB_PUSH_NOTE =
+  'Note: push refuses `asnlib` on this course, so keeping local `asnlib` files will not overwrite the remote.';
+
+/**
+ * True when the assignment's drift touches `asnlib`: a differing file under it,
+ * or a directory an earlier pull left incomplete. Remote paths in a part's
+ * drift begin with their directory name.
+ */
+export function driftIncludesAsnlib(drift: AssignmentContentDrift): boolean {
+  return drift.partsDrift.some(part =>
+    part.fileDiffs.some(f => f.filePath.split('/')[0] === 'asnlib') ||
+    (part.incompleteDirectories ?? []).includes('asnlib') ||
+    (part.stillIncompleteDirectories ?? []).includes('asnlib'));
+}
+
+/** Dependencies of the content-drift prompt; the command layer owns the client. */
+export interface ContentDriftPromptDeps {
+  batch: boolean;
+  nonInteractive: boolean;
+  events: EventSink;
+  /** Looks up the course root evidence; called only when the prompt is about to be shown for asnlib drift. */
+  lookupRootEvidence: (issue: PullIssueContentDrift) => Promise<RootEvidence>;
+  ask?: typeof promptChoice;
+}
+
+/**
+ * Decides one assignment's content-drift action. Under --batch and
+ * non-interactive mode nothing is asked and no lookup runs. Interactively, when
+ * the drift includes `asnlib` and the course is not positively Elite (including
+ * a failed lookup), a note is added before the unchanged question, because
+ * "Keep local files (will overwrite remote on next push)" is false for it.
+ */
+export async function chooseContentDriftAction(
+  issue: PullIssueContentDrift,
+  deps: ContentDriftPromptDeps,
+): Promise<ContentDriftAction> {
+  if (deps.batch) {
+    deps.events.emit({ level: 'plain', message: '  Pulling content (batch mode)' });
+    return 'pull';
+  }
+  if (deps.nonInteractive) {
+    deps.events.emit({ level: 'plain', message: '  Skipped (non-interactive mode)' });
+    return 'skip';
+  }
+  if (driftIncludesAsnlib(issue.drift)) {
+    let evidence: RootEvidence;
+    try {
+      evidence = await deps.lookupRootEvidence(issue);
+    } catch {
+      // Not positively Elite: show the note and let the pull continue.
+      evidence = { kind: 'unknown', detail: 'the lookup failed' };
+    }
+    if (evidence.kind !== 'elite') {
+      deps.events.emit({ level: 'plain', message: ASNLIB_PUSH_NOTE });
+    }
+  }
+  const choice = await (deps.ask ?? promptChoice)('What would you like to do?', [
+    'Pull remote files (overwrite local)',
+    'Keep local files (will overwrite remote on next push)',
+    'Skip (do nothing for now)',
+  ]);
+  if (choice === 'Pull remote files (overwrite local)') { return 'pull'; }
+  if (choice === 'Keep local files (will overwrite remote on next push)') { return 'keep'; }
+  return 'skip';
+}
 
 /**
  * Map a completed pull onto an envelope result and an exit category.
@@ -248,6 +321,7 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
         return { inspection, pullResult: EMPTY_PULL_RESULT };
       }
 
+      const rootEvidenceCache = new Map<string, RootEvidence>();
       const resolver: PullResolver = {
         async resolveOrphanAction(_issue: PullIssueOrphan): Promise<OrphanAction> {
           if (batch) {
@@ -308,23 +382,22 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
           }
         },
 
-        async resolveContentDriftAction(_issue: PullIssueContentDrift): Promise<ContentDriftAction> {
-          if (batch) {
-            pullCtx.events.emit({ level: 'plain', message: '  Pulling content (batch mode)' });
-            return 'pull';
-          } else if (nonInteractive) {
-            pullCtx.events.emit({ level: 'plain', message: '  Skipped (non-interactive mode)' });
-            return 'skip';
-          } else {
-            const choice = await promptChoice('What would you like to do?', [
-              'Pull remote files (overwrite local)',
-              'Keep local files (will overwrite remote on next push)',
-              'Skip (do nothing for now)',
-            ]);
-            if (choice === 'Pull remote files (overwrite local)') { return 'pull'; }
-            if (choice === 'Keep local files (will overwrite remote on next push)') { return 'keep'; }
-            return 'skip';
-          }
+        async resolveContentDriftAction(issue: PullIssueContentDrift): Promise<ContentDriftAction> {
+          return chooseContentDriftAction(issue, {
+            batch,
+            nonInteractive,
+            events: pullCtx.events,
+            // The drift's own part is a part of the destination course; its
+            // root is what the push guard would list.
+            lookupRootEvidence: (driftIssue) => resolveCourseRootEvidence(
+              (partId) => listDirectoryBounded(
+                client, config.vocareum.course_id, driftIssue.drift.assignmentId, partId, '/', { remaining: ROOT_LISTING_CAP },
+              ),
+              driftIssue.drift.partsDrift[0]?.partId,
+              rootEvidenceCache,
+              config.vocareum.course_id,
+            ),
+          });
         },
 
         async resolveImportPath(_issue: PullIssueOrphan, suggestedName: string): Promise<string> {
