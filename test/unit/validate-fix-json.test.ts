@@ -191,3 +191,40 @@ describe('fix repairs a missing declared directory', () => {
     expect(payload.remaining.every((r) => r.reason === 'unfixable')).toBe(true);
   });
 });
+
+describe('fix repairs nested folders the first validation could not see', () => {
+  it('creates lab1, then lab1/part1, then lab1/part1/startercode in one run', async () => {
+    // The validator stops descending at a missing folder. A single pass created
+    // only `lab1`, reported `applied` with nothing remaining, and the next
+    // `validate` still failed.
+    const dir = workspace([
+      'assignments:', '  - path: lab1', '    name: Lab 1', "    assignment_id: '111'",
+      '    parts:', '      - path: part1', "        part_id: '222'", '        name: Part 1',
+      '        directories:', '          - startercode',
+    ].join('\n'));
+    const { docs, thrown } = await run(() =>
+      fixCommand({ config: join(dir, 'vocareum.yaml'), root: dir, json: true }));
+    expect(existsSync(join(dir, 'lab1', 'part1', 'startercode'))).toBe(true);
+    const payload = docs[0].payload as { fixed: string[]; remaining: unknown[] };
+    expect(payload.remaining).toEqual([]);
+    expect(docs[0].result).toBe('applied');
+    expect(thrown).toBeUndefined();
+  });
+});
+
+describe('fix without --json reports a failed repair through the exit code', () => {
+  it('a folder that cannot be created exits 6 (partial), as with --json', async () => {
+    // Before: human mode logged the error, printed "Fix operations completed."
+    // and exited 0.
+    // `blocker` is a FILE, so blocker/lab1 cannot be created.
+    const nested = workspace(['assignments:', '  - path: blocker/lab1', '    name: Lab 1',
+      "    assignment_id: '111'", '    parts: []'].join('\n'));
+    writeFileSync(join(nested, 'blocker'), 'a file');
+    let thrown: unknown;
+    await captureStdout(async () => {
+      try { await fixCommand({ config: join(nested, 'vocareum.yaml'), root: nested, nonInteractive: true }); }
+      catch (error) { thrown = error; }
+    });
+    expect(thrown).toMatchObject({ name: 'CommandFailureError', exitCode: 6 });
+  });
+});

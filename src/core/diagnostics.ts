@@ -73,6 +73,25 @@ export interface Diagnostic {
   data?: Record<string, unknown>;
 }
 
+/**
+ * A diagnostic attached to a plain-text warning callback. Code paths that report
+ * through a `(msg) => void` callback pass this as an optional second argument,
+ * and the callback's owner emits it with the registry's declared severity, so a
+ * call site cannot disagree with the registry.
+ */
+export interface WarnDiagnostic {
+  code: DiagnosticCode;
+  data: Record<string, unknown>;
+}
+
+export type WarnFn = (message: string, diagnostic?: WarnDiagnostic) => void;
+
+/** The event for a warning callback's message, coded when a diagnostic is given. */
+export function warnEvent(message: string, diagnostic?: WarnDiagnostic): ServiceEvent {
+  if (diagnostic === undefined) { return { level: 'warn', message }; }
+  return { level: DIAGNOSTIC_SEVERITY[diagnostic.code], code: diagnostic.code, message, data: diagnostic.data };
+}
+
 export function isDiagnosticCode(value: string): value is DiagnosticCode {
   return (DIAGNOSTIC_CODES as readonly string[]).includes(value);
 }

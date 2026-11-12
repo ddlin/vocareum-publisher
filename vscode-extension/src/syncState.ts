@@ -28,7 +28,11 @@ export interface SyncSnapshot {
 }
 
 /** `vocgit status --json` schema this extension understands. */
+/** CLI <= 1.4: the bare status report. */
 const SUPPORTED_SCHEMA_VERSION = 1;
+/** CLI >= 1.5: the shared --json envelope, and the status payload inside it. */
+const SUPPORTED_ENVELOPE_VERSION = '1.0';
+const SUPPORTED_PAYLOAD_VERSION = 2;
 
 type CliSyncStatus = 'synced' | 'needs_publish' | 'unknown' | 'pending_create' | 'unlinked' | 'error';
 
@@ -112,17 +116,56 @@ export function buildDirectoryStatusKey(assignmentPath: string, partPath: string
 
 /**
  * Parse and validate `vocgit status --json` output.
- * Throws on malformed JSON or an unsupported schema version.
+ *
+ * Two shapes, by CLI version:
+ * - up to 1.4: the report itself, with a numeric top-level `schema_version: 1`;
+ * - 1.5 and later: the shared envelope (string `schema_version: "1.0"`), with
+ *   the report under `payload` and `payload.payload_schema_version: 2`.
+ * The report fields the extension reads (`assignments`, `last_push`,
+ * `summary`) are the same in both.
+ *
+ * Throws on malformed JSON, another command's envelope, a failed status run,
+ * or an unsupported version.
  */
 export function parseStatusReport(stdout: string): CliStatusReport {
-    const parsed = JSON.parse(stdout) as Partial<CliStatusReport>;
-    if (parsed === null || typeof parsed !== 'object' || parsed.schema_version !== SUPPORTED_SCHEMA_VERSION) {
-        throw new Error(`Unsupported vocgit status schema (expected ${SUPPORTED_SCHEMA_VERSION}, got ${String(parsed?.schema_version)})`);
+    const parsed = JSON.parse(stdout) as Record<string, unknown> | null;
+    if (parsed === null || typeof parsed !== 'object') {
+        throw new Error('Invalid vocgit status report: not a JSON object');
     }
-    if (!Array.isArray(parsed.assignments)) {
+    let report: Record<string, unknown>;
+    let version: number;
+    if (typeof parsed.schema_version === 'string') {
+        if (parsed.schema_version !== SUPPORTED_ENVELOPE_VERSION) {
+            throw new Error(`Unsupported vocgit envelope (expected ${SUPPORTED_ENVELOPE_VERSION}, got ${parsed.schema_version})`);
+        }
+        if (parsed.command !== 'status' || parsed.result === 'failed') {
+            throw new Error(`vocgit status did not produce a report (command ${String(parsed.command)}, result ${String(parsed.result)})`);
+        }
+        const payload = parsed.payload as Record<string, unknown> | null | undefined;
+        if (payload === null || typeof payload !== 'object') {
+            throw new Error('Invalid vocgit status envelope: missing payload');
+        }
+        report = payload;
+        version = payload.payload_schema_version as number;
+        if (version !== SUPPORTED_PAYLOAD_VERSION) {
+            throw new Error(`Unsupported vocgit status payload (expected ${SUPPORTED_PAYLOAD_VERSION}, got ${String(version)})`);
+        }
+    } else {
+        report = parsed;
+        version = parsed.schema_version as number;
+        if (version !== SUPPORTED_SCHEMA_VERSION) {
+            throw new Error(`Unsupported vocgit status schema (expected ${SUPPORTED_SCHEMA_VERSION}, got ${String(version)})`);
+        }
+    }
+    if (!Array.isArray(report.assignments)) {
         throw new Error('Invalid vocgit status report: missing assignments');
     }
-    return parsed as CliStatusReport;
+    return {
+        schema_version: version,
+        last_push: (report.last_push ?? null) as CliStatusReport['last_push'],
+        assignments: report.assignments as CliAssignmentScan[],
+        summary: (report.summary ?? {}) as Record<string, number>,
+    };
 }
 
 function toBadgeStatus(status: CliSyncStatus): AssignmentSyncStatus {

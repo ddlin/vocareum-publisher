@@ -234,15 +234,21 @@ program
   .option('--non-interactive', 'Apply every fix without prompting (this WRITES)')
   .addHelpText('after', `
 Description:
-  Detects validation issues and offers interactive fixes for each one.
+  Detects validation issues and creates what is missing.
 
-  Issues that can be fixed:
-    - Orphaned folders: Folders on disk without vocareum.yaml entries
-      → Add config entry, or ignore
-    - Missing folders: Config entries pointing to non-existent paths
-      → Create folder structure, or remove config entry
-    - Missing directories: Required directories (startercode, scripts, etc.) not found
-      → Create directory
+  Fixed (created, after a confirmation unless --non-interactive):
+    - Missing folders: assignment or part folders that vocareum.yaml names
+      but that do not exist on disk
+    - Missing directories: declared directories (startercode, scripts, etc.)
+      that do not exist
+  Nested folders are created in one run: a new assignment folder is checked
+  again for missing parts and directories.
+
+  Reported but not changed:
+    - Orphaned folders (folders on disk with no vocareum.yaml entry): add an
+      entry yourself, or delete the folder
+    - Paths that point outside the workspace, and other config errors
+  fix never edits vocareum.yaml.
 
   Use --non-interactive to apply every fix without being prompted. It writes;
   there is no dry-run mode.
@@ -499,29 +505,29 @@ if (swallowedBy !== undefined) {
   writeUsageEnvelope(message);
   process.stderr.write(`error: ${message}\n`);
   process.exitCode = 2;
-} else program.parseAsync().catch((error) => {
-  if (error instanceof CommandFailureError) {
-    process.exitCode = error.exitCode;   // command already rendered its error
-    return;
-  }
-
-  // Commander throws for --help and --version too; those are successful exits
-  // and must not be dressed up as failures.
-  if (error instanceof CommanderError) {
-    if (error.exitCode === 0) { process.exitCode = 0; return; }
-
-    // A malformed invocation is a usage error (exit 2), not an internal one.
-    // Emit an envelope when --json was asked for AND the intended command is
-    // identifiable from argv -- the envelope's `command` field is a closed set,
-    // so an invocation with no recognisable command gets the exit code without
-    // a document rather than a document with an invented command.
-    if (process.argv.includes('--json')) {
-      writeUsageEnvelope(error.message);
+} else {
+  void program.parseAsync().catch((error) => {
+    if (error instanceof CommandFailureError) {
+      process.exitCode = error.exitCode;   // command already rendered its error
+      return;
     }
-    process.exitCode = 2;
-    return;
-  }
 
-  logger.error(error instanceof Error ? error.message : 'Unknown error');
-  process.exitCode = 1;
-});
+    // Commander throws for --help and --version too; those are successful exits
+    // and must not be dressed up as failures.
+    if (error instanceof CommanderError) {
+      if (error.exitCode === 0) { process.exitCode = 0; return; }
+
+      // A malformed invocation is a usage error (exit 2), not an internal one.
+      // With --json it still gets its one document: `command` names the intended
+      // command when argv shows one and is null otherwise (never invented).
+      if (process.argv.includes('--json')) {
+        writeUsageEnvelope(error.message);
+      }
+      process.exitCode = 2;
+      return;
+    }
+
+    logger.error(error instanceof Error ? error.message : 'Unknown error');
+    process.exitCode = 1;
+  });
+}

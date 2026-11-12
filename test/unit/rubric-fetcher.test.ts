@@ -68,3 +68,19 @@ describe('createRubricFetcher', () => {
     expect(await fetcher.fetch('a', 'p2')).toHaveLength(1);
   });
 });
+
+describe('rubric read failures are machine-readable', () => {
+  it('a failed read emits rubric_read_failed with part_id and reason', async () => {
+    const { createRubricFetcher: create } = await import('../../src/core/services/rubric-fetcher');
+    const { APIError: ApiErr, ForbiddenError: Forbidden } = await import('../../src/api/client');
+    const seen: Array<{ code: string; data: Record<string, unknown> } | undefined> = [];
+    const client = { request: vi.fn()
+      .mockRejectedValueOnce(new ApiErr('Internal Server Error', 500))
+      .mockRejectedValueOnce(new Forbidden('Access Forbidden', 'part')) } as never;
+    const fetcher = create(client, 'c', true, (_m, d) => { seen.push(d); });
+    await fetcher.fetch('a', 'p1');
+    await fetcher.fetch('a', 'p2');
+    expect(seen[0]).toMatchObject({ code: 'rubric_read_failed', data: { part_id: 'p1' } });
+    expect(seen[1]).toMatchObject({ code: 'rubric_read_failed', data: { part_id: 'p2', reason: 'forbidden' } });
+  });
+});

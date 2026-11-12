@@ -571,11 +571,14 @@ describe('pullCommand content-drift gating', () => {
 
       // The escaping symlink file is skipped (never read/compared/restored) with a
       // targeted per-file warning — the rest of the drift check is NOT aborted.
+      // The warning carries the symlink_skipped diagnostic's data as metadata.
       expect(loggerWarnMock).toHaveBeenCalledWith(
         expect.stringContaining('Skipping "startercode/secret.txt" in content drift check'),
+        expect.objectContaining({ path: 'startercode/secret.txt', reason: 'escapes_part' }),
       );
       expect(loggerWarnMock).toHaveBeenCalledWith(
         expect.stringContaining('path escapes the local part directory through a symlink'),
+        expect.anything(),
       );
     } finally {
       await fs.rm(workspace, { recursive: true, force: true });

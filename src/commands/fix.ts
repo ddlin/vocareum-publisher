@@ -75,135 +75,98 @@ async function fixCommandInner(options: FixOptions): Promise<void> {
     const config = await loadConfig(configPath);
     logger.info('Analyzing structure...');
 
-    // We pass config and basePath.
-    // validateStructure(config, basePath) - ensure validator.ts signature matches
-    const result = await validateStructure(config, workspaceRoot);
-
-    if (result.valid) {
-      // `valid: true` still permits warnings -- an orphaned folder is one, and
-      // the command's own --help lists orphans under what it inspects. Returning
-      // a bare no-op here hid them from the report entirely.
-      for (const warning of result.warnings ?? []) {
-        remaining.push({
-          path: warning.path ?? '(unknown)',
-          reason: 'unfixable',
-          detail: warning.type,
-        });
-      }
-      if (remaining.length === 0) {
-        logger.success('No issues found to fix.');
-      } else {
-        logger.warn(`No fixable issues, but ${remaining.length} warning(s) remain.`);
-      }
-      if (options.json === true) {
-        if (!emit(remaining.length > 0 ? 'reported' : 'no-op')) {
-          throw new CommandFailureError('Fix report serialization failed', 'internal', true);
-        }
-        if (remaining.length > 0) {
-          throw new CommandFailureError('Warnings remain that fix cannot repair', 'findings', true);
-        }
-      }
-      return;
-    }
-
-    // `fix --help` promises to create required directories that are missing, but
-    // this only ever acted on `missing_folder`. A part that declares
-    // `directories: [startercode]` with the directory absent produces
-    // `invalid_structure`, so the command reported it unfixable and left the
-    // directory missing -- the help promised something the command did not do.
-    //
-    // `invalid_structure` is raised in FOUR places and three of them are
-    // path-ESCAPE violations (an assignment, part, or directory path that
-    // leaves the workspace). Creating a directory for those would be actively
-    // harmful: the validator flags them precisely because they point outside
-    // the tree. They cannot be told apart by `type` or `path`, only by prose.
-    //
-    // So the discriminator is structural rather than a message match: the
-    // escape cases are emitted exactly when confinement FAILS, so re-checking
-    // confinement separates them. A confined `invalid_structure` whose path
-    // does not exist is the missing-directory case and nothing else. Anything
-    // unconfined stays unfixable and is never touched.
-    const repairable: typeof result.errors = [];
-    for (const error of result.errors) {
-      if (error.type === 'missing_folder') {
-        repairable.push(error);
-        continue;
-      }
-      if (error.type === 'invalid_structure' && error.path !== undefined) {
-        const confined = await isConfinedToWorkspace(workspaceRoot, error.path);
-        if (confined && !await pathExists(path.resolve(workspaceRoot, error.path))) {
+    // Repair, then validate again: the validator stops descending at a missing
+    // assignment or part folder, so creating `lab` is what reveals a missing
+    // `lab/part1`, and that a missing `lab/part1/startercode`. A single pass
+    // reported a fully repaired workspace that the next `validate` disputed.
+    // Each round repairs what is newly visible; a path is attempted once.
+    const MAX_ROUNDS = 10;
+    const attempted = new Set<string>();
+    let result = await validateStructure(config, workspaceRoot);
+    for (let round = 0; round < MAX_ROUNDS && !result.valid; round++) {
+      // `fix --help` promises to create required directories that are missing,
+      // but this only ever acted on `missing_folder`. A part that declares
+      // `directories: [startercode]` with the directory absent produces
+      // `invalid_structure`, so it was reported unfixable.
+      //
+      // `invalid_structure` is raised in FOUR places and three of them are
+      // path-ESCAPE violations (an assignment, part, or directory path that
+      // leaves the workspace). Creating a directory for those would be actively
+      // harmful. They cannot be told apart by `type` or `path`, only by prose,
+      // so the discriminator is structural: the escape cases are emitted
+      // exactly when confinement FAILS. A confined `invalid_structure` whose
+      // path does not exist is the missing-directory case and nothing else.
+      const repairable: typeof result.errors = [];
+      for (const error of result.errors) {
+        if (error.path === undefined || attempted.has(error.path)) { continue; }
+        if (error.type === 'missing_folder') {
           repairable.push(error);
           continue;
         }
-      }
-      remaining.push({
-        path: error.path ?? '(unknown)',
-        reason: 'unfixable',
-        detail: error.type,
-      });
-    }
-    const missingFolders = repairable;
-
-    if (missingFolders.length === 0) {
-      logger.info('No missing folders to fix.');
-      // `remaining` was already populated by the classification loop above;
-      // re-adding result.errors here would list every unfixable error twice.
-      if (options.json === true) {
-        if (!emit(remaining.length > 0 ? 'reported' : 'no-op')) {
-          throw new CommandFailureError('Fix report serialization failed', 'internal', true);
-        }
-        if (remaining.length > 0) {
-          throw new CommandFailureError('Issues remain that fix cannot repair', 'findings', true);
+        if (error.type === 'invalid_structure') {
+          const confined = await isConfinedToWorkspace(workspaceRoot, error.path);
+          if (confined && !await pathExists(path.resolve(workspaceRoot, error.path))) {
+            repairable.push(error);
+          }
         }
       }
-      return;
-    }
+      if (repairable.length === 0) { break; }
 
-    logger.info(`Found ${missingFolders.length} missing folders.`);
-
-    for (const error of missingFolders) {
-      // Fix: "Run: vocgit new ..." or "Create directory: ..."
-      // The error object has a 'fix' message, but we want to ACT on it.
-      // We can infer the path from `error.path`.
-
-      // Error structure from validator.ts:
-      // { type: 'missing_folder', path: 'assignment/part', ... }
-      // The `path` in error is relative path.
-
-      const folderPath = error.path;
-      // Validator paths are workspace-relative — create under the workspace
-      // root, and never outside it (defense in depth: the validator already
-      // refuses to classify escaping paths as missing_folder).
-      await assertConfinedToWorkspace(workspaceRoot, folderPath);
-      const folderAbs = path.resolve(workspaceRoot, folderPath);
-
-      try {
-        if (nonInteractive) {
-          logger.info(`Creating ${folderPath}...`);
-          await ensureDirectory(folderAbs);
-          fixed.push(folderPath);
-        } else {
-          const create = await promptConfirm(`Create missing folder "${folderPath}"?`);
-          if (create) {
+      logger.info(`Found ${repairable.length} missing folder(s).`);
+      for (const error of repairable) {
+        const folderPath = error.path;
+        attempted.add(folderPath);
+        // Validator paths are workspace-relative — create under the workspace
+        // root, and never outside it (defense in depth: the validator already
+        // refuses to classify escaping paths as missing_folder).
+        await assertConfinedToWorkspace(workspaceRoot, folderPath);
+        const folderAbs = path.resolve(workspaceRoot, folderPath);
+        try {
+          if (nonInteractive) {
+            logger.info(`Creating ${folderPath}...`);
+            await ensureDirectory(folderAbs);
+            fixed.push(folderPath);
+          } else if (await promptConfirm(`Create missing folder "${folderPath}"?`)) {
             await ensureDirectory(folderAbs);
             logger.success(`Created ${folderPath}`);
             fixed.push(folderPath);
           } else {
             remaining.push({ path: folderPath, reason: 'declined' });
           }
+        } catch (creationError) {
+          // One unwritable folder must not abandon the rest.
+          const detail = creationError instanceof Error ? creationError.message : 'Unknown error';
+          logger.error(`Could not create ${folderPath}: ${detail}`);
+          remaining.push({ path: folderPath, reason: 'failed', detail });
         }
-      } catch (creationError) {
-        // One unwritable folder must not abandon the rest.
-        const detail = creationError instanceof Error ? creationError.message : 'Unknown error';
-        logger.error(`Could not create ${folderPath}: ${detail}`);
-        remaining.push({ path: folderPath, reason: 'failed', detail });
       }
+      result = await validateStructure(config, workspaceRoot);
     }
 
-    logger.success('Fix operations completed.');
+    // What is left is what the FINAL validation reports: errors fix did not
+    // repair (declined and failed ones are already listed) and warnings, which
+    // fix never repairs (an orphaned folder is one; dropping them hid them).
+    const listed = new Set(remaining.map((r) => r.path));
+    for (const issue of [...result.errors, ...(result.warnings ?? [])]) {
+      const issuePath = issue.path ?? '(unknown)';
+      if (listed.has(issuePath)) { continue; }
+      listed.add(issuePath);
+      remaining.push({ path: issuePath, reason: 'unfixable', detail: issue.type });
+    }
+
+    const anyFailed = remaining.some((r) => r.reason === 'failed');
+    if (anyFailed) {
+      logger.warn(`Fixed ${fixed.length}; some folders could not be created (see above).`);
+    } else if (fixed.length > 0) {
+      logger.success(`Fixed ${fixed.length} issue(s).`);
+    } else if (remaining.length === 0) {
+      logger.success('No issues found to fix.');
+    }
+    if (remaining.length > 0 && !anyFailed) {
+      logger.warn(`${remaining.length} issue(s) remain that fix did not repair.`);
+    }
 
     if (options.json === true) {
-      const anyFailed = remaining.some((r) => r.reason === 'failed');
       const result_ =
         anyFailed ? 'partial'
         : remaining.length > 0 ? 'reported'
@@ -219,6 +182,13 @@ async function fixCommandInner(options: FixOptions): Promise<void> {
         throw new CommandFailureError('Issues remain after fixing', 'findings', true);
       }
       return;
+    }
+
+    // Human mode: a repair that FAILED is a failure in either mode (exit 6),
+    // logged once above per folder. Outstanding findings exit 5 only with
+    // --json, so existing scripts that run `fix` keep their exit 0 (spec 5.4).
+    if (anyFailed) {
+      throw new CommandFailureError('Some fixes could not be applied', 'partial');
     }
 
   } catch (error) {

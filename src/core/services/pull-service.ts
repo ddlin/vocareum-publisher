@@ -47,6 +47,7 @@ import {
 import { rubricsEqual, describeRubricChanges, type RubricChangeSummary } from '../../utils/rubrics';
 import { UsageError } from '../../utils/command-failure';
 import { createRubricFetcher, type RubricFetcher } from './rubric-fetcher';
+import { warnEvent, type WarnFn } from '../diagnostics';
 
 // ── Re-exported helpers (used by pull.ts resolver) ──────────────────────────
 
@@ -796,7 +797,7 @@ async function detectSettingsDrift(
   },
   client: VocareumClient,
   skipAssignmentIds: Set<string>,
-  warnFn: (msg: string) => void,
+  warnFn: WarnFn,
   reporter?: UnknownFieldReporter,
   rubricFetcher?: RubricFetcher,
   /** Collects assignments whose settings could not be read: unknown, not clean. */
@@ -971,7 +972,7 @@ export async function detectContentDrift(
   client: VocareumClient,
   skipAssignmentIds: Set<string>,
   workspaceRoot: string,
-  warnFn: (msg: string) => void,
+  warnFn: WarnFn,
   partIds?: Set<string>,
   /** Receives each assignment whose check was skipped, so the caller can
    *  report the drift result as incomplete rather than clean. */
@@ -1047,7 +1048,8 @@ export async function detectContentDrift(
               // (including locally-deleted directories that need restoring) is
               // still compared. The write side keeps its own confinement, so
               // nothing is ever materialized through the escaping symlink.
-              warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`);
+              warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`,
+                { code: 'symlink_skipped', data: { assignment: assignment.name, path: remotePath, reason: 'escapes_part' } });
               omittedDirs.add(remotePath.split('/')[0]);
               continue;
             }
@@ -1062,7 +1064,8 @@ export async function detectContentDrift(
               localIsSymlink = (await fsp.lstat(localPath)).isSymbolicLink();
             } catch { /* ENOENT (e.g. locally-deleted path) → not a symlink */ }
             if (localIsSymlink) {
-              warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": local path is a symlink and cannot be safely overwritten`);
+              warnFn(`Skipping "${remotePath}" in content drift check for "${assignment.name}": local path is a symlink and cannot be safely overwritten`,
+                { code: 'symlink_skipped', data: { assignment: assignment.name, path: remotePath, reason: 'local_symlink' } });
               omittedDirs.add(remotePath.split('/')[0]);
               continue;
             }
@@ -1093,7 +1096,8 @@ export async function detectContentDrift(
           // 'deleted' diff here would make apply's fs.unlink follow the symlink
           // and remove a file outside the workspace.
           if (!await isPathConfinedToBase(localBaseAbs, localDirPath)) {
-            warnFn(`Skipping "${dir}/" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`);
+            warnFn(`Skipping "${dir}/" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`,
+              { code: 'symlink_skipped', data: { assignment: assignment.name, path: `${dir}/`, reason: 'escapes_part' } });
             continue;
           }
 
@@ -1111,7 +1115,12 @@ export async function detectContentDrift(
               const fullPath = path.join(localDirPath, file);
               // Skip nested entries that resolve outside the part directory
               // (an escaping symlink below a confined dir) for the same reason.
-              if (!await isPathConfinedToBase(localBaseAbs, fullPath)) { continue; }
+              if (!await isPathConfinedToBase(localBaseAbs, fullPath)) {
+                // Not silent: it was the one symlink skip with no warning at all.
+                warnFn(`Skipping "${relativePath}" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`,
+                  { code: 'symlink_skipped', data: { assignment: assignment.name, path: relativePath, reason: 'escapes_part' } });
+                continue;
+              }
               const stat = await fs.stat(fullPath);
               if (stat.isFile() && remoteFiles[relativePath] === undefined) {
                 // Under a Vocareum-managed link the remote content is unreadable,
@@ -1201,7 +1210,7 @@ export async function inspectPull(
   reporter?: UnknownFieldReporter
 ): Promise<PullInspection> {
   const { effectiveConfig: config, client, workspaceRoot, events } = ctx;
-  const warnFn = (msg: string) => events.emit({ level: 'warn', message: msg });
+  const warnFn: WarnFn = (msg, diagnostic) => events.emit(warnEvent(msg, diagnostic));
 
   // Run reconciliation to find orphans and stale assignments.
   // Pass ctx.events so "Fetching current state from Vocareum..." goes through events.
@@ -1267,7 +1276,7 @@ export async function applyPull(
     client,
     config.vocareum.course_id,
     shouldSyncRubrics(config),
-    (msg: string) => events.emit({ level: 'warn', message: msg })
+    (msg, diagnostic) => events.emit(warnEvent(msg, diagnostic))
   );
 
   const result: PullResult = {
