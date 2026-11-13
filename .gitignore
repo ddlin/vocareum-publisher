@@ -79,3 +79,5 @@ docs/superpowers/
 docs/*codex-review*.md
 docs/*grok-review*.md
 docs/*-findings.md
+docs/*system-trace*.md
+docs/*live-checks*.md
