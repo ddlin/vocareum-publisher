@@ -17,7 +17,11 @@ the EU tenant work but never published; it is folded in here.)
   `VOCAREUM_ZIP_TIMEOUT_MS` (default 600000, range 1000-3600000) bounds one
   directory. An invalid value exits 2 before any request. A small directory can
   take up to about 8 s longer because of the settle check. Run one pull per part
-  per user at a time; the README lists the remaining risk.
+  per user at a time; the README lists the remaining risk. Some symlinked files
+  arrive through the zip as copies of their targets, so a directory holding only
+  such links now pulls complete, and a later push uploads them as regular files.
+  Measured on a 9,000-file venv directory: 50 minutes instead of 4 h 55 min, with
+  identical bytes for every file both paths fetched.
 - **`zip_not_used` (warn) and `directory_blocked` (error) diagnostics**, with
   closed reason sets. After a zip rejection that happens once the zip job has
   started, the rest of that part is pulled file by file, and each later

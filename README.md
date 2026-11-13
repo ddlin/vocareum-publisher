@@ -497,6 +497,7 @@ Content pull downloads each directory as one zip when it can, which is much fast
 Differences from file-by-file download:
 
 - **Directory aliases are kept.** On a Container course, `asnlib/public/docs` and `asnlib/publicdata` arrive through the zip, although the file-by-file download cannot fetch them. They duplicate `docs` and `data` locally, as independent copies.
+- **Some symlinks arrive as copies.** The zip includes some symlinked files as copies of their targets, for example `bin/python` → `python3.13` inside a bundled Python whose links point within the same tree. The file-by-file download cannot fetch these. Other symlinks, such as a venv's `lib64` and `bin/python*`, are still missing from both, and they keep the directory marked incomplete. A directory whose only symlinks arrive as copies pulls complete, so pushing it later uploads regular files in place of those symlinks on Vocareum. The file contents are the same.
 - **Drift now covers `asnlib`.** `asnlib` is compared like any readable directory. A file deleted on Vocareum is reported `deleted`. A local file under `asnlib` that Vocareum lacks is also reported `deleted`, and applying the pull removes it, with no prompt under `--batch`.
 - **Snapshot.** The zip is the directory at the moment Vocareum built it. If a file is replaced by a directory of the same name after that, the old file is kept until the next pull.
 - **Transient errors.** A file that a file-by-file download would lose to a server error (5xx) or a dropped connection can arrive intact through the zip.
