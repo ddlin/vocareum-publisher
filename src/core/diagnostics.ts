@@ -212,8 +212,7 @@ export function collectDiagnostics(events: readonly ServiceEvent[]): Diagnostic[
     byKey.set(key, {
       code,
       // The declared severity, so the public value cannot drift with an emit
-      // site's level. moreSevere() below still escalates within a run when the
-      // same code+data legitimately arrives at both levels.
+      // site's level. A guard test fails the build if an emit site disagrees.
       severity: DIAGNOSTIC_SEVERITY[code],
       message: event.message ?? '',
       count: 1,
