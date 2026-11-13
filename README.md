@@ -18,6 +18,7 @@ Released components (the CLI and the VS Code extension are versioned independent
 - **Change Detection**: Only uploads changed content (efficient)
 - **Template-Based Creation**: Create new assignments from templates
 - **Validation**: Verify configuration before pushing
+- **Machine-Readable Output**: `--json` on `pull`, `push`, `status`, `validate` and `fix` emits one versioned document with coded diagnostics, and exit codes tell retryable failures from terminal ones (see [Machine-readable output](#machine-readable-output))
 - **Forward-Compatible Settings**: Unrecognized Vocareum settings fields are preserved under `_unknown_settings` in `vocareum.yaml` and passed back through on push, so new platform features never silently drop out of your config
 
 ## Installation
@@ -293,7 +294,7 @@ The rubrics **write** token permissions (POST, PUT — see [Generating a Token](
 | `vocgit init` | Initialize a new course repository (`--region na\|eu`, `--api-base-url <url>`) |
 | `vocgit new <path>` | Create new assignment structure |
 | `vocgit validate` | Validate configuration and structure |
-| `vocgit fix` | Interactively fix validation issues |
+| `vocgit fix` | Fix validation issues (prompts per fix; `--non-interactive` applies them all) |
 | `vocgit pull` | Import or exclude orphaned assignments from Vocareum |
 | `vocgit status` | Show current local sync status (default command) |
 | `vocgit push` | Push content to Vocareum |
@@ -309,6 +310,8 @@ will target, and where the host came from (`vocareum.yaml` or
 `VOCAREUM_API_BASE_URL`). Check it before pushing if you work with repos on
 both tenants. `status --json` reports this in `payload.api`:
 `{ base_url, host, region, source, allowlisted, malformed }`.
+
+An unrecognized command is an error (exit 2), not a fall-through to `status`.
 
 ### Workspace Root (`--root`)
 
@@ -329,6 +332,29 @@ Without `--root` in those situations the command fails with an explanation
 rather than hashing the wrong directories. vocgit also refuses to read, upload,
 or delete anything outside the workspace root, including via symlinks.
 
+### Validate and Fix
+
+```bash
+vocgit validate              # Local checks: YAML, paths, declared directories, orphan folders
+vocgit validate --strict     # Treat warnings as failures (exit 5)
+vocgit validate --vocareum   # Also check ids against the Vocareum API
+vocgit validate --json       # One JSON report on stdout
+
+vocgit fix                   # Prompt before each fix
+vocgit fix --non-interactive # Apply every fix without prompting (this writes)
+vocgit fix --json            # Same as --non-interactive, with a JSON report
+```
+
+`fix` creates what the config declares but the disk lacks: a missing assignment
+or part folder, and a missing declared directory (for example a part listing
+`directories: [startercode, scripts]` without a `scripts/`). It never creates a
+path that resolves outside the workspace, even when that path is also missing.
+
+Everything else is reported as remaining rather than repaired — including orphan
+folders (folders with no `vocareum.yaml` entry), which `fix` does not yet add to
+the config. There is no dry-run: run `vocgit validate` first to see what `fix`
+would act on.
+
 ### Push Options
 
 ```bash
@@ -337,8 +363,19 @@ vocgit push --assignment lab1   # Push specific assignment
 vocgit push --force-all         # Re-upload everything
 vocgit push --sync-deletes      # Delete files not in Git (experimental)
 vocgit push --non-interactive   # Skip confirmation prompt
+vocgit push --abort-on-error    # Stop at the first failure
+vocgit push --json              # One JSON report on stdout (implies --non-interactive)
 vocgit push --verbose           # Detailed logging
 ```
+
+With `--sync-deletes`, only files the API actually removed are reported as
+deleted. A refused deletion leaves the file in place, emits
+`delete_sync_failed`, keeps that directory eligible for the next push, and makes
+the run partial (exit 6) — you asked for an exact mirror, and it did not happen.
+The run still continues with every other part.
+
+A part-settings update that Vocareum rejects at every fallback level is a
+failure (exit 6, `part_settings_rejected`), not a skip.
 
 ### Pull Command
 
@@ -359,7 +396,9 @@ This is useful when:
 ```bash
 vocgit pull                # Interactive mode (no content drift check)
 vocgit pull --verbose      # Show detailed output
-vocgit pull --non-interactive  # Skip all issues
+vocgit pull --non-interactive  # Report issues only; change nothing
+vocgit pull --json             # Report as JSON (implies --non-interactive)
+vocgit pull --batch --json     # Apply defaults, report what was applied
 ```
 
 **Content drift detection is opt-in.** By default, `vocgit pull` (and `vocgit pull --batch`) does not download remote files to diff them — direct file edits in the Vocareum UI are NOT reconciled unless you ask for them. Add `--content` to enable the check. You can scope it with `--assignment <name|id>` (repeatable) and `--part <part_id>` (a part's `part_id`, not its directory name; requires exactly one `--assignment`):
@@ -835,9 +874,23 @@ vocgit pull
 vocgit push
 ```
 
+#### CI / GitHub Actions example
+
+Store credentials as repository secrets (`VOCAREUM_OAUTH_CLIENT_ID`, `VOCAREUM_OAUTH_CLIENT_SECRET`) and pass them as environment variables in your workflow step:
+
+```yaml
+- name: Push to Vocareum (v3 OAuth)
+  env:
+    VOCAREUM_AUTH_MODE: oauth
+    VOCAREUM_OAUTH_CLIENT_ID: ${{ secrets.VOCAREUM_OAUTH_CLIENT_ID }}
+    VOCAREUM_OAUTH_CLIENT_SECRET: ${{ secrets.VOCAREUM_OAUTH_CLIENT_SECRET }}
+  run: vocgit push --non-interactive
+```
+
 ## Machine-readable output
 
-Every agent-facing command accepts `--json`. stdout carries exactly **one** JSON
+`pull`, `push`, `status`, `validate` and `fix` accept `--json` (`init` and `new`
+are interactive setup commands and do not). stdout carries exactly **one** JSON
 document; all human output moves to stderr, so `2>/dev/null` is safe.
 
 ```bash
@@ -863,6 +916,24 @@ vocgit --version --json | jq .resolved_from     # which binary am I running?
 The two version fields are independent, and their types tell them apart: a
 string `schema_version` at the top level is the envelope, a number inside
 `payload` is that command's own shape.
+
+| command | `payload` contents (`payload_schema_version`) |
+|---|---|
+| `pull` | `inspection` (orphans, stale entries, drift found) and `applied` (what the run imported, pulled or skipped) — `1` |
+| `push` | `plan` (what was planned) and `applied` (created / updated / failed) — `1` |
+| `status` | `scope`, `course`, `auth`, `runtime`, `git`, `last_push`, per-assignment/part/directory content-sync `assignments`, `summary` — `2` |
+| `validate` | `strict`, `errors`, `warnings`, `counts` — `1` |
+| `fix` | `fixed` (paths created), `remaining` (each with a `reason`: `unfixable`, `declined` or `failed`), `counts` — `1` |
+
+`error` is `{ code, message, retryable }`. For a failed run, `code` is the failure
+category that chose the exit code (`internal`, `usage`, `auth`, `transient`,
+`findings`, `partial`); a partial push uses `partial_failure` with a counted
+summary. `error` is `null` for `applied`, `reported` and `no-op`.
+
+> **Migrating from `status --json` before this release:** the report used to be
+> the top-level object with a numeric `schema_version: 1`. It now lives in
+> `payload`, versioned by `payload.payload_schema_version: 2`; the top-level
+> `schema_version` is the envelope string `"1.0"`.
 
 ### Exit codes
 
@@ -894,6 +965,30 @@ A failure still prints an envelope. A non-zero exit with empty stdout would tell
 a caller nothing, so `result: "failed"` plus a structured `error` is written even
 when the run dies early.
 
+Malformed invocations exit 2, never 0 or 1:
+
+- **An unknown option** (`vocgit validate --bogus`) exits 2, and under `--json`
+  writes a failure envelope for the command it was aimed at.
+- **An unknown command** (`vocgit pus --json`, a typo for `push`) exits 2 rather
+  than falling through to the default `status` command — which used to print a
+  status report and exit 0, telling automation a push succeeded when nothing was
+  pushed. Under `--json` the envelope's `command` is `status`, because `command`
+  is a closed set and the typo names no real command.
+
+Per command, the codes you can expect:
+
+- `validate` — 0 when clean; 5 when there are errors, or warnings under `--strict`.
+  Warnings alone still produce `result: "reported"` with exit 0.
+- `fix --json` — 0 when everything was fixed (or there was nothing to fix); 5
+  when items remain `unfixable` or `declined`; 6 when creating a folder failed.
+  Without `--json`, `fix` currently exits 0 in all three cases.
+- `pull` — 0 when nothing is left outstanding; 5 when findings were reported but
+  not applied (for example under `--non-interactive`, or stale entries that
+  `--batch` skips by design).
+- `push` — 0 on success; 6 when some items failed, including a part-settings
+  update rejected at every fallback level and, with `--sync-deletes`, a deletion
+  the API refused.
+
 ### Diagnostics
 
 `diagnostics[]` entries carry a stable `code` — branch on that, never on
@@ -908,6 +1003,28 @@ Severity never sets the exit code. A `warn` diagnostic is visible without being
 fatal — Elite courses legitimately declare a `docs` directory that cannot exist
 there, so `directory_unreachable` fires on nearly every Elite pull and must not
 fail it.
+
+Each code has one declared severity, and a build-time check fails if any emit
+site disagrees with it:
+
+| code | severity | meaning |
+|---|---|---|
+| `directory_unreachable` | warn | a declared directory does not exist remotely (expected for `docs` on Elite) |
+| `download_truncated` | warn | remote nesting exceeded the download depth limit; files below it were not downloaded |
+| `download_failed` | warn | a remote file could not be downloaded |
+| `upload_incomplete` | error | not every file in a directory upload landed |
+| `delete_sync_failed` | warn | `--sync-deletes` asked for a deletion the API refused; the file is still there |
+| `part_settings_fallback` | warn | part settings were written with some fields dropped (a safer payload) |
+| `part_settings_rejected` | error | every fallback level was rejected; no part settings were written |
+| `unknown_settings` | warn | Vocareum returned settings fields vocgit does not model (kept in `_unknown_settings`) |
+| `symlink_skipped` | warn | pull skipped a file because its local path is a symlink or would land outside the part |
+| `insecure_base_url` | warn | a non-standard or non-HTTPS API base URL is in use |
+| `auto_commit_failed` | warn | `--auto-commit` could not commit `vocareum.yaml` |
+| `rubric_read_failed` | error | rubrics could not be read |
+| `rubric_write_forbidden` | error | the token lacks permission to write rubrics; rubric sync stopped |
+| `rubric_write_skipped` | warn | rubrics were not written for a part whose assignment has no id yet |
+
+Pull and push also report these, with structured `data`:
 
 | Code | Severity | `data` | Meaning |
 |------|----------|--------|---------|
@@ -968,18 +1085,22 @@ capability list you can assert against instead of parsing a version number.
 Provenance degrades to `"unavailable"` rather than failing when the build stamp
 is absent.
 
-#### CI / GitHub Actions example
-
-Store credentials as repository secrets (`VOCAREUM_OAUTH_CLIENT_ID`, `VOCAREUM_OAUTH_CLIENT_SECRET`) and pass them as environment variables in your workflow step:
-
-```yaml
-- name: Push to Vocareum (v3 OAuth)
-  env:
-    VOCAREUM_AUTH_MODE: oauth
-    VOCAREUM_OAUTH_CLIENT_ID: ${{ secrets.VOCAREUM_OAUTH_CLIENT_ID }}
-    VOCAREUM_OAUTH_CLIENT_SECRET: ${{ secrets.VOCAREUM_OAUTH_CLIENT_SECRET }}
-  run: vocgit push --non-interactive
+```json
+{
+  "version": "1.4.0",
+  "git_sha": "06f6ba0…",
+  "dirty": false,
+  "built_at": "2026-11-11T…Z",
+  "provenance": "stamped",
+  "resolved_from": "/usr/local/lib/node_modules/vocareum-publisher/dist/index.js",
+  "capabilities": ["output.json", "exit-codes.v1", "diagnostics.v1", "pull.rubrics",
+                   "pull.elite-resource-paths", "push.rubrics", "upload.chunked"]
+}
 ```
+
+`--version --json` is a plain object, not the command envelope. There is no
+"published to npm" field: that would need a network call, and every field here is
+verifiable offline.
 
 ## Environment Variables
 

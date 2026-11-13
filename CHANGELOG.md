@@ -101,6 +101,15 @@ never published; it is folded in here.)
   `status --json` reports it in `payload.api`
   (`base_url`, `host`, `region`, `source`, `allowlisted`, `malformed`).
 
+- **`fix` creates missing declared directories.** `fix --help` always listed
+  them among what it repairs, but only missing assignment/part folders were
+  acted on; a part declaring `directories: [startercode]` with no `startercode/`
+  was reported unfixable. Paths that resolve outside the workspace are never
+  created.
+- **`part_settings_rejected` diagnostic** (severity `error`) for a part-settings
+  update rejected at every fallback level. `part_settings_fallback` now means
+  only the degrading case, where some settings were written.
+
 ### Changed
 - **Pull keeps directory-alias content, and drift now compares `asnlib`.** On a
   Container course the zip delivers `asnlib/public/docs` and `asnlib/publicdata`,
@@ -137,9 +146,20 @@ never published; it is folded in here.)
   it; it fails on any non-zero exit, as before. What is new is the push
   failures above: a step that used to pass while deletions or settings were
   silently not applied now fails.
+- **An unknown command exits 2.** `status` is the default command, so
+  `vocgit bogus` used to print a status report and exit 0, and `vocgit pus --json`
+  (a typo for `push`) emitted a successful status envelope while pushing nothing.
+- **An unknown option exits 2** (previously 1), and under `--json` writes a
+  failure envelope instead of leaving stdout empty.
+- **`fix` keeps going after a folder it cannot create**, and reports it (exit 6
+  under `--json`) instead of abandoning the remaining fixes. Warnings it cannot repair, such as
+  orphan folders, are now reported as remaining (exit 5 under `--json`) rather
+  than hidden behind "No issues found".
 - **`status --json` emits the shared envelope.** Its former numeric top-level
   `schema_version: 1` is now `payload.payload_schema_version: 2`, under an
-  envelope whose `schema_version` is the string `"1.0"`.
+  envelope whose `schema_version` is the string `"1.0"`. Tools that parse the
+  old top-level shape — including the VS Code extension's sync badges — must be
+  updated to read `payload`.
 - **A part-settings update the API rejects at every fallback level is now a
   failure.** It was recorded as "skipped", so a push that applied none of the
   requested settings still reported success and exited 0. Such a push now exits
@@ -343,6 +363,10 @@ never published; it is folded in here.)
   and the run still printed `✓ No sync issues found.` Subdirectories are now
   walked. Any assignment whose check still cannot finish is named, and the pull
   exits 6 (partial): the check is unknown, not clean.
+- **`fix --non-interactive` help no longer says "report issues only".** That
+  mode has always created folders; the help now says it applies every fix and
+  has no dry-run.
+- **`validate --strict` help** said it exits 1; it exits 5 (findings).
 
 ### Unchanged
 - Existing configs, including ones with no `api_base_url`, still resolve to

@@ -44,6 +44,13 @@ These are enforced by tests, lint, and review. The most important:
   enforces that services don't render directly.
 - **No `process.exit` outside `src/index.ts`** — commands throw a typed
   `CommandFailureError`; the entrypoint owns the exit code. (A guard test enforces this.)
+  Pick the failure category that tells a caller what to do (`usage`, `auth`,
+  `transient`, `findings`, `partial`, `internal`) — it chooses the exit code.
+- **Only `src/core/report.ts` writes to stdout.** stdout is the `--json` channel and
+  carries exactly one document; human output goes through `logger`. (Guard test.)
+- **Diagnostic codes are a public contract.** A new `code:` must be registered in
+  `src/core/diagnostics.ts` with a severity, and the emit site must use that
+  severity. Never remove a code or change its severity without a major version bump.
 - **TypeScript strict**; avoid `any`. Prefer small, focused modules.
 - **Tests are required.** The suite includes **golden / characterization tests**
   (`test/golden/`) that lock current CLI behavior — output, exit codes, and the
