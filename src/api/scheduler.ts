@@ -14,6 +14,14 @@ export interface SchedulerOptions {
   random?: () => number;
 }
 
+/** A queued acquire. `onAbort` is the listener registered on the caller's signal. */
+interface Waiter {
+  resolve: () => void;
+  reject: (reason: unknown) => void;
+  onAbort?: () => void;
+  signal?: AbortSignal;
+}
+
 export class RequestScheduler {
   private readonly maxConcurrency: number;
   private readonly minIntervalMs: number;
@@ -22,7 +30,7 @@ export class RequestScheduler {
   private readonly setTimeoutFn: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   private readonly random: () => number;
 
-  private readonly queue: Array<() => void> = [];
+  private readonly queue: Waiter[] = [];
   private activeCount = 0;
   private nextAllowedStart = 0;
   private pendingTimer: ReturnType<typeof setTimeout> | undefined;
@@ -36,9 +44,14 @@ export class RequestScheduler {
     this.random = opts.random ?? (() => Math.random());
   }
 
-  /** Acquire a slot, run the task, release the slot (even on throw). */
-  public async schedule<T>(task: () => Promise<T>): Promise<T> {
-    await this.acquire();
+  /**
+   * Acquire a slot, run the task, release the slot (even on throw). With a
+   * signal, a wait that is aborted before a slot is taken rejects with
+   * `signal.reason` and never releases: only a waiter that incremented
+   * `activeCount` may decrement it.
+   */
+  public async schedule<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    await this.acquire(signal); // a rejection here must skip the release below
     try {
       return await task();
     } finally {
@@ -47,9 +60,30 @@ export class RequestScheduler {
   }
 
   /** Always enqueues (never inline-starts) so ordering is strictly FIFO. */
-  private acquire(): Promise<void> {
-    return new Promise<void>((resolve) => {
-      this.queue.push(resolve);
+  private acquire(signal?: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      if (signal?.aborted === true) {
+        // The spec requires rejecting with signal.reason verbatim, whatever its type.
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        reject(signal.reason);
+        return;
+      }
+      const waiter: Waiter = { resolve, reject, signal };
+      if (signal) {
+        waiter.onAbort = () => {
+          // Remove from the queue synchronously, so pump can never hand this
+          // waiter a slot after the caller has given up.
+          const i = this.queue.indexOf(waiter);
+          if (i === -1) { return; }
+          this.queue.splice(i, 1);
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+          reject(signal.reason);
+          // A removed head may have been blocking a spacing timer's target; pump is cheap and idempotent.
+          this.pump();
+        };
+        signal.addEventListener('abort', waiter.onAbort, { once: true });
+      }
+      this.queue.push(waiter);
       this.pump();
     });
   }
@@ -69,9 +103,11 @@ export class RequestScheduler {
         return;
       }
       const start = this.queue.shift()!;
+      // Detach before taking the slot: an abort after this point must not reject a waiter that holds one.
+      if (start.onAbort) { start.signal?.removeEventListener('abort', start.onAbort); }
       this.activeCount += 1;
       this.nextAllowedStart = current + this.spacing();
-      start();
+      start.resolve();
     }
   }
 

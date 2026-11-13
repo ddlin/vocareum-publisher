@@ -22,9 +22,14 @@ import type {
   RemoteRubric,
 } from '../../types/api';
 import type { HistorySettingChange, HistoryFileChange, HistoryRubricChange, AssignmentSettings } from '../../types/config';
-import type { PublishResult, ReconciliationPlan } from '../../types/state';
+import type { PublishResult, ReconciliationPlan, PartAction, BlockedDirectory } from '../../types/state';
 import { reconcile, displayPlan } from '../reconciler';
-import { assertConfinedToWorkspace, publishExcludePatterns, PUSH_INCOMPLETE_MARKER } from '../local-scan';
+import {
+  assertConfinedToWorkspace,
+  publishExcludePatterns,
+  PUSH_INCOMPLETE_MARKER,
+  INCOMPLETE_PULL_MARKER,
+} from '../local-scan';
 import { calculateDirectoryHash, readFile as readTextFile } from '../../utils/files';
 import { copyAssignment, getAssignment, updateAssignment } from '../../api/assignments';
 import { updateCourse } from '../../api/courses';
@@ -205,6 +210,32 @@ import {
 } from '../payload-helpers';
 import { writePartSettingsWithFallback } from './part-settings-writer';
 
+/**
+ * The message for one refused directory. Shared by the plan summary and the
+ * execute-time `directory_blocked`, so the user confirms against the same text
+ * the run then reports.
+ */
+function blockedDirectoryMessage(
+  assignment: { path: string; name: string },
+  partAction: Pick<PartAction, 'part' | 'asnlibRefusal'>,
+  block: BlockedDirectory,
+): string {
+  const dirKey = path.join(assignment.path, partAction.part.path, block.dir);
+  if (block.reason === 'container-asnlib') {
+    // The reconciler names the evidence it saw; this fallback is the alias case.
+    return partAction.asnlibRefusal ??
+      `Not pushing \`${dirKey}\`: this is a Container course, where \`asnlib\` holds aliases of ` +
+      '`docs` and `data`. Uploading it could replace those aliases on Vocareum. ' +
+      'vocgit refuses it until this is verified.';
+  }
+  // Uploading uses reset:1, which clears the directory on Vocareum first:
+  // pushing a partially-pulled directory would delete every remote file
+  // the pull could not download. Refuse, and say how to complete it.
+  return `Not pushing ${dirKey}: the last pull could not download every file in it, ` +
+    `so uploading it would DELETE those files on Vocareum. Complete it first with ` +
+    `\`vocgit pull --batch --content --assignment ${assignment.name}\`.`;
+}
+
 // ---------------------------------------------------------------------------
 // planPush — READ-ONLY
 // ---------------------------------------------------------------------------
@@ -280,6 +311,9 @@ export async function planPush(
     workspaceRoot,
     events,
     planRubrics: true,
+    // Unfiltered: a created assignment's evidence is the first configured part
+    // of the whole course, even when --assignment selects only the new one.
+    asnlibGuard: { courseAssignments: effectiveConfig.assignments },
   });
 
   if (assignmentFilters.length > 0 || partFilters.length > 0) {
@@ -317,6 +351,20 @@ export async function planPush(
     // branch, not displayPlan's --verbose/--dry-run form, is the summary the
     // ordinary interactive user confirms from.
     emitRubricPlanSummaries(reconPlan, events);
+  }
+
+  // Refused directories are listed always, not only under --verbose/--dry-run,
+  // so the reason is on screen before "Proceed with push?". Uncoded on purpose:
+  // the execute-time directory_blocked is the diagnostic; a plan line is not.
+  for (const action of reconPlan.assignments) {
+    for (const partAction of action.parts) {
+      for (const block of partAction.blockedDirectories ?? []) {
+        events.emit({
+          level: 'warn',
+          message: `Blocked (${block.reason}): ${blockedDirectoryMessage(action.assignment, partAction, block)}`,
+        });
+      }
+    }
   }
 
   // Build the configDigest from the persisted YAML text.
@@ -508,7 +556,7 @@ export async function planPush(
         rubricPlan: partAction.rubricPlan,
         rubricReadFailed: partAction.rubricReadFailed,
         ...(partAction.blockedDirectories !== undefined
-          ? { blockedDirectories: [...partAction.blockedDirectories] }
+          ? { blockedDirectories: partAction.blockedDirectories.map((block) => ({ ...block })) }
           : {}),
       });
     }
@@ -672,6 +720,23 @@ export async function executePush(
     contentState: { ...lastHistory?.content_state },
     summary: '',
   };
+
+  // Markers first: before anything below can `break assignmentLoop`, every
+  // refused asnlib gets push-incomplete. Keeping its old hash is not enough:
+  // after a --force-all refusal that hash may equal local, and an earlier abort
+  // would then leave asnlib never planned again. An incomplete-pull value is
+  // never overwritten: push-incomplete would make the next push upload the
+  // partly pulled directory with reset:1, deleting what the pull missed.
+  for (const assignmentIntent of plan.intent.assignments) {
+    for (const partIntent of assignmentIntent.parts) {
+      for (const block of partIntent.blockedDirectories ?? []) {
+        if (block.reason !== 'container-asnlib') { continue; }
+        const key = path.join(assignmentIntent.path, partIntent.path, block.dir);
+        if (result.contentState[key] === INCOMPLETE_PULL_MARKER) { continue; }
+        result.contentState[key] = PUSH_INCOMPLETE_MARKER;
+      }
+    }
+  }
 
   const configUpdates: Config['assignments'] = [];
   let configChanged = false;
@@ -1118,20 +1183,22 @@ export async function executePush(
 
       const rubricPlan = partIntent.rubricPlan;
 
-      for (const dir of partIntent.blockedDirectories ?? []) {
-        // Uploading uses reset:1, which clears the directory on Vocareum first:
-        // pushing a partially-pulled directory would delete every remote file
-        // the pull could not download. Refuse, and say how to complete it.
-        const dirKey = path.join(action.assignment.path, partAction.part.path, dir);
-        const message =
-          `Not pushing ${dirKey}: the last pull could not download every file in it, ` +
-          `so uploading it would DELETE those files on Vocareum. Complete it first with ` +
-          `\`vocgit pull --batch --content --assignment ${action.assignment.name}\`.`;
-        events.emit({ level: 'error', message });
+      // The whole pass first, then --abort-on-error: stopping mid-pass would
+      // leave a later block unreported (its marker is already written above).
+      const blockedDirectories = partIntent.blockedDirectories ?? [];
+      for (const block of blockedDirectories) {
+        const dirKey = path.join(action.assignment.path, partAction.part.path, block.dir);
+        const message = blockedDirectoryMessage(action.assignment, partAction, block);
+        events.emit({
+          level: 'error',
+          code: 'directory_blocked',
+          message,
+          data: { part_id: partId, directory: block.dir, reason: block.reason },
+        });
         result.failed.push({ type: 'file', id: dirKey, error: message });
         result.success = false;
-        if (abortOnError) { shouldAbort = true; break assignmentLoop; }
       }
+      if (blockedDirectories.length > 0 && abortOnError) { shouldAbort = true; break assignmentLoop; }
 
       if (partIntent.rubricReadFailed !== undefined) {
         // The plan-time read failed (403, body-encoded failure, pagination shortfall,
@@ -1335,6 +1402,25 @@ export async function executePush(
           continue;
         }
         for (const dir of contentDirectories) {
+          // Defence in depth: the planner never plans a directory a partial
+          // pull marked, but a reset:1 upload of one would delete every remote
+          // file the pull missed, so the executor refuses it too.
+          const markedKey = path.join(action.assignment.path, partAction.part.path, dir);
+          if (lastHistory?.content_state?.[markedKey] === INCOMPLETE_PULL_MARKER) {
+            const block: BlockedDirectory = { dir, reason: 'incomplete-pull' };
+            const message = blockedDirectoryMessage(action.assignment, partAction, block);
+            events.emit({
+              level: 'error',
+              code: 'directory_blocked',
+              message,
+              data: { part_id: partId, directory: dir, reason: block.reason },
+            });
+            result.failed.push({ type: 'file', id: markedKey, error: message });
+            result.contentState[markedKey] = INCOMPLETE_PULL_MARKER;
+            result.success = false;
+            if (abortOnError) { shouldAbort = true; break assignmentLoop; }
+            continue;
+          }
           try {
             const dirKey = path.join(action.assignment.path, partAction.part.path, dir);
             const localDirPath = path.resolve(workspaceRoot, dirKey);

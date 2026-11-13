@@ -5,8 +5,10 @@
  *
  * CRITICAL: Content upload uses part PUT with content[].zipcontent payload.
  */
-import axios from 'axios';
+import axios, { type AxiosInstance } from 'axios';
 import { VocareumClient, APIError, VocareumError, isOverloadError, sanitizeLogString } from './client';
+import { newZipPartState, normaliseListedName, tryZipDirectory } from './zip-directory';
+import type { PullZipSettings } from '../utils/zip-switches';
 import type { DirectoryType } from '../types/config';
 import { DEFAULT_PART_DIRECTORIES } from '../types/config';
 import type { UploadResult, FileMap, FileInfo } from '../types/api';
@@ -124,7 +126,8 @@ export function resolveMaxDownloadFiles(env: NodeJS.ProcessEnv = process.env): n
   return n;
 }
 
-interface DownloadBudget {
+/** The running count and byte totals of one download, and where skipped entries go. */
+export interface DownloadBudget {
   /** Per-walk collector for entries a non-strict walk skipped. */
   failures?: DownloadFailure[];
   /** Vocareum-managed link entries the walk left out (see isVocareumManagedLink). */
@@ -190,11 +193,10 @@ function describeBody(response: unknown): string {
   return typeof response;
 }
 
-function parseFileListResponse(response: unknown): ParsedFileEntry[] {
-  let rawFiles: unknown[];
-  if (Array.isArray(response)) {
-    rawFiles = response;
-  } else if (response !== null && typeof response === 'object') {
+/** The entries array of a listing body, or `NotAFileListingError`. */
+function extractRawEntries(response: unknown): unknown[] {
+  if (Array.isArray(response)) { return response; }
+  if (response !== null && typeof response === 'object') {
     const obj = response as {
       files?: unknown;
       data?: unknown;
@@ -202,10 +204,13 @@ function parseFileListResponse(response: unknown): ParsedFileEntry[] {
     };
     const list = obj.files ?? obj.data ?? obj.items;
     if (!Array.isArray(list)) { throw new NotAFileListingError(describeBody(response)); }
-    rawFiles = list;
-  } else {
-    throw new NotAFileListingError(describeBody(response));
+    return list;
   }
+  throw new NotAFileListingError(describeBody(response));
+}
+
+function parseFileListResponse(response: unknown): ParsedFileEntry[] {
+  const rawFiles = extractRawEntries(response);
 
   const parsed: ParsedFileEntry[] = [];
   for (const entry of rawFiles) {
@@ -828,7 +833,12 @@ export async function uploadContent(
  * is charged for every listed entry; this is secondary defense, so it carries
  * headroom rather than hugging the known-deepest layout.
  */
-const MAX_DOWNLOAD_DEPTH = 10;
+export const MAX_DOWNLOAD_DEPTH = 10;
+
+/** The depth cut's failure text, shared by the walk and the zip path's commit. */
+const DEPTH_CUT_REASON =
+  `directory nesting exceeds the ${MAX_DOWNLOAD_DEPTH}-level download limit; ` +
+  `it and anything below it were NOT downloaded`;
 
 /**
  * Consecutive identical path segments that make a path a CYCLE CANDIDATE.
@@ -847,10 +857,6 @@ const MAX_DOWNLOAD_DEPTH = 10;
  */
 const CYCLE_REPEAT_THRESHOLD = 3;
 
-/**
- * True when a relative path ends in CYCLE_REPEAT_THRESHOLD identical segments,
- * i.e. the walk is going in circles rather than descending real content.
- */
 /** True when two listings name exactly the same entries (order-insensitive). */
 function sameEntryNames(a: FileInfo[], b: FileInfo[]): boolean {
   if (a.length !== b.length) {
@@ -860,7 +866,12 @@ function sameEntryNames(a: FileInfo[], b: FileInfo[]): boolean {
   return b.every(e => names.has(e.path));
 }
 
-function isCyclicPath(relativePath: string): boolean {
+/**
+ * True when a relative path ends in CYCLE_REPEAT_THRESHOLD identical segments,
+ * i.e. the walk is going in circles rather than descending real content.
+ * Exported so the zip pull applies the walk's exact pattern (spec step 6).
+ */
+export function isCyclicPath(relativePath: string): boolean {
   const segments = relativePath.split('/');
   if (segments.length < CYCLE_REPEAT_THRESHOLD) {
     return false;
@@ -897,6 +908,11 @@ export function downloadContent(
      *  out (e.g. `lib/publicdata`), so a caller comparing against local files
      *  does not read their absence as a remote deletion. */
     managedLinks?: string[];
+    /** Download each directory as one verified zip, falling back to the walk.
+     *  Absent, or `enabled: false`: the walk exactly as before. `now` and
+     *  `http` are injectable for tests (defaults: `performance.now()` and a
+     *  fresh bare axios instance, never the client's). */
+    zip?: PullZipSettings & { now?: () => number; http?: AxiosInstance };
   }
 ): Promise<FileMap> {
   return (async (): Promise<FileMap> => {
@@ -913,10 +929,28 @@ export function downloadContent(
     };
 
     const strict = options?.strict === true;
+    const zip = options?.zip?.enabled === true ? options.zip : undefined;
+    // One state per part per call: quarantine and seen ETags never outlive it.
+    const zipState = zip !== undefined ? newZipPartState() : undefined;
+    const zipHttp = zip !== undefined ? (zip.http ?? axios.create()) : undefined;
+    const zipNow = zip?.now ?? ((): number => performance.now());
     for (let i = 0; i < dirs.length; i++) {
       const directory = dirs[i];
       const baseApiPath = toApiDirPath(directory, architecture);
       try {
+        if (zip !== undefined && zipState !== undefined && zipHttp !== undefined) {
+          const outcome = await tryZipDirectory({
+            client, courseId, assignmentId, partId, directory, baseApiPath,
+            downloaded, budget, timeoutMs: zip.timeoutMs, now: zipNow, http: zipHttp, state: zipState,
+            isMissingDirectory: (error, apiDirPath) => isHttp400(error) &&
+              missingDirectoryMessageMatches(error instanceof Error ? error.message : String(error), apiDirPath),
+            walk: (relativePath, depth, preListed, only) => downloadDirectoryTree(
+              client, courseId, assignmentId, partId, directory, baseApiPath, relativePath, depth,
+              downloaded, strict, budget, preListed, only
+            ),
+          });
+          if (outcome === 'used') { continue; }
+        }
         await downloadDirectoryTree(
           client, courseId, assignmentId, partId, directory, baseApiPath, '', 0, downloaded, strict, budget
         );
@@ -967,7 +1001,11 @@ async function downloadDirectoryTree(
   strict: boolean,
   budget: DownloadBudget,
   /** Entries the caller already listed for this directory (saves a request). */
-  preListed?: FileInfo[]
+  preListed?: FileInfo[],
+  /** Zip handoff only: process just these names (normalised, one trailing `/`
+   *  stripped); every other entry is skipped with no charge, fetch or failure.
+   *  `preListed` stays the full listing, for the cycle comparison. */
+  only?: ReadonlySet<string>
 ): Promise<void> {
   const apiDirPath = relativePath ? `${baseApiPath}/${relativePath}` : baseApiPath;
   // Only the part's own declared directory is worth warning about; deeper
@@ -977,6 +1015,8 @@ async function downloadDirectoryTree(
   );
 
   for (const entry of entries) {
+    // First statement: a skipped name must never reach the budget charge below.
+    if (only !== undefined && !only.has(normaliseListedName(entry.path))) { continue; }
     const entryRelPath = relativePath ? `${relativePath}/${entry.path}` : entry.path;
     const filemapKey = `${directory}/${entryRelPath}`;
 
@@ -1000,11 +1040,7 @@ async function downloadDirectoryTree(
         // Truncating the walk drops files — the caller must not see a clean
         // pull. Warn without --verbose (a debug line here once hid an entire
         // course's nested assets) and record it as a failure.
-        recordDownloadFailure(
-          client, budget, strict, filemapKey,
-          `directory nesting exceeds the ${MAX_DOWNLOAD_DEPTH}-level download limit; ` +
-          `it and anything below it were NOT downloaded`, partId, 'truncated'
-        );
+        recordDownloadFailure(client, budget, strict, filemapKey, DEPTH_CUT_REASON, partId, 'truncated');
         return;
       }
       await downloadDirectoryTree(
@@ -1299,6 +1335,21 @@ async function listFilesByApiPath(
  */
 const MAX_LIST_PAGES = 10_000;
 
+/** One listing page: the single request shape `listDirectory` and the bounded collector share. */
+async function fetchListPage(
+  client: VocareumClient,
+  url: string,
+  apiDirPath: string,
+  page: number,
+): Promise<{ parsed: ParsedFileEntry[]; raw: unknown[] }> {
+  const response = await client.request<unknown>({
+    method: 'GET',
+    url,
+    params: page === 0 ? { dir: apiDirPath, list: true } : { dir: apiDirPath, list: true, page },
+  });
+  return { parsed: parseFileListResponse(response), raw: extractRawEntries(response) };
+}
+
 /**
  * List a directory, distinguishing "absent" from "empty" — the walk needs the
  * difference to tell a real (empty) subdirectory from an entry that is not
@@ -1347,12 +1398,7 @@ async function listDirectory(
           `stopping rather than reading it as complete`
         );
       }
-      const response = await client.request<unknown>({
-        method: 'GET',
-        url,
-        params: page === 0 ? { dir: apiDirPath, list: true } : { dir: apiDirPath, list: true, page },
-      });
-      const batch = parseFileListResponse(response);
+      const { parsed: batch } = await fetchListPage(client, url, apiDirPath, page);
       if (batch.length === 0) { break; }
       let added = 0;
       for (const entry of batch) {
@@ -1410,6 +1456,73 @@ async function listDirectory(
       message: `Failed to list files for part=${partId}, dir=${apiDirPath}: ${error instanceof Error ? error.message : 'Unknown'}`,
     });
     throw error;
+  }
+}
+
+/**
+ * Collect a directory's names for the zip path, stopping once a shared name
+ * budget is spent. Pages exactly like `listDirectory` (until an empty page,
+ * never on a short one) but keeps no per-entry detail beyond sizes, and does
+ * not read past the budget, so one huge listing cannot be held in memory.
+ *
+ * Errors, including a "doesn't exist" answer and `NotAFileListingError`,
+ * propagate: the caller decides what an absent or unreadable listing means.
+ * Names are returned as parsed (trailing slashes intact).
+ *
+ * @param counter - Shared budget; `remaining` drops by one per name read. Once it
+ *   goes below 0 the collector stops and returns `complete: false`.
+ * @returns The names, whether the listing was read to its end, the raw page
+ *   bodies' entries (for the root guard), and each name's listed size.
+ */
+export async function listDirectoryBounded(
+  client: VocareumClient,
+  courseId: string,
+  assignmentId: string,
+  partId: string,
+  apiDirPath: string,
+  counter: { remaining: number },
+): Promise<{ names: string[]; complete: boolean; rawPages: unknown[][]; sizes: Map<string, number> }> {
+  const url = `/courses/${courseId}/assignments/${assignmentId}/parts/${partId}/files`;
+  const names: string[] = [];
+  const sizes = new Map<string, number>();
+  const rawPages: unknown[][] = [];
+  const seen = new Set<string>();
+  for (let page = 0; ; page++) {
+    if (page > MAX_LIST_PAGES) {
+      throw new APIError(
+        `Listing ${apiDirPath} was still returning names after ${MAX_LIST_PAGES} pages; ` +
+        `stopping rather than reading it as complete`
+      );
+    }
+    const { parsed: batch, raw } = await fetchListPage(client, url, apiDirPath, page);
+    if (batch.length === 0) {
+      // Only a truly empty page ends the listing. A page whose elements all
+      // failed to parse is not the terminator: keep it (the root guard
+      // refuses on any element that does not qualify) and report incomplete.
+      // parseFileListResponse already throws on such a page today; this keeps
+      // the collector safe if the parser ever stops doing so.
+      if (raw.length > 0) {
+        rawPages.push(raw);
+        return { names, complete: false, rawPages, sizes };
+      }
+      return { names, complete: true, rawPages, sizes };
+    }
+    rawPages.push(raw);
+    let added = 0;
+    for (const entry of batch) {
+      counter.remaining -= 1;
+      if (counter.remaining < 0) { return { names, complete: false, rawPages, sizes }; }
+      if (!seen.has(entry.path)) { seen.add(entry.path); added += 1; }
+      names.push(entry.path);
+      sizes.set(entry.path, entry.size);
+    }
+    if (page > 0 && added === 0) {
+      // The server ignored `page` and repeated an earlier one; same refusal as listDirectory.
+      throw new APIError(
+        `Listing ${apiDirPath}: page ${page} repeated names already read; ` +
+        `cannot page through it, so the directory cannot be listed completely`
+      );
+    }
   }
 }
 

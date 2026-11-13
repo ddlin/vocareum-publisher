@@ -63,14 +63,36 @@ describe('semanticFingerprint', () => {
   });
   it('changes when a directory becomes blocked by an incomplete pull', () => {
     const blocked: PushIntent = JSON.parse(JSON.stringify(base));
-    blocked.assignments[0].parts[0].blockedDirectories = ['data'];
+    blocked.assignments[0].parts[0].blockedDirectories = [{ dir: 'data', reason: 'incomplete-pull' }];
     expect(semanticFingerprint(base)).not.toBe(semanticFingerprint(blocked));
   });
   it('does not change when blockedDirectories order differs', () => {
     const a: PushIntent = JSON.parse(JSON.stringify(base));
-    a.assignments[0].parts[0].blockedDirectories = ['data', 'startercode'];
+    a.assignments[0].parts[0].blockedDirectories = [
+      { dir: 'data', reason: 'incomplete-pull' }, { dir: 'startercode', reason: 'incomplete-pull' },
+    ];
     const b: PushIntent = JSON.parse(JSON.stringify(base));
-    b.assignments[0].parts[0].blockedDirectories = ['startercode', 'data'];
+    b.assignments[0].parts[0].blockedDirectories = [
+      { dir: 'startercode', reason: 'incomplete-pull' }, { dir: 'data', reason: 'incomplete-pull' },
+    ];
+    expect(semanticFingerprint(a)).toBe(semanticFingerprint(b));
+  });
+  it('S35: a different block reason gives a different fingerprint', () => {
+    const a: PushIntent = JSON.parse(JSON.stringify(base));
+    a.assignments[0].parts[0].blockedDirectories = [{ dir: 'asnlib', reason: 'container-asnlib' }];
+    const b: PushIntent = JSON.parse(JSON.stringify(base));
+    b.assignments[0].parts[0].blockedDirectories = [{ dir: 'asnlib', reason: 'incomplete-pull' }];
+    expect(semanticFingerprint(a)).not.toBe(semanticFingerprint(b));
+  });
+  it('S35: the same block objects in another order give the same fingerprint (sorted by dir)', () => {
+    const a: PushIntent = JSON.parse(JSON.stringify(base));
+    a.assignments[0].parts[0].blockedDirectories = [
+      { dir: 'startercode', reason: 'incomplete-pull' }, { dir: 'asnlib', reason: 'container-asnlib' },
+    ];
+    const b: PushIntent = JSON.parse(JSON.stringify(base));
+    b.assignments[0].parts[0].blockedDirectories = [
+      { dir: 'asnlib', reason: 'container-asnlib' }, { dir: 'startercode', reason: 'incomplete-pull' },
+    ];
     expect(semanticFingerprint(a)).toBe(semanticFingerprint(b));
   });
 });

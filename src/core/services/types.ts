@@ -1,6 +1,7 @@
 import type { Config, PublishHistory } from '../../types/config';
-import type { ReconciliationPlan } from '../../types/state';
+import type { ReconciliationPlan, BlockedDirectory } from '../../types/state';
 import type { RubricSyncPlan } from '../../types/api';
+import type { PullZipSettings } from '../../utils/zip-switches';
 
 // Per-invocation options (NOT in the context — the context is the durable
 // environment; the request is what this call does). Mirror today's options.
@@ -18,6 +19,9 @@ export interface PushRequest {
 export interface PullRequest {
   batch?: boolean; nonInteractive?: boolean; skipContent?: boolean;
   content?: boolean; assignment?: string[]; part?: string[]; verbose?: boolean;
+  /** Zip download settings, resolved by the command before any request.
+   *  Absent: every directory is walked file by file, as before. */
+  zip?: PullZipSettings;
 }
 
 // Canonical, immutable description of EVERY intended mutation (review P0 #1/#3).
@@ -41,9 +45,10 @@ export interface PartIntent {
    *  points; included in the fingerprint so a newly-failing/newly-recovering read
    *  shifts it. */
   rubricReadFailed?: string;
-  /** Directories refused because their last pull was incomplete. executePush
-   *  reports each as failed; included in the fingerprint (AGENTS.md #15). */
-  blockedDirectories?: string[];
+  /** Directories push refuses, with the reason (`incomplete-pull` or
+   *  `container-asnlib`). executePush reports each as failed; included in the
+   *  fingerprint (AGENTS.md #15), reason and all. */
+  blockedDirectories?: BlockedDirectory[];
 }
 export interface AssignmentIntent {
   path: string;

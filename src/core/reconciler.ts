@@ -4,9 +4,10 @@
  * Compare local configuration with Vocareum state to determine required actions.
  */
 
-import type { Config, PublishHistory, Part, Assignment } from '../types/config';
+import * as path from 'path';
+import type { Config, PublishHistory, Part, Assignment, DirectoryType } from '../types/config';
 import { detectArchitecture, normalizeSubmissionFilters } from '../types/config';
-import { detectChangedDirectories, directoriesForPart, publishExcludePatterns } from './local-scan';
+import { detectChangedDirectories, directoriesForPart, publishExcludePatterns, INCOMPLETE_PULL_MARKER } from './local-scan';
 import type { VocareumAssignmentResponse, VocareumPartResponse, RubricSyncPlan, RemoteRubric } from '../types/api';
 import type {
   ReconciliationPlan,
@@ -14,9 +15,12 @@ import type {
   PartAction,
   OrphanedEntity,
   StaleAssignment,
-  CourseAction
+  CourseAction,
+  BlockedDirectory,
 } from '../types/state';
 import { VocareumClient } from '../api/client';
+import { listDirectoryBounded } from '../api/content';
+import { resolveCourseRootEvidence, ROOT_LISTING_FAILED, type RootEvidence } from './course-architecture';
 import { getCourse } from '../api/courses';
 import { listAssignments, getAssignment } from '../api/assignments';
 import { listParts, getPart } from '../api/parts';
@@ -122,6 +126,114 @@ export function cleanupTimeIgnoredByServer(part: Part, remotePart: VocareumPartR
   return detectArchitecture(remotePart?.labtype) === 'elite' && readsZero;
 }
 
+/** Root listing cap: more names than this is not evidence (spec "Check"). */
+const ROOT_LISTING_CAP = 1000;
+
+/** What the asnlib push guard needs for one reconcile run. */
+interface AsnlibGuardState {
+  client: VocareumClient;
+  courseId: string;
+  /** One root lookup per course per run, failures included. */
+  cache: Map<string, RootEvidence>;
+}
+
+/** A part of the destination course whose root can be listed. */
+interface EvidencePart {
+  assignmentId: string;
+  partId: string;
+  /** Workspace path of the part (assignment path / part path), for the refusal message. */
+  label: string;
+}
+
+/**
+ * The first part in config order, across every assignment of vocareum.yaml,
+ * that already has both IDs. Used on create: a new assignment has no part of
+ * its own yet, and its template may live in another course, so only a part
+ * already in the destination course is evidence.
+ */
+function firstConfiguredPart(assignments: Assignment[]): EvidencePart | undefined {
+  for (const assignment of assignments) {
+    const assignmentId = assignment.assignment_id;
+    if (assignmentId === null || assignmentId === undefined || assignmentId === '') { continue; }
+    for (const part of assignment.parts) {
+      const partId = part.part_id;
+      if (partId !== null && partId !== undefined && partId !== '') {
+        return { assignmentId, partId, label: path.join(assignment.path, part.path) };
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Decides whether `asnlib` may be uploaded. Returns undefined when the course
+ * root is positively Elite, otherwise the refusal message for this directory.
+ *
+ * Positive evidence only: a Container root, an unrecognised root, a failed or
+ * truncated listing and the absence of any part to list all refuse, because an
+ * upload with reset:1 to a Container `asnlib` could replace the `docs`/`data`
+ * aliases it holds, and that is unprobed.
+ */
+async function asnlibRefusal(
+  guard: AsnlibGuardState,
+  evidence: EvidencePart | undefined,
+  dirKey: string,
+): Promise<string | undefined> {
+  // Only an uncached miss means "nothing to check": a cached answer from an
+  // earlier part of this run is real evidence about the same course.
+  const noPart = evidence === undefined && !guard.cache.has(guard.courseId);
+  const result = await resolveCourseRootEvidence(
+    (partId) => listDirectoryBounded(
+      guard.client, guard.courseId, evidence?.assignmentId ?? '', partId, '/', { remaining: ROOT_LISTING_CAP },
+    ),
+    evidence?.partId,
+    guard.cache,
+    guard.courseId,
+    evidence?.label,
+  );
+  if (result.kind === 'elite') { return undefined; }
+  const head = `Not pushing \`${dirKey}\``;
+  if (result.kind === 'container') {
+    return `${head}: this is a Container course, where \`asnlib\` holds aliases of \`docs\` and \`data\`. ` +
+      'Uploading it could replace those aliases on Vocareum. vocgit refuses it until this is verified.';
+  }
+  if (noPart) {
+    return `${head}: no part of this course existed to check; the next push checks the new part ` +
+      'and uploads `asnlib` only if this course is Elite.';
+  }
+  const risk = 'On a Container course `asnlib` holds aliases of `docs` and `data`, and uploading it could replace them on Vocareum, ';
+  // A failed listing may be passing (network, overload): the evidence is
+  // cached for this run only, so the next push lists the root again.
+  if (result.detail.startsWith(ROOT_LISTING_FAILED)) {
+    return `${head}: ${result.detail}, so vocgit cannot confirm this course is Elite. ${risk}` +
+      'so it is refused this time. The next push checks the course root again.';
+  }
+  return `${head}: ${result.detail}, so vocgit cannot confirm this course is Elite. ${risk}` +
+    'so it is refused on every push until vocgit recognises this course root. ' +
+    'Please report this root listing to the vocgit maintainers.';
+}
+
+/**
+ * Removes `asnlib` from a part's planned directories when the course is not
+ * positively Elite, and records it as a `container-asnlib` block. Runs before
+ * content hashes, sync-delete planning and promotion are decided, since what
+ * uploads is built from `changedDirectories`; the blocked pass alone never
+ * prevents an upload. No request is made unless `asnlib` is planned.
+ */
+async function guardAsnlib(
+  guard: AsnlibGuardState | undefined,
+  changedDirs: DirectoryType[],
+  blocked: BlockedDirectory[],
+  evidence: () => EvidencePart | undefined,
+  dirKey: string,
+): Promise<{ changedDirs: DirectoryType[]; refusal?: string }> {
+  if (guard === undefined || !changedDirs.includes('asnlib')) { return { changedDirs }; }
+  const refusal = await asnlibRefusal(guard, evidence(), dirKey);
+  if (refusal === undefined) { return { changedDirs }; }
+  blocked.push({ dir: 'asnlib', reason: 'container-asnlib' });
+  return { changedDirs: changedDirs.filter((dir) => dir !== 'asnlib'), refusal };
+}
+
 /**
  * Generate reconciliation plan by comparing local config with Vocareum state
  *
@@ -148,9 +260,22 @@ export async function reconcile(
      * "could not read rubrics" warning path outside push's guarantees.
      */
     planRubrics?: boolean;
+    /**
+     * Refuse `asnlib` unless the destination course root is positively Elite
+     * (spec "Push: `asnlib` on Container courses"). Only push sets this: the
+     * guard lists a course root, which pull's inspection has no use for.
+     * `courseAssignments` is every assignment of vocareum.yaml, unfiltered, so a
+     * created assignment can borrow the first configured part as evidence even
+     * under `--assignment`.
+     */
+    asnlibGuard?: { courseAssignments: Assignment[] };
   } = {}
 ): Promise<ReconciliationPlan> {
   const events: EventSink = options.events ?? new LoggerEventSink();
+  const guard: AsnlibGuardState | undefined = options.asnlibGuard !== undefined
+    ? { client, courseId: config.vocareum.course_id, cache: new Map() }
+    : undefined;
+  const courseAssignments = options.asnlibGuard?.courseAssignments ?? [];
   events.emit({ level: 'info', message: 'Fetching current state from Vocareum...' });
 
   // 1. Fetch Course and compare settings
@@ -360,7 +485,7 @@ export async function reconcile(
           const effectiveDirs = directoriesForPart(config, configPart);
 
           const excludePatterns = publishExcludePatterns(config);
-          const { changedDirs, hashes: dirHashes, blockedDirs } = await detectChangedDirectories(
+          const detected = await detectChangedDirectories(
             configAssignment.path,
             configPart.path,
             effectiveDirs,
@@ -369,6 +494,27 @@ export async function reconcile(
             excludePatterns,
             options.workspaceRoot ?? process.cwd()
           );
+          const dirHashes = detected.hashes;
+          const blockedDirs: BlockedDirectory[] = detected.blockedDirs.map(
+            (dir): BlockedDirectory => ({ dir, reason: 'incomplete-pull' }),
+          );
+          const remoteAssignmentId = remoteAssignment.id;
+          const { changedDirs, refusal: asnlibRefusalMessage } = await guardAsnlib(
+            guard,
+            detected.changedDirs,
+            blockedDirs,
+            // On update the part itself is the evidence.
+            () => ({
+              assignmentId: remoteAssignmentId,
+              partId: mapping.apiPartId,
+              label: path.join(configAssignment.path, configPart.path),
+            }),
+            path.join(configAssignment.path, configPart.path, 'asnlib'),
+          );
+          if (asnlibRefusalMessage !== undefined) {
+            // Its hash must not travel with the plan: nothing may read it as uploadable.
+            delete dirHashes.asnlib;
+          }
 
           const rubricsChanged = rubricPlan !== undefined;
 
@@ -380,7 +526,7 @@ export async function reconcile(
               reasons.push(`Content: ${changedDirs.join(', ')}`);
             }
             if (blockedDirs.length > 0) {
-              reasons.push(`Content blocked (incomplete pull): ${blockedDirs.join(', ')}`);
+              reasons.push(`Content blocked: ${blockedDirs.map((b) => `${b.dir} (${b.reason})`).join(', ')}`);
             }
             if (metadataChanged) {
               reasons.push('Settings changed');
@@ -422,6 +568,7 @@ export async function reconcile(
               remoteRubrics,
               rubricReadFailed,
               blockedDirectories: blockedDirs.length > 0 ? blockedDirs : undefined,
+              ...(asnlibRefusalMessage !== undefined ? { asnlibRefusal: asnlibRefusalMessage } : {}),
               reason: reasons.join('; ')
             });
           } else {
@@ -441,12 +588,36 @@ export async function reconcile(
     } else if (assignmentActionType === 'create') {
       // For creation, we mark all parts as needing creation/upload
       for (const part of configAssignment.parts) {
-        const createDirs = directoriesForPart(config, part);
+        // A directory a partial pull marked is never planned, on create as on
+        // update (detectChangedDirectories): the template copy is complete,
+        // and a reset:1 upload of the partial local tree would delete what
+        // the pull missed and clear the marker that protects it.
+        const blocked: BlockedDirectory[] = [];
+        const planned: DirectoryType[] = [];
+        for (const dir of directoriesForPart(config, part)) {
+          const key = path.join(configAssignment.path, part.path, dir);
+          if (lastPublishHistory?.content_state?.[key] === INCOMPLETE_PULL_MARKER) {
+            blocked.push({ dir, reason: 'incomplete-pull' });
+          } else {
+            planned.push(dir);
+          }
+        }
+        // On create every other directory is planned, so the guard applies here
+        // too. The template is never evidence: it may live in another course.
+        const { changedDirs: createDirs, refusal } = await guardAsnlib(
+          guard,
+          planned,
+          blocked,
+          () => firstConfiguredPart(courseAssignments),
+          path.join(configAssignment.path, part.path, 'asnlib'),
+        );
         partActions.push({
           type: 'create',
           part,
-          contentChanged: true,
-          changedDirectories: createDirs
+          contentChanged: createDirs.length > 0,
+          changedDirectories: createDirs,
+          ...(blocked.length > 0 ? { blockedDirectories: blocked } : {}),
+          ...(refusal !== undefined ? { asnlibRefusal: refusal } : {}),
         });
       }
     }

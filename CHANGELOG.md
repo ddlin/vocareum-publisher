@@ -11,6 +11,23 @@ To be released as 1.5.0. (A `[1.5.0]` section dated 2026-11-09 was written for
 the EU tenant work but never published; it is folded in here.)
 
 ### Added
+- **Zip download for content pull.** Each directory is fetched as one zip and
+  unpacked locally, falling back to the file-by-file walk when the zip cannot be
+  trusted. On by default; `VOCAREUM_PULL_ZIP=0` turns it off, and
+  `VOCAREUM_ZIP_TIMEOUT_MS` (default 600000, range 1000-3600000) bounds one
+  directory. An invalid value exits 2 before any request. A small directory can
+  take up to about 8 s longer because of the settle check. Run one pull per part
+  per user at a time; the README lists the remaining risk. Some symlinked files
+  arrive through the zip as copies of their targets, so a directory holding only
+  such links now pulls complete, and a later push uploads them as regular files.
+  Measured on a 9,000-file venv directory: 50 minutes instead of 4 h 55 min, with
+  identical bytes for every file both paths fetched.
+- **`zip_not_used` (warn) and `directory_blocked` (error) diagnostics**, with
+  closed reason sets. After a zip rejection that happens once the zip job has
+  started, the rest of that part is pulled file by file, and each later
+  directory reports `quarantined`. A directory whose zip is not used because of
+  the checks before the job starts (`listing_failed`, `listing_over_budget`,
+  `listed_size_over_limit`) is pulled file by file on its own.
 - **`--json` on `pull`, `push`, `status`, `validate` and `fix`.** stdout carries
   exactly one versioned envelope; human output moves to stderr. `--json` implies
   `--non-interactive`.
@@ -76,6 +93,24 @@ the EU tenant work but never published; it is folded in here.)
   (`base_url`, `host`, `region`, `source`, `allowlisted`, `malformed`).
 
 ### Changed
+- **Pull keeps directory-alias content, and drift now compares `asnlib`.** On a
+  Container course the zip delivers `asnlib/public/docs` and `asnlib/publicdata`,
+  which file-by-file download could not fetch; they are kept, duplicating `docs`
+  and `data` locally. Strict drift used to fail on those entries and skip the
+  assignment, so `asnlib` was never compared. Now it is compared like any
+  readable directory: a remote deletion is reported `deleted`, and a local file
+  under `asnlib` that the remote lacks is also reported `deleted` and removed by
+  apply (with no prompt under `--batch`). The README lists the other differences
+  from file-by-file download.
+- **Push refuses `asnlib` unless the course root is positively Elite.** On a
+  Container course an upload could replace the `docs`/`data` aliases. A refused
+  `asnlib` is marked `push-incomplete`, retried on the next push, and reported as
+  `partial`. `vocgit status` does not check this. Vocareum's own template copy on
+  create is not refused.
+- **The incomplete-pull block now emits `directory_blocked`**, and the push plan
+  summary always lists blocked directories with their reason.
+- **`blockedDirectories` in the push `--json` plan is `{ dir, reason }[]`**, not
+  `string[]`. Schema 1.0 is what 1.5.0 first publishes, so this is not a bump.
 - **Exit codes are now categorized.** Every failure previously exited `1`; a
   caller matching `== 1` exactly will now see 2, 3, 4, 5 or 6. A caller testing
   `!= 0` is unaffected by the recategorization itself, **but some runs that used
@@ -157,6 +192,10 @@ the EU tenant work but never published; it is folded in here.)
   terminal or CI logs.
 
 ### Fixed
+- **Pull apply with a remote file that became a directory.** Deletions now run
+  before writes, so the change applies. Known limitation: a remote directory
+  replaced by a file makes drift skip that assignment with a reported error, as
+  it does without zip.
 - **A `--sync-deletes` pass that could not run is a failure.** Every CLI push
   with `--sync-deletes` lists the remote directory to find what to delete. When
   that listing failed (an overloaded server, a 5xx), push warned and still

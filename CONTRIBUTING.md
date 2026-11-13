@@ -65,6 +65,15 @@ These are enforced by tests, lint, and review. The most important:
 **Do not bump the package version** in a PR. Releases are handled by the maintainer
 (publishing requires npm 2FA) — see [RELEASING.md](RELEASING.md) for the process.
 
+## Developer note: the shared zip object
+
+Vocareum writes every directory zip of a part to one object per user and part
+(`u<user>_p<part>.zip`). Pull works around the sharing with a stale-object check
+and a settle check, and the README lists what is left. The proper fix is on
+Vocareum's side: the zip request should return a unique object name per
+transaction. We should ask Vocareum for per-transaction object names. Once they
+exist, the shared-object checks in `src/api/zip-directory.ts` can go.
+
 ## Questions
 
 For anything that isn't a bug or feature request, email **david@vocareum.com**.

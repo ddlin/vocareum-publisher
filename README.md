@@ -490,6 +490,32 @@ Summary:
 ℹ Updated vocareum.yaml
 ```
 
+#### Zip download of directories
+
+Content pull downloads each directory as one zip when it can, which is much faster than fetching files one by one. If the zip cannot be trusted, that directory is pulled file by file instead.
+
+Differences from file-by-file download:
+
+- **Directory aliases are kept.** On a Container course, `asnlib/public/docs` and `asnlib/publicdata` arrive through the zip, although the file-by-file download cannot fetch them. They duplicate `docs` and `data` locally, as independent copies.
+- **Some symlinks arrive as copies.** The zip includes some symlinked files as copies of their targets, for example `bin/python` → `python3.13` inside a bundled Python whose links point within the same tree. The file-by-file download cannot fetch these. Other symlinks, such as a venv's `lib64` and `bin/python*`, are still missing from both, and they keep the directory marked incomplete. A directory whose only symlinks arrive as copies pulls complete, so pushing it later uploads regular files in place of those symlinks on Vocareum. The file contents are the same.
+- **Drift now covers `asnlib`.** `asnlib` is compared like any readable directory. A file deleted on Vocareum is reported `deleted`. A local file under `asnlib` that Vocareum lacks is also reported `deleted`, and applying the pull removes it, with no prompt under `--batch`.
+- **Snapshot.** The zip is the directory at the moment Vocareum built it. If a file is replaced by a directory of the same name after that, the old file is kept until the next pull.
+- **Transient errors.** A file that a file-by-file download would lose to a server error (5xx) or a dropped connection can arrive intact through the zip.
+
+- Zip is **on by default**. Set `VOCAREUM_PULL_ZIP=0` (or `false`, `off`, `no`) to turn it off.
+- `VOCAREUM_ZIP_TIMEOUT_MS` sets how long one directory's zip may take. The default is 600000 (10 minutes). It accepts 1000 to 3600000.
+- An invalid value for either variable exits 2 (usage), before any request is sent.
+- A small directory can take up to about 8 seconds longer than a file-by-file pull. vocgit waits to confirm the zip file did not change while it was read.
+- When a zip is not used, vocgit warns with `zip_not_used` and pulls that directory file by file. A rejection after the zip job starts also pulls the rest of that part file by file, and each later directory of that part reports the reason `quarantined`. The checks before the job starts (`listing_failed`, `listing_over_budget`, `listed_size_over_limit`) affect only that directory.
+
+**Remaining risk.** Vocareum writes every zip of a part to one shared file name per user. vocgit checks that the file is the one it asked for, but three cases cannot be fully ruled out:
+
+- Another process using the same user's token wrote the file just before ours. Ours then replaces it and vocgit rejects the zip, unless the two zips are byte-identical, in which case the files are correct.
+- Another process wrote the file between our write and our check, with file names that match our directory, and nothing changed afterwards. vocgit takes it as ours. A later change is caught, unless it restores the exact same bytes before the check ends.
+- A write of ours lands more than 5 seconds after Vocareum reports success.
+
+Run only one pull per part per user at a time.
+
 ### Throttling the Vocareum API
 
 vocgit schedules all Vocareum API calls through a built-in request throttle to avoid hitting rate limits, especially when pulling or pushing many assignments. The throttle is configurable via a `vocareum.throttle` block in `vocareum.yaml`:
@@ -883,6 +909,53 @@ fatal — Elite courses legitimately declare a `docs` directory that cannot exis
 there, so `directory_unreachable` fires on nearly every Elite pull and must not
 fail it.
 
+| Code | Severity | `data` | Meaning |
+|------|----------|--------|---------|
+| `zip_not_used` | warn | `part_id`, `directory`, `reason`, `quarantined` | A directory was pulled file by file although zip is on. `quarantined` is true when this rejection stopped zip for the rest of the part |
+| `directory_blocked` | error | `part_id`, `directory`, `reason` | Push refused to upload a directory |
+
+`directory_blocked` reasons: `incomplete-pull` (the last pull could not download every file, so uploading would delete them on Vocareum) and `container-asnlib` (see "Push and `asnlib`").
+
+`zip_not_used` reasons:
+
+| Reason | Meaning |
+|--------|---------|
+| `listing_failed` | The directory listing failed |
+| `listing_over_budget` | The listing is larger than the file budget |
+| `listed_size_over_limit` | A listed file is over the per-file size limit |
+| `start_failed` | The zip request was refused or failed |
+| `poll_failed` | Checking on the zip job failed |
+| `deadline` | The zip took longer than `VOCAREUM_ZIP_TIMEOUT_MS` |
+| `url_rejected` | The download address was not a plain `https:` address |
+| `clock_uncertain` | The server clock could not be trusted (slow answer or cached) |
+| `object_stale` | The zip file was left over from an earlier job |
+| `object_window` | The zip file was written outside the expected time window |
+| `object_headers` | The zip file's headers were missing or unusable |
+| `object_changed` | The zip file changed while it was being read |
+| `object_download_failed` | Downloading the zip file failed or the size was wrong |
+| `object_settle_changed` | The zip file changed during the final check |
+| `zip_invalid` | The zip could not be read or had an unsafe entry |
+| `zip_over_budget` | The zip is over the size or entry limits |
+| `cycle_pattern` | A directory path looks like a link cycle |
+| `name_mismatch` | A file in the zip is not in the directory listing |
+| `budget` | The files would exceed the remaining count or byte budget |
+| `quarantined` | An earlier directory of this part was rejected, so no zip is tried |
+
+In the `push` `--json` plan, `blockedDirectories` is a list of `{ dir, reason }` objects.
+
+### Push and `asnlib`
+
+Push does not upload `asnlib` unless the course root is positively Elite (it lists exactly `resource` and `work`). On a Container course, `asnlib` holds aliases of `docs` and `data`, and an upload could replace them. The refusal looks like this:
+
+> Not pushing `<dir>`: this is a Container course, where `asnlib` holds aliases of `docs` and `data`. Uploading it could replace those aliases on Vocareum. vocgit refuses it until this is verified.
+
+If vocgit cannot tell, it refuses too, and says what it saw (for example, a failed root listing or an unrecognised root). After a failed root listing, the message names the part whose root it listed (the first configured part, when the assignment is new), says `asnlib` was refused this time, and says the next push checks again. If that part no longer exists on Vocareum, fix or remove it in `vocareum.yaml`. An unrecognised root is refused on every push until vocgit recognises it, and the message asks you to report that root listing. For the first assignment of a new repo, no part exists yet to check. The message says the next push checks the new part. Then `asnlib` is uploaded only if the course is Elite.
+
+- A refused `asnlib` is marked `push-incomplete` and planned again on the next push. The run reports `partial` and exits 6.
+- The plan summary always lists blocked directories with their reason, including a directory blocked by an incomplete pull.
+- `vocgit status` does not run this check, and still shows a changed `asnlib` as needing publish.
+- The copy Vocareum makes from a template when you create an assignment is not refused.
+
 ### Which build am I running?
 
 ```bash
@@ -925,6 +998,8 @@ Store credentials as repository secrets (`VOCAREUM_OAUTH_CLIENT_ID`, `VOCAREUM_O
 | `VOCAREUM_THROTTLE_JITTER` | Override `vocareum.throttle.jitter` (`true` / `false`) |
 | `VOCAREUM_MAX_DOWNLOAD_FILES` | Per-part file-count cap for pull downloads (default: 5000, range: 1–1000000) |
 | `VOCAREUM_MAX_UPLOAD_CHUNK_BYTES` | Upload chunk size in bytes (default: 33554432, range: 1024–67108864) |
+| `VOCAREUM_PULL_ZIP` | Download pulled directories as one zip (default: on). `0`, `false`, `off` or `no` turns it off |
+| `VOCAREUM_ZIP_TIMEOUT_MS` | Time limit for one directory's zip (default: 600000, range: 1000–3600000) |
 | `VOCAREUM_LOG_LEVEL` | Log level: ERROR, WARN, INFO, DEBUG, TRACE |
 
 ## License

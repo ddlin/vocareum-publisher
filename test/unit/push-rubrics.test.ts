@@ -829,17 +829,19 @@ describe('executePush — directories left incomplete by a pull', () => {
     const rubricPlan: RubricSyncPlan = { creates: [], updates: [], orphans: [], duplicateNames: [] };
     const { plan, config } = buildPlan(rubricPlan, {});
     const reconciledPart = plan.execution.reconciliation.assignments[0].parts[0] as unknown as {
-      rubricPlan?: RubricSyncPlan; blockedDirectories?: string[]; changedDirectories?: string[]; contentChanged?: boolean;
+      rubricPlan?: RubricSyncPlan; blockedDirectories?: { dir: string; reason: string }[];
+      changedDirectories?: string[]; contentChanged?: boolean;
     };
     reconciledPart.rubricPlan = undefined;
-    reconciledPart.blockedDirectories = ['startercode'];
+    reconciledPart.blockedDirectories = [{ dir: 'startercode', reason: 'incomplete-pull' }];
     reconciledPart.changedDirectories = undefined;
     reconciledPart.contentChanged = false;
     const intentPart = plan.intent.assignments[0].parts[0] as unknown as {
-      rubricPlan?: RubricSyncPlan; blockedDirectories?: string[]; contentHashes: Record<string, string>;
+      rubricPlan?: RubricSyncPlan; blockedDirectories?: { dir: string; reason: string }[];
+      contentHashes: Record<string, string>;
     };
     intentPart.rubricPlan = undefined;
-    intentPart.blockedDirectories = ['startercode'];
+    intentPart.blockedDirectories = [{ dir: 'startercode', reason: 'incomplete-pull' }];
     intentPart.contentHashes = {};
     (plan as unknown as { semanticFingerprint: string }).semanticFingerprint = semanticFingerprint(plan.intent);
 
@@ -871,6 +873,12 @@ describe('executePush — directories left incomplete by a pull', () => {
     }));
     expect(syncDirectoryMock).not.toHaveBeenCalled();
     expect(events.some(e => e.level === 'error' && /Not pushing lab1\/part1\/startercode/.test(e.message ?? ''))).toBe(true);
+    // Same message and failed record as before; it now also carries the code.
+    expect(events).toContainEqual(expect.objectContaining({
+      level: 'error',
+      code: 'directory_blocked',
+      data: { part_id: 'p1', directory: 'startercode', reason: 'incomplete-pull' },
+    }));
   });
 });
 

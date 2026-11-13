@@ -77,7 +77,11 @@ export function semanticFingerprint(intent: PushIntent): string {
           rubricReadFailed: part.rubricReadFailed,
           // A directory becoming blocked (or unblocked by a complete pull)
           // changes what executePush does, so it must shift the fingerprint.
-          blockedDirectories: part.blockedDirectories ? [...part.blockedDirectories].sort() : undefined,
+          // Sorted by dir: the default comparator cannot order objects, so the
+          // same blocks in another order would otherwise change the fingerprint.
+          blockedDirectories: part.blockedDirectories
+            ? [...part.blockedDirectories].sort((a, b) => a.dir.localeCompare(b.dir) || a.reason.localeCompare(b.reason))
+            : undefined,
         })),
     })),
   };
