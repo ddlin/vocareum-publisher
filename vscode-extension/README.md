@@ -7,7 +7,7 @@ A VS Code extension providing an integrated GUI for [Vocareum Publisher (vocgit)
 The extension is currently distributed as a `.vsix` package (not yet on the
 Visual Studio Marketplace). Download `vocgit-<version>.vsix` from the
 [latest GitHub release](https://github.com/ddlin/vocareum-publisher/releases/latest)
-— every release carries the current extension build — or build it from this
+(releases from v1.5.0 on carry the extension build), or build it from this
 repository:
 
 ```bash
@@ -95,7 +95,9 @@ Or if using the GitHub Action workflow, vocgit is installed automatically in CI/
 - **vocgit CLI 1.2.0 or newer for sidebar sync badges** — the extension runs
   `vocgit status --json` so badges always reflect the content change detection
   `vocgit push` uses. With an older CLI, commands still work but badges show
-  "unknown" and the extension prompts you to update.
+  "unknown" and the extension prompts you to update. Extension 1.2.0 reads
+  both the CLI 1.2–1.4 status report and the CLI 1.5 `--json` envelope;
+  earlier extension builds show "unknown" badges with CLI 1.5 or newer.
 - A valid `vocareum.yaml` configuration file
 
 ## Links

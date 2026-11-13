@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### VS Code extension
+
+- **Extension 1.2.0**, attached to the v1.5.0 GitHub Release as
+  `vocgit-1.2.0.vsix`. It reads the CLI 1.5 `--json` envelope for the sidebar
+  sync badges, and still reads the CLI 1.2–1.4 report. Extension 1.1.0 shows
+  "unknown" badges against CLI 1.5.
+
 ## [1.5.0] — 2026-11-12
 
 (A `[1.5.0]` section dated 2026-11-09 was written for the EU tenant work but
