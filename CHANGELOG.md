@@ -7,8 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-To be released as 1.5.0. (A `[1.5.0]` section dated 2026-11-09 was written for
-the EU tenant work but never published; it is folded in here.)
+## [1.5.0] — 2026-11-12
+
+(A `[1.5.0]` section dated 2026-11-09 was written for the EU tenant work but
+never published; it is folded in here.)
 
 ### Added
 - **Zip download for content pull.** Each directory is fetched as one zip and
