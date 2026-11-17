@@ -239,6 +239,7 @@ describe('X: pull with exclude_patterns through the CLI', () => {
     const state = stateOf(config);
     expect(Object.values(state)).not.toContain('incomplete-pull');
     expect(config.publish_history?.[0]?.status).toBe('success');
+    expect(config.publish_history?.[0]?.failed ?? []).toEqual([]);
     expect(filesUnder(importedDataDir(dir, config))).toEqual(['a.txt']);
   }, 60_000);
 

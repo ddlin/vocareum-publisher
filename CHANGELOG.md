@@ -44,10 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### VS Code extension
 
-- **This CLI release needs extension 1.3.0 or later for the status view.** The
-  extension source in this repository now accepts any 1.x envelope; the published
-  extension 1.2.0 accepts only `"1.0"` and shows "unknown" badges against the 1.1
-  envelope.
+- **The status view needs an extension built from this repository after this
+  change.** The extension source here now accepts any 1.x envelope; the published
+  extension 1.2.0 accepts only envelope `"1.0"` and shows status as unknown
+  against the 1.1 envelope.
 - **Extension 1.2.0**, attached to the v1.5.0 GitHub Release as
   `vocgit-1.2.0.vsix`. It reads the CLI 1.5 `--json` envelope for the sidebar
   sync badges, and still reads the CLI 1.2–1.4 report. Extension 1.1.0 shows

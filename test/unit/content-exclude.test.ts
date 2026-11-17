@@ -125,6 +125,20 @@ describe('downloadContent exclude_patterns', () => {
     expect(both.failures).toEqual([]);
   });
 
+  it('a bare name matches at the top of the synced directory only; **/name matches at any depth', async () => {
+    const make = (): FakeVocareumTree => new FakeVocareumTree()
+      .file('/voc/data/keep.txt', 'keep')
+      .file('/voc/data/sub/venv/x', 'nested');
+    const bare = await pull(make(), ['venv']);
+    expect(Object.keys(bare.files).sort()).toEqual(['data/keep.txt', 'data/sub/venv/x']);
+    expect(bare.failures).toEqual([]);
+    const anyDepthTree = make();
+    const anyDepth = await pull(anyDepthTree, ['**/venv']);
+    expect(Object.keys(anyDepth.files)).toEqual(['data/keep.txt']);
+    expect(anyDepth.failures).toEqual([]);
+    expect(anyDepthTree.log.some((e) => e.path.includes('sub/venv'))).toBe(false);
+  });
+
   it('excluded entry costs no budget', async () => {
     const tree = new FakeVocareumTree()
       .file('/voc/data/keep.txt', 'keep')
