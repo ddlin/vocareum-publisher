@@ -8,8 +8,9 @@ import type { DirectoryType } from '../types/config';
 import type { UploadOptions } from '../types/state';
 import type { UploadResult } from '../types/api';
 import { VocareumClient } from '../api/client';
-import { uploadContent, deleteFile, listFiles } from '../api/content';
-import { readDirectory as readLocalDirectory, calculateDirectoryHash, compileExcludedSubtreeMatcher } from '../utils/files';
+import { uploadContent, deleteFile, listFiles, probeRemoteDirectory } from '../api/content';
+import { readDirectory as readLocalDirectory, calculateDirectoryHash } from '../utils/files';
+import { screenExcludedDeletes } from './excluded-deletes';
 import { assertConfinedToWorkspace } from './local-scan';
 import { LoggerEventSink } from '../utils/logger-event-sink';
 import type { EventSink } from './services/event-sink';
@@ -117,6 +118,7 @@ export async function syncDirectory(
     try {
       events.emit({ level: 'info', message: 'Syncing deletions...' });
 
+      const probeFailures: Array<{ path: string; reason: string }> = [];
       const filesToDelete = options.plannedDeletePaths !== undefined
         ? options.plannedDeletePaths.map((path) => ({ path }))
         : await (async (): Promise<Array<{ path: string }>> => {
@@ -133,13 +135,34 @@ export async function syncDirectory(
             const localFiles = await readLocalDirectory(localPath, options.excludePatterns);
             const localFileSet = new Set(Object.keys(localFiles));
             // An excluded path is invisible to the push, so its absence locally
-            // is not a deletion; this also protects an entry (e.g. `venv`)
-            // that holds excluded content.
-            const isExcluded = compileExcludedSubtreeMatcher(options.userExcludePatterns ?? []);
-            return remoteFiles.filter(
-              (remoteFile) => !localFileSet.has(remoteFile.path) && !isExcluded(remoteFile.path),
+            // is not a deletion. An entry that may hold excluded content is
+            // probed: directories are kept, files are deleted.
+            const screened = await screenExcludedDeletes(
+              remoteFiles.filter((remoteFile) => !localFileSet.has(remoteFile.path)).map((f) => f.path),
+              options.userExcludePatterns ?? [],
+              (entry) => probeRemoteDirectory(
+                client, courseId, assignmentId, partId, directoryType, entry, options.architecture),
             );
+            for (const kept of screened.keptDirectories) {
+              events.emit({
+                level: 'info',
+                message: `Not deleting remote ${directoryType}/${kept}/: it may hold content matched by exclude_patterns`,
+              });
+            }
+            probeFailures.push(...screened.probeFailed);
+            return screened.deletable.map((path) => ({ path }));
           })();
+
+      // A probe that failed leaves the entry in place; report it as a failed
+      // deletion so the directory hash does not advance and the next push retries.
+      for (const failure of probeFailures) {
+        events.emit({ level: 'warn', code: 'delete_sync_failed', data: { part_id: partId, path: failure.path },
+          message: `Not deleting ${failure.path}: could not tell whether it holds excluded content (${failure.reason})` });
+        uploadResult.failed.push({
+          path: failure.path,
+          error: `Deletion of ${failure.path} was skipped: could not tell whether it holds excluded content (${failure.reason}); the next push retries it`,
+        });
+      }
 
       if (filesToDelete.length > 0) {
         events.emit({ level: 'info', message: `Deleting ${filesToDelete.length} files...` });

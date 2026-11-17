@@ -13,6 +13,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Rubric } from '../../src/types/config';
+import { VocareumError } from '../../src/api/errors';
+import { screenExcludedDeletes } from '../../src/core/excluded-deletes';
 
 // ── rubrics API mock — Task 3 makes reconciliation fetch rubrics for any part
 // whose config carries a `rubrics` key. Mocking the module directly (rather than
@@ -40,6 +42,7 @@ vi.mock('../../src/utils/files', async () => ({
   readDirectory: mockReadDirectory,
   calculateDirectoryHash: mockCalculateDirectoryHash,
   // Real matcher: the plan's delete set depends on its behaviour.
+  compileExcludedPathMatcher: (await vi.importActual<typeof import('../../src/utils/files')>('../../src/utils/files')).compileExcludedPathMatcher,
   compileExcludedSubtreeMatcher: (await vi.importActual<typeof import('../../src/utils/files')>('../../src/utils/files')).compileExcludedSubtreeMatcher,
 }));
 
@@ -359,11 +362,61 @@ describe('push-fingerprint: deletePaths populated and shifts fingerprint (FIX 1b
     expect(plan1.semanticFingerprint).not.toBe(plan2.semanticFingerprint);
   });
 
+  /**
+   * Client that answers entry probes (listing `<dir>/<entry>`) from `tree` and
+   * hands every other request to the recorder.
+   */
+  function routedCtx(config: Config, tree: Record<string, 'file' | 'error' | string[]>): PushContext {
+    const ctx = makeCtx(config);
+    const base = recorder;
+    const routed = {
+      events: { emit: (): void => undefined },
+      request: async (c: { params?: { dir?: string; page?: number } }): Promise<unknown> => {
+        const match = /\/startercode\/(.+)$/.exec(c.params?.dir ?? '');
+        if (match === null) { return base.request(c as never); }
+        const node = tree[match[1]];
+        if (node === 'file') {
+          throw new VocareumError(`Directory ${c.params?.dir} doesn't exist`, 'API_ERROR', 400);
+        }
+        if (node === 'error') { throw new VocareumError('server error', 'API_ERROR', 500); }
+        return { files: c.params?.page === undefined ? (node ?? []).map((path) => ({ path })) : [] };
+      },
+    };
+    return { ...ctx, client: routed as never };
+  }
+
+  const STALE_LISTING = [{ path: 'old.txt' }, { path: 'venv' }, { path: 'local-file.txt' }];
+
   it('X9: plan deletePaths omit excluded paths', async () => {
-    const config = { ...makeConfig(), publish_options: { exclude_patterns: ['venv/*'] } } as Config;
-    enqueueWithDeleteResponses([{ path: 'venv' }, { path: 'old.txt' }, { path: 'local-file.txt' }]);
-    const plan = await planPush(makeCtx(config), { syncDeletes: true });
+    const config = { ...makeConfig(), publish_options: { exclude_patterns: ['venv'] } } as Config;
+    enqueueWithDeleteResponses(STALE_LISTING);
+    const plan = await planPush(routedCtx(config, {}), { syncDeletes: true });
     expect(plan.intent.assignments[0]?.parts[0]?.deletePaths).toEqual(['startercode/old.txt']);
+  });
+
+  it('X9: leading ** deletes a stale file but not a directory (plan)', async () => {
+    const config = { ...makeConfig(), publish_options: { exclude_patterns: ['**/*.pyc'] } } as Config;
+    enqueueWithDeleteResponses(STALE_LISTING);
+    const plan = await planPush(routedCtx(config, { 'old.txt': 'file', venv: ['x'] }), { syncDeletes: true });
+    expect(plan.intent.assignments[0]?.parts[0]?.deletePaths).toEqual(['startercode/old.txt']);
+  });
+
+  it('X9: a failing entry probe fails the plan rather than guessing', async () => {
+    const config = { ...makeConfig(), publish_options: { exclude_patterns: ['**/*.pyc'] } } as Config;
+    enqueueWithDeleteResponses(STALE_LISTING);
+    await expect(
+      planPush(routedCtx(config, { 'old.txt': 'file', venv: 'error' }), { syncDeletes: true }),
+    ).rejects.toThrow(/Cannot compute push intent.*venv/);
+  });
+
+  it('X9: plan and uploader choose the same delete set for one listing', async () => {
+    const patterns = ['**/*.pyc'];
+    const probe = async (entry: string): Promise<'directory' | 'absent'> => (entry === 'venv' ? 'directory' : 'absent');
+    const screened = await screenExcludedDeletes(['old.txt', 'venv'], patterns, probe);
+    enqueueWithDeleteResponses(STALE_LISTING);
+    const config = { ...makeConfig(), publish_options: { exclude_patterns: patterns } } as Config;
+    const plan = await planPush(routedCtx(config, { 'old.txt': 'file', venv: ['x'] }), { syncDeletes: true });
+    expect(plan.intent.assignments[0]?.parts[0]?.deletePaths).toEqual(screened.deletable.map((p) => `startercode/${p}`));
   });
 
   it('without patterns the plan deletePaths are unchanged', async () => {

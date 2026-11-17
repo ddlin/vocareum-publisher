@@ -23,6 +23,7 @@ import type {
 } from '../../types/api';
 import type { HistorySettingChange, HistoryFileChange, HistoryRubricChange, AssignmentSettings } from '../../types/config';
 import type { PublishResult, ReconciliationPlan, PartAction, BlockedDirectory } from '../../types/state';
+import { screenExcludedDeletes } from '../excluded-deletes';
 import { reconcile, displayPlan } from '../reconciler';
 import {
   assertConfinedToWorkspace,
@@ -31,7 +32,7 @@ import {
   PUSH_INCOMPLETE_MARKER,
   INCOMPLETE_PULL_MARKER,
 } from '../local-scan';
-import { calculateDirectoryHash, compileExcludedSubtreeMatcher, readFile as readTextFile } from '../../utils/files';
+import { calculateDirectoryHash, readFile as readTextFile } from '../../utils/files';
 import { copyAssignment, getAssignment, updateAssignment } from '../../api/assignments';
 import { updateCourse } from '../../api/courses';
 import { getPart, updatePart } from '../../api/parts';
@@ -42,7 +43,7 @@ import { ForbiddenError } from '../../api/client';
 import { UsageError } from '../../utils/command-failure';
 import { mapParts } from '../mapper';
 import { readDirectory as readLocalDirectory, syncDirectory } from '../uploader';
-import { listFiles } from '../../api/content';
+import { listFiles, probeRemoteDirectory } from '../../api/content';
 import { commitChanges, getCommitSha, getGitUserName } from '../../utils/git';
 import { mapAssignmentSettings, mapPartSettings } from '../../utils/settings';
 import type { UnknownFieldReporter } from '../../utils/unknown-field-reporter';
@@ -538,11 +539,46 @@ export async function planPush(
               );
             }
             const localFileSet = new Set(Object.keys(localFiles));
-            const isExcluded = compileExcludedSubtreeMatcher(userExcludePatterns(workingConfig));
-            for (const remoteFile of remoteFiles) {
-              if (!localFileSet.has(remoteFile.path) && !isExcluded(remoteFile.path)) {
-                deletePaths.push(path.posix.join(dir, remoteFile.path.replace(/\\/g, '/')));
-              }
+            // Same screening as the uploader's relist, so the approved set is
+            // what execution would delete (constraint 15).
+            const arch = resolveArchitecture(
+              workingConfig.vocareum.architecture,
+              partAction.part.settings?.labtype,
+            );
+            let screened: Awaited<ReturnType<typeof screenExcludedDeletes>>;
+            try {
+              screened = await screenExcludedDeletes(
+                remoteFiles.filter((remoteFile) => !localFileSet.has(remoteFile.path)).map((f) => f.path),
+                userExcludePatterns(workingConfig),
+                (entry) => probeRemoteDirectory(
+                  ctx.client,
+                  workingConfig.vocareum.course_id,
+                  action.assignment.assignment_id as string,
+                  partAction.part.part_id as string,
+                  dir,
+                  entry,
+                  arch,
+                ),
+              );
+            } catch (err) {
+              throw new Error(
+                `Cannot compute push intent: failed to resolve deletions for "${dirKey}": ${err instanceof Error ? err.message : String(err)}`
+              );
+            }
+            for (const kept of screened.keptDirectories) {
+              events.emit({
+                level: 'info',
+                message: `Not deleting remote ${dir}/${kept}/: it may hold content matched by exclude_patterns`,
+              });
+            }
+            if (screened.probeFailed.length > 0) {
+              const first = screened.probeFailed[0];
+              throw new Error(
+                `Cannot compute push intent: failed to resolve deletions for "${dirKey}": could not tell whether "${first.path}" holds excluded content (${first.reason})`
+              );
+            }
+            for (const remotePath of screened.deletable) {
+              deletePaths.push(path.posix.join(dir, remotePath.replace(/\\/g, '/')));
             }
           }
         }

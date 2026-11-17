@@ -1480,6 +1480,27 @@ async function listDirectory(
 }
 
 /**
+ * Tell whether a remote entry is a directory. Listing a file path answers 400
+ * "doesn't exist", the same as a missing directory, so `absent` means "not a
+ * directory" (a file or nothing). Any other failure propagates.
+ *
+ * @param relativePath - Entry path relative to the part directory
+ */
+export async function probeRemoteDirectory(
+  client: VocareumClient,
+  courseId: string,
+  assignmentId: string,
+  partId: string,
+  directory: DirectoryType,
+  relativePath: string,
+  architecture?: 'elite' | 'container',
+): Promise<'directory' | 'absent'> {
+  const apiDirPath = `${toApiDirPath(directory, architecture)}/${relativePath.replace(/\\/g, '/')}`;
+  const { absent } = await listDirectory(client, courseId, assignmentId, partId, apiDirPath, false, directory);
+  return absent ? 'absent' : 'directory';
+}
+
+/**
  * Collect a directory's names for the zip path, stopping once a shared name
  * budget is spent. Pages exactly like `listDirectory` (until an empty page,
  * never on a short one) but keeps no per-entry detail beyond sizes, and does

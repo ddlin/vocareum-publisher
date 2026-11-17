@@ -16,14 +16,17 @@ vi.mock('../../src/api/content', () => ({
   // returns undefined reads as 'not deleted' and nothing lands in deleted[].
   deleteFile: vi.fn().mockResolvedValue(true),
   listFiles: vi.fn(),
+  probeRemoteDirectory: vi.fn(),
 }));
 
 // Mock the files utility module
 vi.mock('../../src/utils/files', async () => ({
   readDirectory: vi.fn(),
   calculateDirectoryHash: vi.fn(),
-  compileExcludedPathMatcher: vi.fn(() => () => false),
-  // Real matcher: the delete set depends on its behaviour.
+  // Real matchers: the delete set depends on their behaviour.
+  compileExcludedPathMatcher: (
+    await vi.importActual<typeof import('../../src/utils/files')>('../../src/utils/files')
+  ).compileExcludedPathMatcher,
   compileExcludedSubtreeMatcher: (
     await vi.importActual<typeof import('../../src/utils/files')>('../../src/utils/files')
   ).compileExcludedSubtreeMatcher,
@@ -41,12 +44,13 @@ vi.mock('../../src/utils/logger', () => ({
   },
 }));
 
-import { uploadContent, deleteFile, listFiles } from '../../src/api/content';
+import { uploadContent, deleteFile, listFiles, probeRemoteDirectory } from '../../src/api/content';
 import { readDirectory, calculateDirectoryHash } from '../../src/utils/files';
 
 const mockUploadContent = vi.mocked(uploadContent);
 const mockDeleteFile = vi.mocked(deleteFile);
 const mockListFiles = vi.mocked(listFiles);
+const mockProbe = vi.mocked(probeRemoteDirectory);
 const mockReadDirectory = vi.mocked(readDirectory);
 const mockCalculateDirectoryHash = vi.mocked(calculateDirectoryHash);
 
@@ -245,6 +249,7 @@ describe('syncDirectory', () => {
       mockReadDirectory.mockResolvedValueOnce({}).mockResolvedValueOnce({});
       mockListFiles.mockResolvedValueOnce([{ path: 'venv', size: 0 }, { path: 'old.txt', size: 1 }]);
       mockDeleteFile.mockResolvedValue(true);
+      mockProbe.mockResolvedValue('directory');
 
       const result = await syncDirectory(
         mockClient, 'c1', 'a1', 'p1', 'lab1/part1/startercode', 'startercode',
@@ -256,6 +261,46 @@ describe('syncDirectory', () => {
         mockClient, 'c1', 'a1', 'p1', 'startercode', 'old.txt', undefined,
       );
       expect(result.deleted).toEqual(['old.txt']);
+    });
+  });
+
+  describe('X9: leading ** does not shield stale files', () => {
+    function setup(probe: (p: string) => Promise<'directory' | 'absent'>): void {
+      mockReadDirectory.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+      mockListFiles.mockResolvedValueOnce([{ path: 'old.txt', size: 1 }, { path: 'venv', size: 0 }]);
+      mockDeleteFile.mockResolvedValue(true);
+      mockProbe.mockImplementation(async (_c, _co, _a, _p, _d, entry) => probe(entry));
+    }
+
+    it('deletes a file, keeps a directory and says so', async () => {
+      setup(async (entry) => (entry === 'venv' ? 'directory' : 'absent'));
+      const events = { emit: vi.fn() };
+      const result = await syncDirectory(
+        mockClient, 'c1', 'a1', 'p1', 'lab1/part1/startercode', 'startercode',
+        { syncDeletes: true, userExcludePatterns: ['**/*.pyc'] }, events,
+      );
+      expect(result.deleted).toEqual(['old.txt']);
+      expect(mockDeleteFile).toHaveBeenCalledTimes(1);
+      expect(events.emit).toHaveBeenCalledWith({
+        level: 'info',
+        message: 'Not deleting remote startercode/venv/: it may hold content matched by exclude_patterns',
+      });
+    });
+
+    it('a probe that errors keeps the entry and records a failure', async () => {
+      setup(async (entry) => {
+        if (entry === 'venv') { throw new Error('HTTP 500'); }
+        return 'absent';
+      });
+      const result = await syncDirectory(
+        mockClient, 'c1', 'a1', 'p1', 'lab1/part1/startercode', 'startercode',
+        { syncDeletes: true, userExcludePatterns: ['**/*.pyc'] },
+      );
+      expect(result.deleted).toEqual(['old.txt']);
+      expect(mockDeleteFile).not.toHaveBeenCalledWith(
+        mockClient, 'c1', 'a1', 'p1', 'startercode', 'venv', undefined);
+      expect(result.failed).toHaveLength(1);
+      expect(result.failed[0].path).toBe('venv');
     });
   });
 
