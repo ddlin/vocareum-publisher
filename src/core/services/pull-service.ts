@@ -15,6 +15,8 @@ import {
   publishExcludePatterns,
   pullZipFor,
   userExcludePatterns,
+  excludePatternDirectoryWarnings,
+  excludePatternWarningMessage,
 } from '../local-scan';
 import { reconcile } from '../reconciler';
 import { getAssignment } from '../../api/assignments';
@@ -1508,6 +1510,14 @@ export async function inspectPull(
 ): Promise<PullInspection> {
   const { effectiveConfig: config, client, workspaceRoot, events } = ctx;
   const warnFn: WarnFn = (msg, diagnostic) => events.emit(warnEvent(msg, diagnostic));
+
+  // Once per run, not per directory.
+  for (const w of excludePatternDirectoryWarnings(config)) {
+    warnFn(excludePatternWarningMessage(w), {
+      code: 'exclude_pattern_names_directory',
+      data: { pattern: w.pattern, directory: w.directory, suggestion: w.remainder || null },
+    });
+  }
 
   // Run reconciliation to find orphans and stale assignments.
   // Pass ctx.events so "Fetching current state from Vocareum..." goes through events.

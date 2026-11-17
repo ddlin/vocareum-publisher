@@ -9,7 +9,7 @@ const base = { command: 'pull' as const, payload: { payload_schema_version: 1 },
 describe('buildReport', () => {
   it('stamps a string envelope version and an ISO timestamp', () => {
     const report = buildReport({ ...base, result: 'no-op' });
-    expect(report.schema_version).toBe('1.0');
+    expect(report.schema_version).toBe('1.1');
     expect(typeof report.schema_version).toBe('string');
     expect(() => new Date(report.generated_at).toISOString()).not.toThrow();
   });

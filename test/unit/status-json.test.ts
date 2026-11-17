@@ -44,7 +44,7 @@ describe('status --json (command level)', () => {
       command: string;
       payload: { payload_schema_version: unknown };
     };
-    expect(doc.schema_version).toBe('1.0');
+    expect(doc.schema_version).toBe('1.1');
     expect(doc.command).toBe('status');
     expect(doc.payload.payload_schema_version).toBe(2);
     expect(typeof doc.schema_version).toBe('string');

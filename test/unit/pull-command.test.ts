@@ -670,7 +670,7 @@ describe('pullCommand --json', () => {
       payload: { payload_schema_version: number; applied: { importsFailed: number; filesNotDownloaded: number } };
       error: unknown;
     };
-    expect(doc.schema_version).toBe('1.0');
+    expect(doc.schema_version).toBe('1.1');
     expect(doc.command).toBe('pull');
     expect(doc.result).toBe('no-op');
     expect(doc.payload.payload_schema_version).toBe(2);

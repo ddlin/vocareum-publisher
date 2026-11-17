@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileExcludedPathMatcher, compileExcludedSubtreeMatcher } from '../../src/utils/files';
-import { userExcludePatterns, hasUserExcludePatterns, pullZipFor } from '../../src/core/local-scan';
+import { userExcludePatterns, hasUserExcludePatterns, pullZipFor, excludePatternDirectoryWarnings } from '../../src/core/local-scan';
 import { ConfigSchema } from '../../src/types/config';
 
 const m = (p: string[]) => compileExcludedPathMatcher(p);
@@ -63,5 +63,30 @@ describe('exclusion helpers', () => {
     expect(pullZipFor(zip, { publish_options: { exclude_patterns: [''] } } as never)).toBe(zip);
     expect(pullZipFor(zip, { publish_options: { exclude_patterns: ['venv'] } } as never)).toBeUndefined();
     expect(pullZipFor(undefined, { publish_options: { exclude_patterns: [] } } as never)).toBeUndefined();
+  });
+});
+
+describe('exclude pattern naming a synced directory', () => {
+  const cfg = (patterns: string[], directories: string[] = ['data', 'startercode']): never => ({
+    vocareum: { org_id: '1', course_id: '1' },
+    assignments: [{ parts: [{ directories }] }],
+    publish_options: { exclude_patterns: patterns },
+  }) as never;
+
+  it('X10: data/venv/** warns once with suggestion venv/**; data/venv not excluded, startercode/data/venv/x is', () => {
+    expect(excludePatternDirectoryWarnings(cfg(['data/venv/**']))).toEqual([
+      { pattern: 'data/venv/**', directory: 'data', remainder: 'venv/**' },
+    ]);
+    expect(m(['data/venv/**'])('venv/x')).toBe(false);
+    expect(m(['data/venv/**'])('data/venv/x')).toBe(true);
+  });
+  it('H6: data and data/** produce the empty-remainder warning', () => {
+    for (const p of ['data', 'data/**', '/data/', 'data\\**']) {
+      expect(excludePatternDirectoryWarnings(cfg([p]))).toEqual([{ pattern: p, directory: 'data', remainder: '' }]);
+    }
+  });
+  it('H6: a pattern whose first segment is not synced does not warn', () => {
+    expect(excludePatternDirectoryWarnings(cfg(['venv/**', 'lib/x', '**/data', 'database']))).toEqual([]);
+    expect(excludePatternDirectoryWarnings(cfg(['', '/']))).toEqual([]);
   });
 });

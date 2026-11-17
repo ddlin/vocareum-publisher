@@ -889,3 +889,18 @@ describe('--sync-deletes with a refused asnlib (Container course)', () => {
     expect(run.history?.content_state?.['lab2/part1/asnlib']).toBe(PUSH_INCOMPLETE_MARKER);
   });
 });
+
+describe('exclude-pattern directory warning', () => {
+  it('H6: planPush emits it once', async () => {
+    const { config } = await changedAsnlibWorld();
+    config.publish_options!.exclude_patterns = ['startercode/venv/**'];
+    rootBody = pagesOf(ELITE);
+    const run = await push(config);
+    const hits = run.events.filter((e) => e.code === 'exclude_pattern_names_directory');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      level: 'warn',
+      data: { pattern: 'startercode/venv/**', directory: 'startercode', suggestion: 'venv/**' },
+    });
+  });
+});

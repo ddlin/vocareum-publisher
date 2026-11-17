@@ -25,10 +25,13 @@ import type { HistorySettingChange, HistoryFileChange, HistoryRubricChange, Assi
 import type { PublishResult, ReconciliationPlan, PartAction, BlockedDirectory } from '../../types/state';
 import { screenExcludedDeletes } from '../excluded-deletes';
 import { reconcile, displayPlan } from '../reconciler';
+import { warnEvent } from '../diagnostics';
 import {
   assertConfinedToWorkspace,
   publishExcludePatterns,
   userExcludePatterns,
+  excludePatternDirectoryWarnings,
+  excludePatternWarningMessage,
   PUSH_INCOMPLETE_MARKER,
   INCOMPLETE_PULL_MARKER,
 } from '../local-scan';
@@ -260,6 +263,14 @@ export async function planPush(
 
   const assignmentFilters = parseCsv(req.assignment);
   const partFilters = parseCsv(req.part);
+
+  // Once per run, from the full config so --assignment filters do not hide a typo.
+  for (const w of excludePatternDirectoryWarnings(effectiveConfig)) {
+    events.emit(warnEvent(excludePatternWarningMessage(w), {
+      code: 'exclude_pattern_names_directory',
+      data: { pattern: w.pattern, directory: w.directory, suggestion: w.remainder || null },
+    }));
+  }
 
   // --part is not unique across assignments, and rubric writes (which change
   // a part's points) must never escape scope because a path collided across

@@ -128,6 +128,52 @@ export function directoriesForPart(config: Config, part: Part): DirectoryType[] 
   return part.directories ?? archDirs;
 }
 
+/** An exclude pattern whose first segment names a synced directory. */
+export interface ExcludePatternWarning {
+  /** The user's original pattern string. */
+  pattern: string;
+  directory: DirectoryType;
+  /** The pattern after the directory segment; `''` when nothing or only `**` remains. */
+  remainder: string;
+}
+
+/**
+ * Patterns match inside each synced directory, so `data/venv/**` (a path
+ * written from the part root) silently matches nothing useful. Detect the
+ * mistake by checking the first normalised segment against every directory
+ * any part syncs.
+ */
+export function excludePatternDirectoryWarnings(config: Config): ExcludePatternWarning[] {
+  const synced = new Set<string>();
+  for (const assignment of config.assignments) {
+    for (const part of assignment.parts) {
+      for (const dir of directoriesForPart(config, part)) {
+        synced.add(dir);
+      }
+    }
+  }
+  const warnings: ExcludePatternWarning[] = [];
+  for (const pattern of userExcludePatterns(config)) {
+    const segments = pattern.replace(/\\/g, '/').split('/').filter((s) => s.length > 0);
+    const [first, ...rest] = segments;
+    if (first === undefined || !synced.has(first)) {
+      continue;
+    }
+    const remainder = rest.every((s) => s === '**') ? '' : rest.join('/');
+    warnings.push({ pattern, directory: first as DirectoryType, remainder });
+  }
+  return warnings;
+}
+
+/** The warning text for one {@link ExcludePatternWarning}. */
+export function excludePatternWarningMessage(w: ExcludePatternWarning): string {
+  const { pattern, directory, remainder } = w;
+  if (remainder === '') {
+    return `exclude_patterns entry "${pattern}" names the synced directory "${directory}". Patterns match inside each synced directory and cannot exclude a synced directory itself.`;
+  }
+  return `exclude_patterns entry "${pattern}" starts with the synced directory "${directory}/". Patterns match inside each synced directory, so this only matches a nested "${directory}/${remainder}". To exclude ${directory}/${remainder}, write "${remainder}".`;
+}
+
 /**
  * Result of change detection: the list of changed directories plus the
  * per-directory hash computed during the scan. planPush reads these hashes

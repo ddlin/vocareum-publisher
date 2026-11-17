@@ -49,6 +49,8 @@ vi.mock('../../src/core/local-scan', async () => {
     publishExcludePatterns: actual.publishExcludePatterns,
     userExcludePatterns: actual.userExcludePatterns,
     pullZipFor: actual.pullZipFor,
+    excludePatternDirectoryWarnings: actual.excludePatternDirectoryWarnings,
+    excludePatternWarningMessage: actual.excludePatternWarningMessage,
   };
 });
 
@@ -1284,3 +1286,34 @@ describe('applyPull — import that fails outright', () => {
   });
 });
 
+
+describe('exclude-pattern directory warning', () => {
+  it('H6: inspectPull emits it once per run, not per directory', async () => {
+    vi.clearAllMocks();
+    mockReconcile.mockResolvedValue({
+      config: BASE_CONFIG, course: { type: 'skip' }, assignments: [],
+      summary: {
+        coursesToUpdate: 0, assignmentsToCreate: 0, assignmentsToUpdate: 0, assignmentsWithDiscoveredIds: 0,
+        assignmentsToSkip: 0, partsToCreate: 0, partsToUpdate: 0, estimatedApiCalls: 0,
+      },
+      orphanedInVocareum: [], staleInConfig: [],
+    });
+    const config = {
+      ...BASE_CONFIG,
+      assignments: [{
+        assignment_id: 'a1', name: 'A', path: 'a', create_from_template: false,
+        parts: [
+          { part_id: 'p1', path: 'p1', directories: ['data'] },
+          { part_id: 'p2', path: 'p2', directories: ['data'] },
+        ],
+      }],
+      publish_options: { exclude_patterns: ['data/venv/**'] },
+    } as unknown as Config;
+    const { ctx, events } = makeCtx(config);
+    await inspectPull(ctx, { batch: false, verbose: false, skipContent: true, content: false });
+    const hits = events.drain().filter((e) => e.code === 'exclude_pattern_names_directory');
+    expect(hits).toHaveLength(1);
+    expect(hits[0].level).toBe('warn');
+    expect(hits[0].data).toEqual({ pattern: 'data/venv/**', directory: 'data', suggestion: 'venv/**' });
+  });
+});

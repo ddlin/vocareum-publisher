@@ -8,7 +8,7 @@
 
 import { Command, CommanderError, Option } from 'commander';
 import { CAPABILITIES, readBuildInfo } from './core/capabilities';
-import { writeJsonDocument } from './core/report';
+import { writeJsonDocument, ENVELOPE_SCHEMA_VERSION } from './core/report';
 import { sanitizeLogString } from './api/client';
 import { readFileSync, realpathSync } from 'fs';
 import { join } from 'path';
@@ -68,7 +68,7 @@ if (firstArg !== undefined && !firstArg.startsWith('-') && !KNOWN_COMMANDS.has(f
   const message = `unknown command '${firstArg}'`;
   if (process.argv.includes('--json')) {
     writeJsonDocument({
-      schema_version: '1.0',
+      schema_version: ENVELOPE_SCHEMA_VERSION,
       // null, not 'status': no command ran, and naming one would tell an agent
       // that `status` failed when the typo was for `push`.
       command: null,
@@ -469,7 +469,7 @@ const JSON_COMMANDS = new Set(['pull', 'push', 'status', 'validate', 'fix']);
 function writeUsageEnvelope(message: string): void {
   const requested = process.argv.slice(2).find((a) => JSON_COMMANDS.has(a)) ?? null;
   writeJsonDocument({
-    schema_version: '1.0',
+    schema_version: ENVELOPE_SCHEMA_VERSION,
     command: requested,
     result: 'failed',
     generated_at: new Date().toISOString(),
