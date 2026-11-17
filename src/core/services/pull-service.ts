@@ -1400,7 +1400,7 @@ export async function detectContentDrift(
             if (remoteFiles[relativePath] !== undefined) { continue; }
             // Under a Vocareum-managed link the remote content is unreadable,
             // not deleted: never plan an unlink there. Report the check as
-            // incomplete instead (the pull exits 1, nothing is removed).
+            // incomplete instead (the pull exits 6, partial; nothing is removed).
             const underLink = managedLinkCovering(relativePath, managedLinks);
             if (underLink !== undefined) {
               shadowedByLink.add(underLink);
@@ -1456,7 +1456,7 @@ export async function detectContentDrift(
         const stillIncomplete = markedDirs.filter(dir => omittedDirs.has(dir));
         if (stillIncomplete.length > 0) {
           // Recovery cannot finish these: report the check as incomplete (the
-          // pull exits 1) and keep their markers, or push would reset:1-delete
+          // pull exits 6, partial) and keep their markers, or push would reset:1-delete
           // the remote files that could not be written here.
           skipped?.push({ assignmentName: assignment.name, reason: stillIncompleteReason(stillIncomplete) });
         }
@@ -2048,7 +2048,8 @@ export async function applyPull(
     const gitUserName = await getGitUserName(workspaceRoot).catch(() => null);
     const publishedBy = gitUserName ?? 'pull-command';
 
-    const previousContentState = config.publish_history?.[0]?.content_state ?? {};
+    const previousEntry = config.publish_history?.[0];
+    const previousContentState = previousEntry?.content_state ?? {};
     const mergedContentState = {
       ...previousContentState,
       ...importedContentState,
@@ -2064,6 +2065,11 @@ export async function applyPull(
       // A skipped drift check is failed too: its directories were not proven.
       status: historyFailed.length > 0 ? 'failed' : 'success',
       content_state: mergedContentState,
+      // Push owns these and seeds its next run from the newest entry: a pull
+      // entry that dropped them would make the next push re-send every
+      // accepted-unverified setting and re-plan size-tracked files.
+      ...(previousEntry?.settings_state !== undefined ? { settings_state: previousEntry.settings_state } : {}),
+      ...(previousEntry?.file_size_state !== undefined ? { file_size_state: previousEntry.file_size_state } : {}),
       ...(historyFailed.length > 0 ? { failed: historyFailed } : {}),
     };
 

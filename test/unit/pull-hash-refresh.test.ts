@@ -204,6 +204,33 @@ describe('hash refresh: service', () => {
     expect(await fs.readdir(abs('asn1/data'))).toHaveLength(2);
   });
 
+  it('X6 (push state): a refresh entry carries settings_state and file_size_state forward unchanged', async () => {
+    const { withVenv, withoutVenv } = await setupVenv();
+    const config = makeConfig({ state: { [KEY]: withVenv } });
+    const settingsState = {
+      'assignments/asn1/settings/num_attempts': 3,
+      'assignments/asn1/parts/./settings/deadlinedate': '2026-12-31T23:59:00Z',
+    };
+    const fileSizeState = { 'asn1/data/a.txt': 4 };
+    const previous = { ...(config.publish_history as PublishHistory[])[0], settings_state: settingsState, file_size_state: fileSizeState };
+    config.publish_history = [previous];
+
+    const run = await inspectAndApply(config);
+
+    const written = run.update.mock.calls[0][0].publish_history[0] as PublishHistory;
+    expect(written.content_state[KEY]).toBe(withoutVenv);
+    expect(written.settings_state).toEqual(settingsState);
+    expect(written.file_size_state).toEqual(fileSizeState);
+  });
+
+  it('X6 (push state): no previous push state -> the pull entry adds none', async () => {
+    const { withVenv } = await setupVenv();
+    const run = await inspectAndApply(makeConfig({ state: { [KEY]: withVenv } }));
+    const written = run.update.mock.calls[0][0].publish_history[0] as PublishHistory;
+    expect(written).not.toHaveProperty('settings_state');
+    expect(written).not.toHaveProperty('file_size_state');
+  });
+
   it('X6b: a non-excluded download failure → no refresh', async () => {
     const { withVenv } = await setupVenv();
     mockDownloadContent.mockRejectedValue(new Error('could not download data/a.txt'));
