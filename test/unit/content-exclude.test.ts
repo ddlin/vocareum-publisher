@@ -37,13 +37,17 @@ interface Run {
 async function pull(
   tree: FakeVocareumTree,
   excludePatterns?: string[],
-  extra: { limits?: { maxFiles: number } } = {}
+  extra: { limits?: { maxFiles: number }; zip?: boolean } = {}
 ): Promise<Run> {
   const inst = install(tree);
   const failures: DownloadFailure[] = [];
+  const { zip: zipOn, ...rest } = extra;
+  const zip = zipOn === true
+    ? { enabled: true, timeoutMs: 600_000, now: (): number => performance.now(), http: inst.http }
+    : undefined;
   const files = await drive(downloadContent(
     inst.client, COURSE, ASSIGNMENT, PART, ['data'] as DirectoryType[], 'container',
-    { failures, excludePatterns, ...extra }
+    { failures, excludePatterns, zip, ...rest }
   ));
   return { files, failures, events: inst.events.drain() };
 }
@@ -128,6 +132,20 @@ describe('downloadContent exclude_patterns', () => {
     const r = await pull(tree, ['venv'], { limits: { maxFiles: 1 } });
     expect(Object.keys(r.files)).toEqual(['data/keep.txt']);
     expect(r.failures).toEqual([]);
+  });
+
+  it('zip is never attempted when an exclude pattern is set (defence in depth)', async () => {
+    const make = (): FakeVocareumTree => new FakeVocareumTree()
+      .file('/voc/data/keep.txt', 'keep')
+      .file('/voc/data/sub/b.txt', 'b')
+      .file('/voc/data/venv/x', 'x');
+    const zipTree = make();
+    const withZip = await pull(zipTree, ['venv'], { zip: true });
+    expect(zipTree.requests('start')).toEqual([]);
+    const walked = await pull(make(), ['venv']);
+    expect(withZip.files).toEqual(walked.files);
+    expect(withZip.failures).toEqual(walked.failures);
+    expect(Object.keys(withZip.files).sort()).toEqual(['data/keep.txt', 'data/sub/b.txt']);
   });
 
   it('emits one debug line per excluded entry', async () => {

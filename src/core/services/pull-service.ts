@@ -8,12 +8,28 @@
  */
 
 import * as path from 'path';
-import { assertConfinedToWorkspace, INCOMPLETE_PULL_MARKER } from '../local-scan';
+import type { Dirent } from 'fs';
+import {
+  assertConfinedToWorkspace,
+  INCOMPLETE_PULL_MARKER,
+  publishExcludePatterns,
+  pullZipFor,
+  userExcludePatterns,
+} from '../local-scan';
 import { reconcile } from '../reconciler';
 import { getAssignment } from '../../api/assignments';
 import { listParts, getPart } from '../../api/parts';
 import { downloadContent, type DownloadFailure } from '../../api/content';
-import { pathExists, ensureDirectory, writeFile, writeFileUnderBase, calculateDirectoryHash, validatePath, readDirectory } from '../../utils/files';
+import {
+  pathExists,
+  ensureDirectory,
+  writeFile,
+  writeFileUnderBase,
+  calculateDirectoryHash,
+  validatePath,
+  readDirectory,
+  compileExcludedPathMatcher,
+} from '../../utils/files';
 import { isPathConfinedToBase } from '../../utils/path-security';
 import { getCommitSha, getGitUserName } from '../../utils/git';
 import type { PublishHistory, HistoryFailedEntity } from '../../types/config';
@@ -26,7 +42,7 @@ import {
   CONTAINER_DIRECTORIES,
   resolveArchitecture,
 } from '../../types/config';
-import type { Assignment, Part, DirectoryType, AssignmentSettings, PartSettings, SubmissionFilters, Rubric } from '../../types/config';
+import type { Assignment, Config, Part, DirectoryType, AssignmentSettings, PartSettings, SubmissionFilters, Rubric } from '../../types/config';
 import type { OrphanedEntity, StaleAssignment } from '../../types/state';
 import type { FileMap } from '../../types/api';
 import type { EventSink } from './event-sink';
@@ -677,6 +693,23 @@ async function writeFilesToDirectory(
   }
 }
 
+/**
+ * The patterns for the `--skip-content` reuse read, relative to the part
+ * directory: the built-in `.gitkeep` entries plus each user pattern under each
+ * synced directory (leading separators dropped). readDirectory prunes a
+ * matching directory, so an excluded tree is never opened.
+ *
+ * @internal Exported for testing
+ */
+export function skipContentExcludePatterns(directories: readonly DirectoryType[], userPatterns: readonly string[]): string[] {
+  const relative = userPatterns.map((pattern) => pattern.replace(/\\/g, '/').replace(/^\/+/, ''));
+  return [
+    '.gitkeep',
+    '**/.gitkeep',
+    ...directories.flatMap((dir) => relative.map((pattern) => `${dir}/${pattern}`)),
+  ];
+}
+
 async function importAssignment(
   client: VocareumClient,
   courseId: string,
@@ -690,6 +723,9 @@ async function importAssignment(
   events: EventSink,
   rubricFetcher?: RubricFetcher,
   zip?: PullZipSettings,
+  /** `user`: the config's own exclude_patterns (remote walk); `hashing`:
+   *  publishExcludePatterns (the hash push compares against). */
+  excludes: { user: string[]; hashing: string[] } = { user: [], hashing: publishExcludePatterns({}) },
 ): Promise<ImportResult> {
   const assignmentId = orphan.id;
   // localPath is user-typed at the import prompt — confine it before any writes.
@@ -731,14 +767,16 @@ async function importAssignment(
     let files: FileMap = {};
     let usedExistingContent = false;
     const partFailures: DownloadFailure[] = [];
+    const downloadPlan = getDownloadPlan(architecture, partSettings.labtype);
     if (skipContent) {
-      const existing = await readDirectory(partDir, ['.gitkeep', '**/.gitkeep']);
+      // Prefixed per synced directory so readDirectory prunes an excluded tree
+      // without opening it (an unreadable venv must not fail the reuse).
+      const existing = await readDirectory(partDir, skipContentExcludePatterns(downloadPlan.directories, excludes.user));
       if (Object.keys(existing).length > 0) {
         files = existing;
         usedExistingContent = true;
       }
     }
-    const downloadPlan = getDownloadPlan(architecture, partSettings.labtype);
     if (!usedExistingContent) {
       files = await downloadContent(
         client,
@@ -747,7 +785,7 @@ async function importAssignment(
         part.id,
         downloadPlan.directories,
         downloadPlan.architecture,
-        { failures: partFailures, zip }
+        { failures: partFailures, zip, excludePatterns: excludes.user }
       );
       missingFiles.push(...partFailures.map(f => ({
         path: partPath === '.' ? path.join(localPath, f.path) : path.join(localPath, partPath, f.path),
@@ -809,7 +847,6 @@ async function importAssignment(
     parts: configParts,
   };
 
-  const excludePatterns = ['.gitkeep', '**/.gitkeep'];
   const contentState: Record<string, string> = {};
   for (const configPart of configParts) {
     const partPath = configPart.path;
@@ -831,7 +868,7 @@ async function importAssignment(
       }
 
       try {
-        const hash = await calculateDirectoryHash(dirPath, excludePatterns);
+        const hash = await calculateDirectoryHash(dirPath, excludes.hashing);
         contentState[stateKey] = hash;
 
         if (verbose) {
@@ -1022,11 +1059,86 @@ export function managedLinkCovering(key: string, links: readonly string[]): stri
   return links.find(link => key === link || key.startsWith(`${link}/`));
 }
 
+/** What {@link walkLocalDirectory} found under one synced directory. */
+interface LocalWalk {
+  /** Part-relative `/` keys of regular files and symlinks to files. */
+  files: string[];
+  /** Part-relative keys of entries that resolve outside the part directory. */
+  escaped: string[];
+  /** Part-relative keys of directories that could not be read. */
+  errors: string[];
+}
+
+/**
+ * Walk one synced directory of a part for the drift check's local side.
+ *
+ * Excluded entries are tested first, before confinement or stat, so an
+ * excluded directory is never opened (an unreadable venv costs nothing) and
+ * each one is passed to `onExcluded`. Symlinked directories are not descended
+ * into, as with the recursive `readdir` this replaces. An unreadable directory
+ * is returned in `errors` rather than swallowed: its files were not compared,
+ * and treating them as absent would hide the gap.
+ *
+ * @param localBaseAbs - The part directory (absolute)
+ * @param dir - The synced directory, relative to the part
+ * @param isExcluded - True for a directory-relative path to leave out
+ * @param onExcluded - Receives the part-relative key of each excluded entry
+ */
+async function walkLocalDirectory(
+  localBaseAbs: string,
+  dir: DirectoryType,
+  isExcluded: (dirRelative: string) => boolean,
+  onExcluded: (partRelativeKey: string) => void,
+): Promise<LocalWalk> {
+  const fs = await import('fs/promises');
+  const result: LocalWalk = { files: [], escaped: [], errors: [] };
+
+  const walk = async (dirRelative: string): Promise<void> => {
+    const nativeDir = dirRelative === '' ? path.join(localBaseAbs, dir) : path.join(localBaseAbs, dir, dirRelative);
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(nativeDir, { withFileTypes: true });
+    } catch {
+      result.errors.push(dirRelative === '' ? dir : toRemoteKey(path.join(dir, dirRelative)));
+      return;
+    }
+    for (const entry of entries) {
+      const childRelative = dirRelative === '' ? entry.name : `${dirRelative}/${entry.name}`;
+      // Remote keys (and managed links) are '/'-separated on every platform;
+      // on Windows path.join gives '\', which matched nothing and made every
+      // local file look remotely deleted.
+      const key = toRemoteKey(path.join(dir, childRelative));
+      if (isExcluded(childRelative)) {
+        onExcluded(key);
+        continue;
+      }
+      const fullPath = path.join(localBaseAbs, dir, childRelative);
+      if (!await isPathConfinedToBase(localBaseAbs, fullPath)) {
+        result.escaped.push(key);
+        continue;
+      }
+      if (entry.isDirectory()) {
+        await walk(childRelative);
+      } else if (entry.isFile()) {
+        result.files.push(key);
+      } else if (entry.isSymbolicLink()) {
+        try {
+          if ((await fs.stat(fullPath)).isFile()) { result.files.push(key); }
+        } catch { /* a dangling link is not a file: nothing to compare */ }
+      }
+    }
+  };
+
+  await walk('');
+  return result;
+}
+
 export async function detectContentDrift(
   config: {
     assignments: Assignment[];
     vocareum: { course_id: string; excluded_assignments?: string[]; architecture?: 'elite' | 'container' };
     publish_history?: PublishHistory[];
+    publish_options?: Config['publish_options'];
   },
   client: VocareumClient,
   skipAssignmentIds: Set<string>,
@@ -1036,11 +1148,24 @@ export async function detectContentDrift(
   /** Receives each assignment whose check was skipped, so the caller can
    *  report the drift result as incomplete rather than clean. */
   skipped?: ContentDriftSkip[],
-  /** Zip download settings; absent means the walk. */
+  /** Zip download settings; absent means the walk. Ignored (the walk is
+   *  used) when the config has user exclude patterns. */
   zip?: PullZipSettings,
+  /** Receives debug lines, such as each local entry exclude_patterns left out. */
+  debug?: (message: string) => void,
 ): Promise<AssignmentContentDrift[]> {
   const driftList: AssignmentContentDrift[] = [];
   const excludedIds = new Set(config.vocareum.excluded_assignments ?? []);
+  const userExcludes = userExcludePatterns(config);
+  const remoteZip = pullZipFor(zip, config);
+  // The local side uses the hashing list, so `.gitkeep` and user patterns are
+  // never read as remotely deleted.
+  const isLocalExcluded = compileExcludedPathMatcher(publishExcludePatterns(config));
+  const onLocalExcluded = (key: string): void => {
+    // `.gitkeep` is a built-in scaffold, not a user exclusion: no line for it.
+    if (path.posix.basename(key) === '.gitkeep') { return; }
+    debug?.(`Excluded local ${key} (exclude_patterns)`);
+  };
 
   for (const assignment of config.assignments) {
     if (!assignment.assignment_id) { continue; }
@@ -1070,7 +1195,7 @@ export async function detectContentDrift(
           configPart.part_id,
           downloadPlan.directories,
           downloadPlan.architecture,
-          { strict: true, managedLinks, zip }
+          { strict: true, managedLinks, zip: remoteZip, excludePatterns: userExcludes }
         );
 
         const fileDiffs: FileDiff[] = [];
@@ -1162,41 +1287,30 @@ export async function detectContentDrift(
             continue;
           }
 
-          const fs = await import('fs/promises');
-          try {
-            const localFilesRaw = await fs.readdir(localDirPath, { recursive: true });
-            for (const entry of localFilesRaw) {
-              const file = String(entry);
-              if (file === '.gitkeep' || file.endsWith('/.gitkeep')) { continue; }
-
-              // Remote keys (and managed links) are '/'-separated on every
-              // platform; on Windows path.join gives '\\', which matched nothing
-              // and made every local file look remotely deleted.
-              const relativePath = toRemoteKey(path.join(dir, file));
-              const fullPath = path.join(localDirPath, file);
-              // Skip nested entries that resolve outside the part directory
-              // (an escaping symlink below a confined dir) for the same reason.
-              if (!await isPathConfinedToBase(localBaseAbs, fullPath)) {
-                // Not silent: it was the one symlink skip with no warning at all.
-                warnFn(`Skipping "${relativePath}" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`,
-                  { code: 'symlink_skipped', data: { assignment: assignment.name, path: relativePath, reason: 'escapes_part' } });
-                continue;
-              }
-              const stat = await fs.stat(fullPath);
-              if (stat.isFile() && remoteFiles[relativePath] === undefined) {
-                // Under a Vocareum-managed link the remote content is unreadable,
-                // not deleted: never plan an unlink there. Report the check as
-                // incomplete instead (the pull exits 1, nothing is removed).
-                const underLink = managedLinkCovering(relativePath, managedLinks);
-                if (underLink !== undefined) {
-                  shadowedByLink.add(underLink);
-                  continue;
-                }
-                fileDiffs.push({ filePath: relativePath, status: 'deleted' });
-              }
+          const walked = await walkLocalDirectory(localBaseAbs, dir, isLocalExcluded, onLocalExcluded);
+          for (const relativePath of walked.escaped) {
+            // Nested entries that resolve outside the part directory (an
+            // escaping symlink below a confined dir) are skipped for the same
+            // reason. Not silent: it was the one symlink skip with no warning.
+            warnFn(`Skipping "${relativePath}" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`,
+              { code: 'symlink_skipped', data: { assignment: assignment.name, path: relativePath, reason: 'escapes_part' } });
+          }
+          for (const unreadable of walked.errors) {
+            // Its files were not compared: the check is incomplete, not clean.
+            warnFn(`Could not read local "${unreadable}" in content drift check for "${assignment.name}"; it was not compared`);
+            skipped?.push({ assignmentName: assignment.name, reason: `could not read local ${unreadable}; it was not compared` });
+          }
+          for (const relativePath of walked.files) {
+            if (remoteFiles[relativePath] !== undefined) { continue; }
+            // Under a Vocareum-managed link the remote content is unreadable,
+            // not deleted: never plan an unlink there. Report the check as
+            // incomplete instead (the pull exits 1, nothing is removed).
+            const underLink = managedLinkCovering(relativePath, managedLinks);
+            if (underLink !== undefined) {
+              shadowedByLink.add(underLink);
+              continue;
             }
-          } catch {
-            // Directory doesn't exist or can't be read
+            fileDiffs.push({ filePath: relativePath, status: 'deleted' });
           }
         }
 
@@ -1306,6 +1420,7 @@ export async function inspectPull(
       scoped.partIds,
       contentDriftIncomplete,
       req.zip,
+      (message) => events.emit({ level: 'debug', message }),
     );
   }
 
@@ -1409,7 +1524,8 @@ export async function applyPull(
             workspaceRoot,
             events,
             rubricFetcher,
-            req.zip,
+            pullZipFor(req.zip, config),
+            { user: userExcludePatterns(config), hashing: publishExcludePatterns(config) },
           );
 
           newAssignments.push(assignment);
@@ -1687,7 +1803,7 @@ export async function applyPull(
             events
           );
 
-          const excludePatterns = ['.gitkeep', '**/.gitkeep'];
+          const excludePatterns = publishExcludePatterns(config);
           const directories = new Set<DirectoryType>();
           for (const fileDiff of partDrift.fileDiffs) {
             const dir = fileDiff.filePath.split('/')[0] as DirectoryType;

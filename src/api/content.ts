@@ -919,7 +919,8 @@ export function downloadContent(
     zip?: PullZipSettings & { now?: () => number; http?: AxiosInstance };
     /** exclude_patterns: directory-relative paths (self or any ancestor
      *  matching) are skipped before any fetch, listing or budget charge, and
-     *  are never a failure. Absent or empty: the walk exactly as before. */
+     *  are never a failure. Set, `zip` is ignored: the zip cannot leave
+     *  excluded entries out. Absent or empty: the walk exactly as before. */
     excludePatterns?: string[];
   }
 ): Promise<FileMap> {
@@ -940,7 +941,9 @@ export function downloadContent(
     };
 
     const strict = options?.strict === true;
-    const zip = options?.zip?.enabled === true ? options.zip : undefined;
+    // The zip bundles excluded entries and cannot filter them, so any effective
+    // exclusion keeps the walk (callers already pass no zip; this is a backstop).
+    const zip = options?.zip?.enabled === true && budget.isExcluded === undefined ? options.zip : undefined;
     // One state per part per call: quarantine and seen ETags never outlive it.
     const zipState = zip !== undefined ? newZipPartState() : undefined;
     const zipHttp = zip !== undefined ? (zip.http ?? axios.create()) : undefined;

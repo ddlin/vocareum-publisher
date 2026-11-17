@@ -40,10 +40,17 @@ const {
 }));
 
 // ── mock local-scan (assertConfinedToWorkspace) ────────────────────────────────
-vi.mock('../../src/core/local-scan', () => ({
-  assertConfinedToWorkspace: vi.fn().mockResolvedValue(undefined),
-  INCOMPLETE_PULL_MARKER: 'incomplete-pull',
-}));
+vi.mock('../../src/core/local-scan', async () => {
+  const actual = await vi.importActual<typeof import('../../src/core/local-scan')>('../../src/core/local-scan');
+  return {
+    assertConfinedToWorkspace: vi.fn().mockResolvedValue(undefined),
+    INCOMPLETE_PULL_MARKER: 'incomplete-pull',
+    // Pure pattern helpers: the real ones.
+    publishExcludePatterns: actual.publishExcludePatterns,
+    userExcludePatterns: actual.userExcludePatterns,
+    pullZipFor: actual.pullZipFor,
+  };
+});
 
 // ── mock reconciler (used by inspectPull) ──────────────────────────────────────
 vi.mock('../../src/core/reconciler', () => ({
