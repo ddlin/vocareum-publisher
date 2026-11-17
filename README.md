@@ -171,6 +171,7 @@ publish_options:
   sync_settings: true                # Set false to sync files only, not settings
   sync_rubrics: true                 # Set false to skip fetching/pushing rubrics (at least one extra API call per part)
   sync_deletes: false
+  exclude_patterns: []               # Paths vocgit leaves alone on pull, push and drift (see "Excluding files")
 
 publish_history:
   - timestamp: "2026-02-12T22:30:00Z"
@@ -184,6 +185,30 @@ publish_history:
         id: "22222/startercode/main.py"
         error: "Timed out after 30000ms waiting for part update (txn=123)"
 ```
+
+### Excluding files and directories (`exclude_patterns`)
+
+A course can hold trees that vocgit should not move through the files API: a prebuilt virtualenv or Python install in `data/`, build caches, large generated data. List them once under `publish_options.exclude_patterns` and pull, drift detection, `--sync-deletes` and push all leave them alone.
+
+```yaml
+publish_options:
+  exclude_patterns: ["py313-venv", "uv-python"]
+```
+
+- **Course-wide.** The list applies inside each synced directory (`data`, `startercode`, `asnlib`, and so on) of every part. There are no per-part or per-directory lists.
+- **A bare name excludes the entry and everything under it.** `py313-venv` excludes the file or directory of that name at any depth, and every path beneath it.
+- **Syntax.** `*` matches within one path segment, `?` one character, `**` any number of segments. There is no negation (`!`) and no character classes. Patterns are matched against the path relative to the synced directory, so write `py313-venv`, not `data/py313-venv`. Backslashes count as `/`.
+- **Slashes (H3).** Leading, trailing and repeated slashes are ignored: `/venv`, `venv/` and `//venv` all mean `venv`.
+- **A pattern that starts with a synced directory name (H6)** matches only a directory of that name nested inside a synced directory (`startercode/data/py313-venv`), which is almost never what you meant. vocgit warns once per `pull` or `push` run with `exclude_pattern_names_directory` and names the fix (write `py313-venv/**`). A pattern that is only the directory name (`data`, `data/**`) cannot exclude a synced directory itself.
+- **Pull and drift.** An excluded path is never downloaded, never written, overwritten or deleted locally, never reported as drift, and never counts as a pull failure. A path that is *not* excluded and fails still makes the pull incomplete (exit 6).
+- **Zip download is off for pulls while the list is non-empty.** Pulled directories are fetched file by file so that excluded trees are never fetched.
+- **`--sync-deletes`.** A remote path that the patterns match is never deleted. A remote entry that could only hold matching content (`venv` under `venv/*`, or any top-level name under a leading `**` pattern) is listed first: a directory is kept, with an info line; a file is deleted as normal; if the listing fails, the entry is not deleted and the failure is reported (the run is `partial`).
+- **Push and pull agree.** Both compute a directory's content hash with the same patterns, so a directory pulled with exclusions does not look changed to push. A `--content` pull also refreshes the stored hashes of directories that are unchanged, including ones with no stored hash yet, so a first `pull --content` on a repository without stored hashes writes them, and an unattended pull may update `vocareum.yaml` (hash values only).
+- **Links.** Excluding a tree does not exclude what its links point to. If a virtualenv links to a Python install, list both (`["py313-venv", "uv-python"]`).
+- **Prefer specific names.** A generic name such as `bin` applies in every directory of every part.
+- **Do not exclude `lib/publicdata`.** It is already handled as a Vocareum-managed link.
+
+**A directory push replaces the whole remote directory.** See "Push and excluded paths" below: exclusion protects a path from being fetched, written and deleted by vocgit, but not from the replacement a push performs.
 
 ## Understanding Settings Sync
 
@@ -376,6 +401,12 @@ The run still continues with every other part.
 
 A part-settings update that Vocareum rejects at every fallback level is a
 failure (exit 6, `part_settings_rejected`), not a skip.
+
+### Push and excluded paths, and file modes
+
+A directory push replaces the whole remote directory (its first upload clears it). Anything created directly on Vocareum inside a pushed directory, such as an environment built in the lab, is removed by the next push of that directory, **even if it matches `exclude_patterns`**. Keep such environments outside the directories vocgit pushes.
+
+Vocareum sets every uploaded file to mode 0770; permissions in your repository are not transmitted.
 
 ### Pull Command
 
@@ -904,7 +935,7 @@ vocgit --version --json | jq .resolved_from     # which binary am I running?
 
 | field | notes |
 |---|---|
-| `schema_version` | **string**, versions the envelope (`"1.0"`) |
+| `schema_version` | **string**, versions the envelope (`"1.1"`; `"1.0"` before `exclude_pattern_names_directory` was added) |
 | `command` | `pull` · `push` · `status` · `validate` · `fix`; `null` when the invocation named no command vocgit recognises |
 | `generated_at` | ISO-8601 timestamp, always present |
 | `result` | `applied` · `partial` · `reported` · `no-op` · `failed` |
@@ -919,7 +950,7 @@ string `schema_version` at the top level is the envelope, a number inside
 
 | command | `payload` contents (`payload_schema_version`) |
 |---|---|
-| `pull` | `inspection` (orphans, stale entries, drift found) and `applied` (what the run imported, pulled or skipped) — `1` |
+| `pull` | `inspection` (orphans, stale entries, drift found) and `applied` (what the run imported, pulled, skipped or refreshed) — `2`. `applied.hashesRefreshed` and `inspection.hashRefresh` list `{ assignmentName, stateKey }` for each stored directory hash a content pull refreshed |
 | `push` | `plan` (what was planned) and `applied` (created / updated / failed) — `1` |
 | `status` | `scope`, `course`, `auth`, `runtime`, `git`, `last_push`, per-assignment/part/directory content-sync `assignments`, `summary` — `2` |
 | `validate` | `strict`, `errors`, `warnings`, `counts` — `1` |
@@ -933,7 +964,7 @@ summary. `error` is `null` for `applied`, `reported` and `no-op`.
 > **Migrating from `status --json` before this release:** the report used to be
 > the top-level object with a numeric `schema_version: 1`. It now lives in
 > `payload`, versioned by `payload.payload_schema_version: 2`; the top-level
-> `schema_version` is the envelope string `"1.0"`.
+> `schema_version` is the envelope string (`"1.1"` now).
 
 ### Exit codes
 
@@ -1030,6 +1061,7 @@ Pull and push also report these, with structured `data`:
 |------|----------|--------|---------|
 | `zip_not_used` | warn | `part_id`, `directory`, `reason`, `quarantined` | A directory was pulled file by file although zip is on. `quarantined` is true when this rejection stopped zip for the rest of the part |
 | `directory_blocked` | error | `part_id`, `directory`, `reason` | Push refused to upload a directory |
+| `exclude_pattern_names_directory` | warn | `pattern`, `directory`, `suggestion` | An `exclude_patterns` entry starts with, or is, a synced directory name. `suggestion` is the pattern to write instead, or `null` when the entry is only the directory name |
 
 `directory_blocked` reasons: `incomplete-pull` (the last pull could not download every file, so uploading would delete them on Vocareum) and `container-asnlib` (see "Push and `asnlib`").
 
