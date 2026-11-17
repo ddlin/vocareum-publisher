@@ -16,6 +16,7 @@
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import { calculateDirectoryHash } from '../utils/files';
+import type { PullZipSettings } from '../utils/zip-switches';
 import { isPathConfinedToBase } from '../utils/path-security';
 import {
   ELITE_DIRECTORIES,
@@ -87,6 +88,33 @@ export function latestHistoryEntry(config: Pick<Config, 'publish_history'>): Pub
  */
 export function publishExcludePatterns(config: Pick<Config, 'publish_options'>): string[] {
   return ['.gitkeep', '**/.gitkeep', ...(config.publish_options?.exclude_patterns ?? [])];
+}
+
+/**
+ * The user's own exclude patterns, without the built-in `.gitkeep` entries.
+ * Items that normalise to no segments (`''`, `'/'`) are dropped: they match
+ * nothing, and must not switch off the zip download.
+ */
+export function userExcludePatterns(config: Pick<Config, 'publish_options'>): string[] {
+  return (config.publish_options?.exclude_patterns ?? []).filter(
+    (pattern) => pattern.replace(/\\/g, '/').split('/').some((part) => part.length > 0),
+  );
+}
+
+/** True when the config has at least one effective user exclude pattern. */
+export function hasUserExcludePatterns(config: Pick<Config, 'publish_options'>): boolean {
+  return userExcludePatterns(config).length > 0;
+}
+
+/**
+ * Zip settings for a pull: the zip bundles excluded files and cannot filter
+ * them, so it is turned off whenever the user excludes something.
+ */
+export function pullZipFor(
+  zip: PullZipSettings | undefined,
+  config: Pick<Config, 'publish_options'>,
+): PullZipSettings | undefined {
+  return hasUserExcludePatterns(config) ? undefined : zip;
 }
 
 /**
