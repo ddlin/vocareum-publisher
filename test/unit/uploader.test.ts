@@ -22,6 +22,7 @@ vi.mock('../../src/api/content', () => ({
 vi.mock('../../src/utils/files', () => ({
   readDirectory: vi.fn(),
   calculateDirectoryHash: vi.fn(),
+  compileExcludedPathMatcher: vi.fn(() => () => false),
 }));
 
 // Mock logger to suppress output during tests

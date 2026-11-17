@@ -80,6 +80,7 @@ vi.mock('../../src/utils/files', () => ({
   calculateDirectoryHash: vi.fn().mockResolvedValue('hash-abc123'),
   validatePath: vi.fn(),
   readDirectory: vi.fn().mockResolvedValue({}),
+  compileExcludedPathMatcher: vi.fn(() => () => false),
 }));
 
 // ── mock path-security (used in content drift path; not exercised here but imported) ──

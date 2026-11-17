@@ -8,6 +8,7 @@
 import axios, { type AxiosInstance } from 'axios';
 import { VocareumClient, APIError, VocareumError, isOverloadError, sanitizeLogString } from './client';
 import { newZipPartState, normaliseListedName, tryZipDirectory } from './zip-directory';
+import { compileExcludedPathMatcher } from '../utils/files';
 import type { PullZipSettings } from '../utils/zip-switches';
 import type { DirectoryType } from '../types/config';
 import { DEFAULT_PART_DIRECTORIES } from '../types/config';
@@ -135,6 +136,9 @@ export interface DownloadBudget {
   limits: DownloadContentLimits;
   files: number;
   bytes: number;
+  /** True for a directory-relative path the user's exclude_patterns drop from
+   *  the walk. Absent: nothing is excluded. */
+  isExcluded?: (dirRelative: string) => boolean;
 }
 
 function resolveDownloadLimits(limits?: Partial<DownloadContentLimits>): DownloadContentLimits {
@@ -913,6 +917,10 @@ export function downloadContent(
      *  `http` are injectable for tests (defaults: `performance.now()` and a
      *  fresh bare axios instance, never the client's). */
     zip?: PullZipSettings & { now?: () => number; http?: AxiosInstance };
+    /** exclude_patterns: directory-relative paths (self or any ancestor
+     *  matching) are skipped before any fetch, listing or budget charge, and
+     *  are never a failure. Absent or empty: the walk exactly as before. */
+    excludePatterns?: string[];
   }
 ): Promise<FileMap> {
   return (async (): Promise<FileMap> => {
@@ -926,6 +934,9 @@ export function downloadContent(
       bytes: 0,
       failures: options?.failures,
       managedLinks: options?.managedLinks,
+      isExcluded: options?.excludePatterns !== undefined && options.excludePatterns.length > 0
+        ? compileExcludedPathMatcher(options.excludePatterns)
+        : undefined,
     };
 
     const strict = options?.strict === true;
@@ -1019,6 +1030,12 @@ async function downloadDirectoryTree(
     if (only !== undefined && !only.has(normaliseListedName(entry.path))) { continue; }
     const entryRelPath = relativePath ? `${relativePath}/${entry.path}` : entry.path;
     const filemapKey = `${directory}/${entryRelPath}`;
+    // Before the budget charge and any fetch: an excluded entry (an unreadable
+    // venv link, say) must cost nothing and never become a failure.
+    if (budget.isExcluded?.(entryRelPath) === true) {
+      client.events.emit({ level: 'debug', message: `Excluded ${filemapKey} (exclude_patterns)` });
+      continue;
+    }
 
     /**
      * Walk into a confirmed directory. Every way a walk can stop short is
