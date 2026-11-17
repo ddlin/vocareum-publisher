@@ -40,7 +40,9 @@ vi.mock('../../src/utils/env', () => ({
 }));
 
 // Mock file system
-vi.mock('../../src/utils/files', () => ({
+vi.mock('../../src/utils/files', async () => ({
+    // Pure matcher used by the pull service: the real one.
+    compileExcludedPathMatcher: (await vi.importActual<typeof import('../../src/utils/files')>('../../src/utils/files')).compileExcludedPathMatcher,
     pathExists: vi.fn().mockImplementation((p) => {
         // Return false for the new directory so it can be created
         if (typeof p === 'string' && p.includes('remote-assignment')) {

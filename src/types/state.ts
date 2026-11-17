@@ -295,6 +295,11 @@ export interface PublishOperationOptions {
  */
 export interface UploadOptions {
   excludePatterns?: string[];
+  /**
+   * The user's own exclude_patterns (no built-in defaults). Remote paths they
+   * match, or whose descendants they could match, are never deleted.
+   */
+  userExcludePatterns?: string[];
   forceAll?: boolean;
   syncDeletes?: boolean;
   /**

@@ -85,12 +85,21 @@ describe('statusCommand --json', () => {
       command: string;
       payload: Record<string, unknown>;
     };
-    expect(doc.schema_version).toBe('1.0');
+    expect(doc.schema_version).toBe('1.1');
     expect(doc.command).toBe('status');
     expect(doc.payload.payload_schema_version).toBe(2);
     expect(doc.payload.course).toEqual({ org_id: '1', course_id: '201303' });
     // Statuses cover CONTENT changes only — settings drift needs the API.
     expect(doc.payload.scope).toBe('content');
+  });
+
+  it('H6: status does not emit the exclude-pattern directory warning', async () => {
+    const config = makeConfig();
+    config.publish_options = { exclude_patterns: ['startercode/venv/**'] } as Config['publish_options'];
+    loadConfigMock.mockResolvedValue(config);
+    await statusCommand({ json: true });
+    const doc = JSON.parse(stdoutWrites[0]) as { diagnostics: Array<{ code: string }> };
+    expect(doc.diagnostics.map((d) => d.code)).not.toContain('exclude_pattern_names_directory');
   });
 
   it('includes per-assignment local scan statuses', async () => {

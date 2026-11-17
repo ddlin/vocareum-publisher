@@ -5,7 +5,7 @@
  * versioning this envelope, while each payload carries its own numeric
  * `payload_schema_version`. Adding a diagnostic code bumps the envelope;
  * reshaping pull's payload bumps only pull's.
- * Schema 1.0 is what 1.5.0 first publishes; additions before that release bump nothing.
+ * Schema 1.0 is what 1.5.0 first published; 1.1 adds the `exclude_pattern_names_directory` code.
  */
 import { classifyFailure } from '../utils/failure-classifier';
 import { sanitizeForLog, sanitizeLogString } from '../api/client';
@@ -13,7 +13,7 @@ import { CommandFailureError } from '../utils/command-failure';
 import { collectDiagnostics, type Diagnostic } from './diagnostics';
 import type { CollectingEventSink, ServiceEvent } from './services/event-sink';
 
-export const ENVELOPE_SCHEMA_VERSION = '1.0';
+export const ENVELOPE_SCHEMA_VERSION = '1.1';
 
 export type CommandName = 'pull' | 'push' | 'status' | 'validate' | 'fix';
 

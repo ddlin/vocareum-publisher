@@ -7,8 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`publish_options.exclude_patterns` now governs pull, drift and
+  `--sync-deletes`, not only push.** An excluded path is never fetched, written,
+  overwritten, deleted locally, reported as drift or counted as a pull failure.
+  With `--sync-deletes`, a remote path the patterns match is never deleted; an
+  entry that could only hold matching content is listed first (a directory is
+  kept with an info line, a file is deleted as normal, a failed listing is not
+  deleted and is reported as a failure). Push and pull hash a directory with the
+  same patterns.
+- **Hash refresh.** A `--content` pull refreshes the stored `content_state` hash
+  of unchanged directories, including directories with no stored hash,
+  `incomplete-pull` and `push-incomplete`. A first `pull --content` on a
+  repository without stored hashes writes them, and an unattended pull may update
+  `vocareum.yaml` (hash values only).
+- **`exclude_pattern_names_directory` (warn) diagnostic** for a pattern that
+  starts with, or is, a synced directory name (it would only match a nested
+  directory).
+
+### Changed
+- Pull downloads file by file (no zip) while `exclude_patterns` is non-empty.
+- A verified `incomplete-pull` directory is refreshed without the "earlier pull
+  was incomplete" prompt.
+- An unreadable local subdirectory inside a synced directory now makes the drift
+  check incomplete (exit 6) instead of being ignored.
+- A pull history entry records skipped drift checks as failures (status
+  `failed`).
+- Envelope `schema_version` is `"1.1"`. Pull `payload_schema_version` is `2`,
+  with `applied.hashesRefreshed` and `inspection.hashRefresh` entries
+  `{ assignmentName, stateKey }`.
+
+### Documentation
+- README documents `exclude_patterns`, that a directory push's `reset: 1` clears
+  the whole remote directory even for excluded paths, and that Vocareum sets
+  every uploaded file to mode 0770.
+
 ### VS Code extension
 
+- **The status view needs an extension built from this repository after this
+  change.** The extension source here now accepts any 1.x envelope; the published
+  extension 1.2.0 accepts only envelope `"1.0"` and shows status as unknown
+  against the 1.1 envelope.
 - **Extension 1.2.0**, attached to the v1.5.0 GitHub Release as
   `vocgit-1.2.0.vsix`. It reads the CLI 1.5 `--json` envelope for the sidebar
   sync badges, and still reads the CLI 1.2–1.4 report. Extension 1.1.0 shows

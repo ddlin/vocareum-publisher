@@ -16,6 +16,7 @@
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import { calculateDirectoryHash } from '../utils/files';
+import type { PullZipSettings } from '../utils/zip-switches';
 import { isPathConfinedToBase } from '../utils/path-security';
 import {
   ELITE_DIRECTORIES,
@@ -90,6 +91,33 @@ export function publishExcludePatterns(config: Pick<Config, 'publish_options'>):
 }
 
 /**
+ * The user's own exclude patterns, without the built-in `.gitkeep` entries.
+ * Items that normalise to no segments (`''`, `'/'`) are dropped: they match
+ * nothing, and must not switch off the zip download.
+ */
+export function userExcludePatterns(config: Pick<Config, 'publish_options'>): string[] {
+  return (config.publish_options?.exclude_patterns ?? []).filter(
+    (pattern) => pattern.replace(/\\/g, '/').split('/').some((part) => part.length > 0),
+  );
+}
+
+/** True when the config has at least one effective user exclude pattern. */
+export function hasUserExcludePatterns(config: Pick<Config, 'publish_options'>): boolean {
+  return userExcludePatterns(config).length > 0;
+}
+
+/**
+ * Zip settings for a pull: the zip bundles excluded files and cannot filter
+ * them, so it is turned off whenever the user excludes something.
+ */
+export function pullZipFor(
+  zip: PullZipSettings | undefined,
+  config: Pick<Config, 'publish_options'>,
+): PullZipSettings | undefined {
+  return hasUserExcludePatterns(config) ? undefined : zip;
+}
+
+/**
  * Directories the push pipeline syncs for a part: an explicit part-level
  * override wins, then the course architecture set, then the default union.
  */
@@ -98,6 +126,68 @@ export function directoriesForPart(config: Config, part: Part): DirectoryType[] 
     : config.vocareum.architecture === 'container' ? CONTAINER_DIRECTORIES
     : DEFAULT_PART_DIRECTORIES;
   return part.directories ?? archDirs;
+}
+
+/** An exclude pattern whose first segment names a synced directory. */
+export interface ExcludePatternWarning {
+  /** The user's original pattern string. */
+  pattern: string;
+  directory: DirectoryType;
+  /** The pattern after the directory segment; `''` when nothing or only `**` remains. */
+  remainder: string;
+}
+
+/**
+ * Patterns match inside each synced directory, so `data/venv/**` (a path
+ * written from the part root) silently matches nothing useful. Detect the
+ * mistake by checking the first normalised segment against every directory
+ * any part syncs.
+ */
+export function excludePatternDirectoryWarnings(config: Config): ExcludePatternWarning[] {
+  const synced = new Set<string>();
+  for (const assignment of config.assignments) {
+    for (const part of assignment.parts) {
+      for (const dir of directoriesForPart(config, part)) {
+        synced.add(dir);
+      }
+    }
+  }
+  const warnings: ExcludePatternWarning[] = [];
+  for (const pattern of userExcludePatterns(config)) {
+    const segments = pattern.replace(/\\/g, '/').split('/').filter((s) => s.length > 0);
+    const [first, ...rest] = segments;
+    if (first === undefined || !synced.has(first)) {
+      continue;
+    }
+    const remainder = rest.every((s) => s === '**') ? '' : rest.join('/');
+    warnings.push({ pattern, directory: first as DirectoryType, remainder });
+  }
+  return warnings;
+}
+
+/** One `exclude_pattern_names_directory` warning, ready to emit. */
+export interface ExcludePatternDiagnostic {
+  message: string;
+  code: 'exclude_pattern_names_directory';
+  data: { pattern: string; directory: string; suggestion: string | null };
+}
+
+/** The warnings for a config as emit-ready messages with their diagnostic data. */
+export function excludePatternDiagnostics(config: Config): ExcludePatternDiagnostic[] {
+  return excludePatternDirectoryWarnings(config).map((w) => ({
+    message: excludePatternWarningMessage(w),
+    code: 'exclude_pattern_names_directory',
+    data: { pattern: w.pattern, directory: w.directory, suggestion: w.remainder || null },
+  }));
+}
+
+/** The warning text for one {@link ExcludePatternWarning}. */
+export function excludePatternWarningMessage(w: ExcludePatternWarning): string {
+  const { pattern, directory, remainder } = w;
+  if (remainder === '') {
+    return `exclude_patterns entry "${pattern}" names the synced directory "${directory}". Patterns match inside each synced directory and cannot exclude a synced directory itself.`;
+  }
+  return `exclude_patterns entry "${pattern}" starts with the synced directory "${directory}/". Patterns match inside each synced directory, so this only matches a nested "${directory}/${remainder}". To exclude ${directory}/${remainder}, write "${remainder}".`;
 }
 
 /**

@@ -46,6 +46,7 @@ export const DIAGNOSTIC_SEVERITY = {
   rubric_write_skipped: 'warn',
   zip_not_used: 'warn',
   directory_blocked: 'error',
+  exclude_pattern_names_directory: 'warn',
 } as const satisfies Record<string, 'warn' | 'error'>;
 
 export const DIAGNOSTIC_CODES = [
@@ -65,6 +66,7 @@ export const DIAGNOSTIC_CODES = [
   'rubric_write_skipped',
   'zip_not_used',
   'directory_blocked',
+  'exclude_pattern_names_directory',
 ] as const;
 
 export type DiagnosticCode = typeof DIAGNOSTIC_CODES[number];

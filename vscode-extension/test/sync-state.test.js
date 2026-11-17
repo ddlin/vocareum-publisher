@@ -97,6 +97,13 @@ test('parseStatusReport accepts the 1.5.0 envelope (payload_schema_version 2)', 
   assert.equal(snapshot.assignmentStatuses.get('lab1'), 'needs_publish');
 });
 
+test('parseStatusReport accepts envelope 1.0 and 1.1, rejects another major', () => {
+  for (const v of ['1.0', '1.1']) {
+    assert.equal(parseStatusReport(JSON.stringify(envelope({}, { schema_version: v }))).assignments.length, 2);
+  }
+  assert.throws(() => parseStatusReport(JSON.stringify(envelope({}, { schema_version: '2.0' }))), /Unsupported vocgit envelope/);
+});
+
 test('parseStatusReport rejects an envelope from another command or a failed status', () => {
   assert.throws(() => parseStatusReport(JSON.stringify(envelope({}, { command: 'pull' }))));
   assert.throws(() => parseStatusReport(JSON.stringify(envelope({}, { result: 'failed', payload: { payload_schema_version: 2 } }))));

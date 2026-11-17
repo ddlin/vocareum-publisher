@@ -167,7 +167,9 @@ export function pullResultToOutcome(
 ): { result: 'applied' | 'partial' | 'reported' | 'no-op'; category: FailureCategory | undefined } {
   const changed =
     applied.imported + applied.excluded + applied.removed +
-    applied.reset + applied.settingsPulled + applied.contentPulled;
+    applied.reset + applied.settingsPulled + applied.contentPulled +
+    // A refresh rewrites vocareum.yaml: the run is not a no-op (spec rule 6).
+    applied.hashesRefreshed;
 
   if (state.failures > 0) { return { result: 'partial', category: 'partial' }; }
   if (state.hasFindings) { return { result: 'reported', category: 'findings' }; }
@@ -185,6 +187,7 @@ const EMPTY_PULL_RESULT: PullResult = {
   contentPulled: 0,
   filesNotDownloaded: 0,
   importsFailed: 0,
+  hashesRefreshed: 0,
 };
 
 /**
@@ -192,11 +195,17 @@ const EMPTY_PULL_RESULT: PullResult = {
  * projection, never an internal type). The inspection carries every
  * downloaded remote file (`remoteFiles`, Buffers) so apply can write them;
  * serialized raw, `pull --content --json` put the course's files on stdout.
- * The document keeps the diff (paths and statuses) and a count.
+ * The document keeps the diff (paths and statuses) and a count. Hash
+ * refreshes carry only their workspace-relative state key: never the absolute
+ * directory or the hash.
  */
 export function serializePullInspection(inspection: PullInspection): unknown {
+  const { hashRefresh, ...rest } = inspection;
   return {
-    ...inspection,
+    ...rest,
+    ...(hashRefresh !== undefined
+      ? { hashRefresh: hashRefresh.map(({ assignmentName, stateKey }) => ({ assignmentName, stateKey })) }
+      : {}),
     contentDrift: inspection.contentDrift.map((assignment) => ({
       ...assignment,
       partsDrift: assignment.partsDrift.map(({ remoteFiles, ...part }) => ({
@@ -336,7 +345,10 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
       }
       const driftSkipped = [...contentSkipped, ...settingsSkipped];
 
-      if (!hasOrphans && !hasStale && !hasSettingsDrift && !hasContentDrift) {
+      // A pull whose only work is a hash refresh must still reach apply, or
+      // the next push re-uploads the directory and wipes what it excludes.
+      const hasHashRefresh = (inspection.hashRefresh?.length ?? 0) > 0;
+      if (!hasOrphans && !hasStale && !hasSettingsDrift && !hasContentDrift && !hasHashRefresh) {
         // A skipped drift check is "unknown", not "clean": this line once
         // reported a workspace missing 1,374 files as in sync.
         if (driftSkipped.length === 0) {
@@ -432,6 +444,9 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
       logger.plain(`  Removed:         ${pullResult.removed}`);
       logger.plain(`  Reset:           ${pullResult.reset}`);
       logger.plain(`  Skipped:         ${pullResult.skipped}`);
+      if (pullResult.hashesRefreshed > 0) {
+        logger.plain(`  Hashes refreshed: ${pullResult.hashesRefreshed}`);
+      }
       if (pullResult.importsFailed > 0) {
         logger.plain(`  Import failed:   ${pullResult.importsFailed}`);
         incomplete.push(`${pullResult.importsFailed} import(s) failed`);
@@ -468,7 +483,7 @@ async function pullCommandLocked(ctx: WorkspaceContext, options: PullOptions): P
       const ok = writeReport(buildReport({
         command: 'pull',
         result: outcome.result,
-        payload: { payload_schema_version: 1, inspection: serializePullInspection(inspection), applied: pullResult },
+        payload: { payload_schema_version: 2, inspection: serializePullInspection(inspection), applied: pullResult },
         events: collector.drain(),
       }));
       // reportWritten: true on both throws -- a document is already on stdout

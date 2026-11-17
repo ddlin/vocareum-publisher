@@ -82,3 +82,17 @@ describe('a malformed --json invocation still gets exactly one document', () => 
     expect(out).toMatch(/Usage: vocgit push/);
   });
 });
+
+describe('envelope schema version', () => {
+  it('envelope schema_version is 1.1, including usage-error documents', () => {
+    let stdout = '';
+    try {
+      execFileSync(TSX, [CLI, 'bogus-command', '--json'], { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (error) {
+      stdout = (error as { stdout?: string }).stdout ?? '';
+    }
+    const doc = JSON.parse(stdout.trim()) as { schema_version: string; error: { code: string } };
+    expect(doc.error.code).toBe('usage');
+    expect(doc.schema_version).toBe('1.1');
+  });
+});

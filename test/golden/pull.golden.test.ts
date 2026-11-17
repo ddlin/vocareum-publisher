@@ -55,7 +55,9 @@ vi.mock('../../src/core/config', () => ({
 }));
 
 // ── files mock ────────────────────────────────────────────────────────────────
-vi.mock('../../src/utils/files', () => ({
+vi.mock('../../src/utils/files', async () => ({
+  // Pure matcher used by the pull service: the real one.
+  compileExcludedPathMatcher: (await vi.importActual<typeof import('../../src/utils/files')>('../../src/utils/files')).compileExcludedPathMatcher,
   pathExists: vi.fn().mockResolvedValue(false),
   readFile: vi.fn().mockResolvedValue('content'),
   ensureDirectory: vi.fn().mockResolvedValue(undefined),

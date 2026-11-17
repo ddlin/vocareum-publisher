@@ -551,6 +551,24 @@ describe('pullCommand content-drift gating', () => {
     expect(new Set(assignmentIds)).toEqual(new Set(['a-lab1']));
   });
 
+  it('X6 (gate): a pull whose only work is a hash refresh still reaches apply', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-pull-refresh-'));
+    try {
+      await fs.mkdir(path.join(workspace, 'lab1', 'part1', 'startercode'), { recursive: true });
+      await fs.writeFile(path.join(workspace, 'lab1', 'part1', 'startercode', 'a.txt'), 'same');
+      vi.mocked(downloadContent).mockResolvedValue({ 'startercode/a.txt': Buffer.from('same') });
+
+      await pullCommand({ nonInteractive: true, content: true, assignment: ['lab1'], root: workspace });
+
+      expect(loggerSuccessMock).not.toHaveBeenCalledWith('No sync issues found.');
+      expect(updateConfigMock).toHaveBeenCalledTimes(1);
+      const state = updateConfigMock.mock.calls[0][1].publish_history[0].content_state as Record<string, string>;
+      expect(Object.keys(state)).toEqual([path.join('lab1', 'part1', 'startercode')]);
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('does not read local drift-comparison files through symlinks escaping the part directory', async () => {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-pull-read-'));
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'voc-pull-outside-'));
@@ -652,10 +670,11 @@ describe('pullCommand --json', () => {
       payload: { payload_schema_version: number; applied: { importsFailed: number; filesNotDownloaded: number } };
       error: unknown;
     };
-    expect(doc.schema_version).toBe('1.0');
+    expect(doc.schema_version).toBe('1.1');
     expect(doc.command).toBe('pull');
     expect(doc.result).toBe('no-op');
-    expect(doc.payload.payload_schema_version).toBe(1);
+    expect(doc.payload.payload_schema_version).toBe(2);
+    expect((doc.payload.applied as { hashesRefreshed?: number }).hashesRefreshed).toBe(0);
     expect(doc.payload.applied.importsFailed).toBe(0);
     expect(doc.payload.applied.filesNotDownloaded).toBe(0);
     expect(doc.error).toBeNull();

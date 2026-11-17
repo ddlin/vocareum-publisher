@@ -153,6 +153,67 @@ function compileExcludeMatchers(patterns: string[]): (relativePath: string) => b
 }
 
 /**
+ * Compile exclude patterns into a predicate that is true when the path itself
+ * or any ancestor matches a pattern. Pull, drift and delete need this because
+ * a pattern such as `venv` must also cover everything beneath `venv/`, which
+ * the push-side matcher alone (exact match) does not.
+ *
+ * @param patterns - Glob patterns relative to the synced directory
+ * @returns Predicate over `/`- or `\\`-separated relative paths
+ */
+export function compileExcludedPathMatcher(patterns: string[]): (relativePath: string) => boolean {
+  const matches = compileExcludeMatchers(patterns);
+  return (relativePath: string): boolean => {
+    const parts = splitGlob(relativePath);
+    for (let end = 1; end <= parts.length; end++) {
+      if (matches(parts.slice(0, end).join('/'))) { return true; }
+    }
+    return false;
+  };
+}
+
+/** Like matchGlobSegments, but also accepts when the value ends while pattern segments remain. */
+function matchesGlobPrefix(pattern: string[], value: string[]): boolean {
+  const memo = new Map<string, boolean>();
+  const match = (pi: number, vi: number): boolean => {
+    if (vi === value.length) { return true; }
+    const key = `${pi}:${vi}`;
+    const cached = memo.get(key);
+    if (cached !== undefined) { return cached; }
+    let result: boolean;
+    if (pi === pattern.length) {
+      result = false;
+    } else if (pattern[pi] === '**') {
+      result = match(pi + 1, vi) || match(pi, vi + 1);
+    } else {
+      result = matchSegment(pattern[pi], value[vi]) && match(pi + 1, vi + 1);
+    }
+    memo.set(key, result);
+    return result;
+  };
+  return match(0, 0);
+}
+
+/**
+ * Like {@link compileExcludedPathMatcher}, but also true when some pattern
+ * could match a descendant of the path. Delete filters use it so a directory
+ * that holds excluded content (`venv/*` under `venv`) is never removed.
+ *
+ * @param patterns - Glob patterns relative to the synced directory
+ * @returns Predicate over relative paths
+ */
+export function compileExcludedSubtreeMatcher(patterns: string[]): (relativePath: string) => boolean {
+  const excluded = compileExcludedPathMatcher(patterns);
+  // An empty pattern matches nothing, so it cannot reach a descendant either.
+  const compiled = patterns.map(splitGlob).filter((pattern) => pattern.length > 0);
+  return (relativePath: string): boolean => {
+    if (excluded(relativePath)) { return true; }
+    const parts = splitGlob(relativePath);
+    return compiled.some((pattern) => matchesGlobPrefix(pattern, parts));
+  };
+}
+
+/**
  * Calculate SHA256 hash of a directory's contents
  *
  * @param dirPath - Directory to hash
