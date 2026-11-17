@@ -15,8 +15,7 @@ import {
   publishExcludePatterns,
   pullZipFor,
   userExcludePatterns,
-  excludePatternDirectoryWarnings,
-  excludePatternWarningMessage,
+  excludePatternDiagnostics,
 } from '../local-scan';
 import { reconcile } from '../reconciler';
 import { getAssignment } from '../../api/assignments';
@@ -1512,11 +1511,8 @@ export async function inspectPull(
   const warnFn: WarnFn = (msg, diagnostic) => events.emit(warnEvent(msg, diagnostic));
 
   // Once per run, not per directory.
-  for (const w of excludePatternDirectoryWarnings(config)) {
-    warnFn(excludePatternWarningMessage(w), {
-      code: 'exclude_pattern_names_directory',
-      data: { pattern: w.pattern, directory: w.directory, suggestion: w.remainder || null },
-    });
+  for (const d of excludePatternDiagnostics(config)) {
+    warnFn(d.message, { code: d.code, data: d.data });
   }
 
   // Run reconciliation to find orphans and stale assignments.

@@ -79,6 +79,8 @@ describe('exclude pattern naming a synced directory', () => {
     ]);
     expect(m(['data/venv/**'])('venv/x')).toBe(false);
     expect(m(['data/venv/**'])('data/venv/x')).toBe(true);
+    // startercode/data/venv/x is directory-relative data/venv/x.
+    expect(m(['data/venv/**'])('data/venv/a/b')).toBe(true);
   });
   it('H6: data and data/** produce the empty-remainder warning', () => {
     for (const p of ['data', 'data/**', '/data/', 'data\\**']) {

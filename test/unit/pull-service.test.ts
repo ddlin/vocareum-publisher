@@ -49,8 +49,7 @@ vi.mock('../../src/core/local-scan', async () => {
     publishExcludePatterns: actual.publishExcludePatterns,
     userExcludePatterns: actual.userExcludePatterns,
     pullZipFor: actual.pullZipFor,
-    excludePatternDirectoryWarnings: actual.excludePatternDirectoryWarnings,
-    excludePatternWarningMessage: actual.excludePatternWarningMessage,
+    excludePatternDiagnostics: actual.excludePatternDiagnostics,
   };
 });
 
@@ -1285,7 +1284,6 @@ describe('applyPull — import that fails outright', () => {
     expect(entry.failed).toEqual([expect.objectContaining({ type: 'assignment', id: ORPHAN_1.id })]);
   });
 });
-
 
 describe('exclude-pattern directory warning', () => {
   it('H6: inspectPull emits it once per run, not per directory', async () => {

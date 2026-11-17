@@ -165,6 +165,22 @@ export function excludePatternDirectoryWarnings(config: Config): ExcludePatternW
   return warnings;
 }
 
+/** One `exclude_pattern_names_directory` warning, ready to emit. */
+export interface ExcludePatternDiagnostic {
+  message: string;
+  code: 'exclude_pattern_names_directory';
+  data: { pattern: string; directory: string; suggestion: string | null };
+}
+
+/** The warnings for a config as emit-ready messages with their diagnostic data. */
+export function excludePatternDiagnostics(config: Config): ExcludePatternDiagnostic[] {
+  return excludePatternDirectoryWarnings(config).map((w) => ({
+    message: excludePatternWarningMessage(w),
+    code: 'exclude_pattern_names_directory',
+    data: { pattern: w.pattern, directory: w.directory, suggestion: w.remainder || null },
+  }));
+}
+
 /** The warning text for one {@link ExcludePatternWarning}. */
 export function excludePatternWarningMessage(w: ExcludePatternWarning): string {
   const { pattern, directory, remainder } = w;

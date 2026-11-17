@@ -30,8 +30,7 @@ import {
   assertConfinedToWorkspace,
   publishExcludePatterns,
   userExcludePatterns,
-  excludePatternDirectoryWarnings,
-  excludePatternWarningMessage,
+  excludePatternDiagnostics,
   PUSH_INCOMPLETE_MARKER,
   INCOMPLETE_PULL_MARKER,
 } from '../local-scan';
@@ -265,11 +264,8 @@ export async function planPush(
   const partFilters = parseCsv(req.part);
 
   // Once per run, from the full config so --assignment filters do not hide a typo.
-  for (const w of excludePatternDirectoryWarnings(effectiveConfig)) {
-    events.emit(warnEvent(excludePatternWarningMessage(w), {
-      code: 'exclude_pattern_names_directory',
-      data: { pattern: w.pattern, directory: w.directory, suggestion: w.remainder || null },
-    }));
+  for (const d of excludePatternDiagnostics(effectiveConfig)) {
+    events.emit(warnEvent(d.message, { code: d.code, data: d.data }));
   }
 
   // --part is not unique across assignments, and rubric writes (which change

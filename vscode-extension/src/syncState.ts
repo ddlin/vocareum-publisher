@@ -31,7 +31,7 @@ export interface SyncSnapshot {
 /** CLI <= 1.4: the bare status report. */
 const SUPPORTED_SCHEMA_VERSION = 1;
 /** CLI >= 1.5: the shared --json envelope, and the status payload inside it. */
-const SUPPORTED_ENVELOPE_VERSION = '1.0';
+const SUPPORTED_ENVELOPE_MAJOR = 1;
 const SUPPORTED_PAYLOAD_VERSION = 2;
 
 type CliSyncStatus = 'synced' | 'needs_publish' | 'unknown' | 'pending_create' | 'unlinked' | 'error';
@@ -135,8 +135,9 @@ export function parseStatusReport(stdout: string): CliStatusReport {
     let report: Record<string, unknown>;
     let version: number;
     if (typeof parsed.schema_version === 'string') {
-        if (parsed.schema_version !== SUPPORTED_ENVELOPE_VERSION) {
-            throw new Error(`Unsupported vocgit envelope (expected ${SUPPORTED_ENVELOPE_VERSION}, got ${parsed.schema_version})`);
+        // Minor bumps only add diagnostic codes, so any 1.x envelope is readable.
+        if (parsed.schema_version.split('.')[0] !== String(SUPPORTED_ENVELOPE_MAJOR)) {
+            throw new Error(`Unsupported vocgit envelope (expected ${SUPPORTED_ENVELOPE_MAJOR}.x, got ${parsed.schema_version})`);
         }
         if (parsed.command !== 'status' || parsed.result === 'failed') {
             throw new Error(`vocgit status did not produce a report (command ${String(parsed.command)}, result ${String(parsed.result)})`);
