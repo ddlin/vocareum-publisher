@@ -182,7 +182,9 @@ describe('S38: pull --content --json with one zip rejection', () => {
     expect(doc.diagnostics.filter((d) => d.code === 'zip_not_used')).toEqual([
       expect.objectContaining({ severity: 'warn', count: 1, data: ZIP_REJECTED }),
     ]);
-    expect(doc.result).toBe('no-op');
+    // No drift; the workspace has no stored hash for startercode/, so the
+    // proven-identical directory's hash is recorded (spec rule 2): applied.
+    expect(doc.result).toBe('applied');
     expect(run.status).toBe(0);
     // The signed URL's query string never reaches stdout or stderr.
     expect(run.stdout).not.toContain(SIGNATURE);

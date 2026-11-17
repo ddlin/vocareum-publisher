@@ -482,13 +482,15 @@ describe('S30 round-trip matrix: incomplete', () => {
     expect(state(run.config)[KEY('startercode')]).toBe(INCOMPLETE_PULL_MARKER);
   });
 
-  it('incomplete → recovered: the cause is gone, zero file diffs — still drift; apply replaces the marker with a hash', async () => {
+  it('incomplete → recovered: the cause is gone, zero file diffs — a hash refresh (X6d) replaces the marker with a hash', async () => {
     const w = await incompleteWorld();
     w.tree.remove('/voc/startercode/broken');
     const run = await w.drift(w.zip());
     expect(zipNotUsed(run.events)).toEqual([]);
     expect(diffs(run)).toEqual([]);
-    expect(run.inspection.contentDrift[0].partsDrift[0].incompleteDirectories).toEqual(['startercode']);
+    // Proven identical: refreshed without a content-drift entry or prompt.
+    expect(run.inspection.contentDrift).toEqual([]);
+    expect(run.inspection.hashRefresh?.map((r) => r.stateKey)).toEqual([KEY('startercode')]);
     expect(state(run.config)[KEY('startercode')]).toBe(await w.hash('startercode'));
     expect(history(run.config)?.status).toBe('success');
   });

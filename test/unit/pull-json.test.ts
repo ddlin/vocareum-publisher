@@ -12,6 +12,7 @@ describe('pull outcome mapping', () => {
     contentPulled: 0,
     filesNotDownloaded: 0,
     importsFailed: 0,
+    hashesRefreshed: 0,
   };
 
   it('no findings and nothing applied is a clean no-op', () => {
@@ -41,7 +42,7 @@ describe('pull outcome mapping', () => {
 });
 
 describe('resolved findings are not findings (spec §5.1)', () => {
-  const base = { imported: 0, excluded: 0, skipped: 0, removed: 0, reset: 0, settingsPulled: 0, contentPulled: 0, failures: 0 };
+  const base = { imported: 0, excluded: 0, skipped: 0, removed: 0, reset: 0, settingsPulled: 0, contentPulled: 0, hashesRefreshed: 0, failures: 0 };
 
   it('batch mode that APPLIED drift exits 0, not 5', () => {
     // The bug: hasFindings came from the pre-apply inspection, so a batch run

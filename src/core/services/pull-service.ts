@@ -249,6 +249,23 @@ export interface ContentDriftSkip {
   reason: string;
 }
 
+/**
+ * A directory the content drift check proved complete and identical to
+ * Vocareum, whose stored `content_state` value differs from its current local
+ * hash. Apply rewrites only that value (never a file), so the next push does
+ * not re-upload unchanged content with `reset: 1` — which would wipe what an
+ * exclude pattern keeps out, such as a venv that lives only on Vocareum.
+ */
+export interface HashRefresh {
+  assignmentName: string;
+  /** The `content_state` key: `path.join(localBasePath, dir)`, workspace-relative. */
+  stateKey: string;
+  /** Absolute local directory; re-hashed at apply time. Never serialized. */
+  directoryAbs: string;
+  /** Exclusion-aware local hash of the content the check compared. */
+  hash: string;
+}
+
 /** Represents a single setting that differs between local and remote */
 interface SettingDiff {
   key: string;
@@ -377,6 +394,8 @@ export interface PullInspection {
   /** Assignments whose settings could not be read. When non-empty the
    *  settings drift result is incomplete — never report it as "no sync issues". */
   settingsDriftIncomplete?: ContentDriftSkip[];
+  /** Directories verified identical whose stored hash is out of date. */
+  hashRefresh?: HashRefresh[];
 }
 
 export interface PullResult {
@@ -393,6 +412,8 @@ export interface PullResult {
    *  directory) and were not saved. Distinct from `skipped`, which counts
    *  orphans the user chose not to import. */
   importsFailed: number;
+  /** Directories whose stored hash was refreshed (no files written). */
+  hashesRefreshed: number;
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
@@ -1067,6 +1088,11 @@ interface LocalWalk {
   escaped: string[];
   /** Part-relative keys of directories that could not be read. */
   errors: string[];
+  /** Part-relative keys of symlinks that do not resolve to a regular file
+   *  (dangling, or pointing at a directory). They are not compared, as
+   *  before, but their content is unproven, so the directory is never
+   *  hash-refreshed while one is present. */
+  unresolved: string[];
 }
 
 /**
@@ -1091,7 +1117,7 @@ async function walkLocalDirectory(
   onExcluded: (partRelativeKey: string) => void,
 ): Promise<LocalWalk> {
   const fs = await import('fs/promises');
-  const result: LocalWalk = { files: [], escaped: [], errors: [] };
+  const result: LocalWalk = { files: [], escaped: [], errors: [], unresolved: [] };
 
   const walk = async (dirRelative: string): Promise<void> => {
     const nativeDir = dirRelative === '' ? path.join(localBaseAbs, dir) : path.join(localBaseAbs, dir, dirRelative);
@@ -1122,9 +1148,11 @@ async function walkLocalDirectory(
       } else if (entry.isFile()) {
         result.files.push(key);
       } else if (entry.isSymbolicLink()) {
+        let isFile = false;
         try {
-          if ((await fs.stat(fullPath)).isFile()) { result.files.push(key); }
+          isFile = (await fs.stat(fullPath)).isFile();
         } catch { /* a dangling link is not a file: nothing to compare */ }
+        if (isFile) { result.files.push(key); } else { result.unresolved.push(key); }
       }
     }
   };
@@ -1133,6 +1161,32 @@ async function walkLocalDirectory(
   return result;
 }
 
+/**
+ * The exclusion-aware hash of a local directory, or undefined when it is not
+ * a directory or cannot be hashed. `calculateDirectoryHash` alone answers the
+ * empty digest for a missing directory — the same as one holding only
+ * excluded files — so existence is checked first: a vanished directory must
+ * never be blessed with the empty hash.
+ */
+async function directoryHashIfPresent(dirAbs: string, excludePatterns: string[]): Promise<string | undefined> {
+  const fs = await import('fs/promises');
+  try {
+    if (!(await fs.stat(dirAbs)).isDirectory()) { return undefined; }
+    return await calculateDirectoryHash(dirAbs, excludePatterns);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Compare each configured part's remote content with the local workspace.
+ *
+ * When `refreshes` is given, every configured directory is also hashed before
+ * the comparison and again after the local walk; a directory proven complete
+ * and identical whose two hashes agree and differ from its stored
+ * `content_state` value is appended to `refreshes` (see {@link HashRefresh}).
+ * An assignment whose check throws contributes none.
+ */
 export async function detectContentDrift(
   config: {
     assignments: Assignment[];
@@ -1153,6 +1207,9 @@ export async function detectContentDrift(
   zip?: PullZipSettings,
   /** Receives debug lines, such as each local entry exclude_patterns left out. */
   debug?: (message: string) => void,
+  /** Receives directories verified identical whose stored hash is stale.
+   *  Absent: no directory is hashed and none is refreshed. */
+  refreshes?: HashRefresh[],
 ): Promise<AssignmentContentDrift[]> {
   const driftList: AssignmentContentDrift[] = [];
   const excludedIds = new Set(config.vocareum.excluded_assignments ?? []);
@@ -1160,7 +1217,9 @@ export async function detectContentDrift(
   const remoteZip = pullZipFor(zip, config);
   // The local side uses the hashing list, so `.gitkeep` and user patterns are
   // never read as remotely deleted.
-  const isLocalExcluded = compileExcludedPathMatcher(publishExcludePatterns(config));
+  const hashingExcludes = publishExcludePatterns(config);
+  const isLocalExcluded = compileExcludedPathMatcher(hashingExcludes);
+  const contentState = config.publish_history?.[0]?.content_state ?? {};
   const onLocalExcluded = (key: string): void => {
     // `.gitkeep` is a built-in scaffold, not a user exclusion: no line for it.
     if (path.posix.basename(key) === '.gitkeep') { return; }
@@ -1174,6 +1233,9 @@ export async function detectContentDrift(
 
     try {
       const partsDrift: PartContentDrift[] = [];
+      // Recorded only once the whole assignment was checked: a throw part-way
+      // through skips the assignment, and its refreshes with it.
+      const assignmentRefreshes: HashRefresh[] = [];
 
       for (const configPart of assignment.parts) {
         if (!configPart.part_id) { continue; }
@@ -1213,6 +1275,17 @@ export async function detectContentDrift(
         // every file is falsely reported as an escaping symlink. apply recreates the
         // base via writeFileUnderBase, which confines each individual write.
         const baseExists = await pathExists(localBaseAbs);
+
+        // The hash of what is about to be compared, taken before the
+        // comparison reads a file: an edit before this point shows up as a
+        // diff, an edit after it changes the second hash below.
+        const checkedHashes = new Map<DirectoryType, string>();
+        if (refreshes !== undefined && baseExists) {
+          for (const dir of downloadPlan.directories) {
+            const hash = await directoryHashIfPresent(path.join(localBaseAbs, dir), hashingExcludes);
+            if (hash !== undefined) { checkedHashes.set(dir, hash); }
+          }
+        }
 
         // Remote files whose local path is confined to the part directory. apply
         // writes this map verbatim through writeFileUnderBase (which THROWS on an
@@ -1275,6 +1348,8 @@ export async function detectContentDrift(
 
         const directories = downloadPlan.directories;
         const shadowedByLink = new Set<string>();
+        // Directories whose local side was not fully read: never refreshed.
+        const unproven = new Set<DirectoryType>();
         for (const dir of directories) {
           const localDirPath = path.join(localBaseAbs, dir);
           if (!await pathExists(localDirPath)) { continue; }
@@ -1282,12 +1357,16 @@ export async function detectContentDrift(
           // 'deleted' diff here would make apply's fs.unlink follow the symlink
           // and remove a file outside the workspace.
           if (!await isPathConfinedToBase(localBaseAbs, localDirPath)) {
+            unproven.add(dir);
             warnFn(`Skipping "${dir}/" in content drift check for "${assignment.name}": path escapes the local part directory through a symlink`,
               { code: 'symlink_skipped', data: { assignment: assignment.name, path: `${dir}/`, reason: 'escapes_part' } });
             continue;
           }
 
           const walked = await walkLocalDirectory(localBaseAbs, dir, isLocalExcluded, onLocalExcluded);
+          if (walked.escaped.length > 0 || walked.errors.length > 0 || walked.unresolved.length > 0) {
+            unproven.add(dir);
+          }
           for (const relativePath of walked.escaped) {
             // Nested entries that resolve outside the part directory (an
             // escaping symlink below a confined dir) are skipped for the same
@@ -1322,11 +1401,40 @@ export async function detectContentDrift(
           skipped?.push({ assignmentName: assignment.name, reason });
         }
 
-        const contentState = config.publish_history?.[0]?.content_state ?? {};
+        // Spec rule 1: a directory is proven identical when every remote file
+        // was compared and equal, no local file is extra, and nothing under it
+        // was skipped, omitted, unreadable or shadowed by a managed link.
+        const refreshed = new Set<DirectoryType>();
+        if (refreshes !== undefined) {
+          const drifted = new Set(fileDiffs.map(d => d.filePath.split('/')[0]));
+          const shadowedDirs = new Set([...shadowedByLink].map(link => link.split('/')[0]));
+          for (const dir of directories) {
+            const before = checkedHashes.get(dir);
+            if (before === undefined || drifted.has(dir) || omittedDirs.has(dir) ||
+                unproven.has(dir) || shadowedDirs.has(dir)) {
+              continue;
+            }
+            const after = await directoryHashIfPresent(path.join(localBaseAbs, dir), hashingExcludes);
+            const stateKey = path.join(localBasePath, dir);
+            // Missing, incomplete-pull and push-incomplete values all differ
+            // from a real hash: the check just proved what they say is unknown.
+            if (after !== before || contentState[stateKey] === after) { continue; }
+            assignmentRefreshes.push({
+              assignmentName: assignment.name,
+              stateKey,
+              directoryAbs: path.join(localBaseAbs, dir),
+              hash: after,
+            });
+            refreshed.add(dir);
+          }
+        }
+
         const markedDirs = downloadPlan.directories.filter(
           dir => contentState[path.join(localBasePath, dir)] === INCOMPLETE_PULL_MARKER
         );
-        const incompleteDirectories = markedDirs.filter(dir => !omittedDirs.has(dir));
+        // A marked directory proven identical is refreshed instead: its marker
+        // is replaced by a hash without a content-drift entry or prompt.
+        const incompleteDirectories = markedDirs.filter(dir => !omittedDirs.has(dir) && !refreshed.has(dir));
         const stillIncomplete = markedDirs.filter(dir => omittedDirs.has(dir));
         if (stillIncomplete.length > 0) {
           // Recovery cannot finish these: report the check as incomplete (the
@@ -1355,6 +1463,7 @@ export async function detectContentDrift(
         }
       }
 
+      refreshes?.push(...assignmentRefreshes);
       if (partsDrift.length > 0) {
         driftList.push({
           assignmentId: assignment.assignment_id,
@@ -1405,6 +1514,7 @@ export async function inspectPull(
 
   let contentDrift: AssignmentContentDrift[] = [];
   const contentDriftIncomplete: ContentDriftSkip[] = [];
+  const hashRefresh: HashRefresh[] = [];
   if (req.content) {
     const scoped = scopeAssignmentsForContent(
       config.assignments,
@@ -1421,6 +1531,7 @@ export async function inspectPull(
       contentDriftIncomplete,
       req.zip,
       (message) => events.emit({ level: 'debug', message }),
+      hashRefresh,
     );
   }
 
@@ -1431,6 +1542,7 @@ export async function inspectPull(
     contentDrift,
     contentDriftIncomplete,
     settingsDriftIncomplete,
+    hashRefresh,
   };
 }
 
@@ -1466,6 +1578,7 @@ export async function applyPull(
     contentPulled: 0,
     filesNotDownloaded: 0,
     importsFailed: 0,
+    hashesRefreshed: 0,
   };
 
   const newAssignments: Partial<Assignment>[] = [];
@@ -1716,6 +1829,16 @@ export async function applyPull(
     }
   }
 
+  // ── Announce hash refreshes ───────────────────────────────────────────────
+  // Listed before the content-drift prompts so an interactive user sees every
+  // change the pull will make. They run in every mode (spec rule 5): they
+  // write no file, and the apply-time re-hash below proves them.
+  const hashRefresh = inspection.hashRefresh ?? [];
+  for (const entry of hashRefresh) {
+    events.emit({ level: 'plain', message: `Will refresh the stored hash of ${entry.stateKey}/ (unchanged content; no files are written)` });
+  }
+  if (hashRefresh.length > 0) { events.emit({ level: 'newline' }); }
+
   // ── Process content drift ─────────────────────────────────────────────────
   if (inspection.contentDrift.length > 0) {
     events.emit({ level: 'info', message: `Found ${inspection.contentDrift.length} assignment(s) with content changes on Vocareum.` });
@@ -1851,6 +1974,24 @@ export async function applyPull(
     }
   }
 
+  // ── Apply hash refreshes ──────────────────────────────────────────────────
+  const refreshExcludes = publishExcludePatterns(config);
+  for (const entry of hashRefresh) {
+    // A directory a content-drift pull just rehashed already has its value.
+    if (importedContentState[entry.stateKey] !== undefined) { continue; }
+    // Spec rule 4: no blind blessing. The directory must still be there and
+    // hash to what the check compared, or a file edited (or the directory
+    // removed) while a prompt was open would be recorded as pushed.
+    const current = await directoryHashIfPresent(entry.directoryAbs, refreshExcludes);
+    if (current === entry.hash) {
+      importedContentState[entry.stateKey] = current;
+      result.hashesRefreshed++;
+      events.emit({ level: 'info', message: `Refreshed the stored hash of ${entry.stateKey}/ (no files changed)` });
+    } else {
+      events.emit({ level: 'info', message: `${entry.stateKey}/ changed during the pull; its stored hash was not refreshed` });
+    }
+  }
+
   // ── Write config updates ──────────────────────────────────────────────────
   const hasChanges = newAssignments.length > 0 ||
     newExclusions.length > 0 ||
@@ -1862,6 +2003,16 @@ export async function applyPull(
   const stillIncompleteFailures = [...new Map(
     [...driftStillIncomplete, ...stillIncompleteSeen].map(f => [f.id, f])
   ).values()];
+  // A history entry written while some drift check was skipped (for example
+  // one recording a refresh) must not read as a clean run (AGENTS.md #9).
+  const driftCheckSkips: HistoryFailedEntity[] = (inspection.contentDriftIncomplete ?? []).map(skip => ({
+    type: 'assignment',
+    id: skip.assignmentName,
+    error: `content drift check skipped: ${skip.reason}`,
+  }));
+  const historyFailed: HistoryFailedEntity[] = [
+    ...importFailures, ...stillIncompleteFailures, ...driftCheckSkips, ...historyFailuresFor(importMisses),
+  ];
 
   let newPublishHistory: PublishHistory[] | undefined;
   // A skipped or kept check writes nothing on its own (the help promises no
@@ -1884,11 +2035,10 @@ export async function applyPull(
       // An import that missed files is a failed run, recorded as one (AGENTS.md
       // #9). Its directories carry INCOMPLETE_PULL_MARKER, not a hash.
       // A run with any miss or failed import is failed, even if others succeeded.
-      status: importMisses.length > 0 || importFailures.length > 0 || stillIncompleteFailures.length > 0 ? 'failed' : 'success',
+      // A skipped drift check is failed too: its directories were not proven.
+      status: historyFailed.length > 0 ? 'failed' : 'success',
       content_state: mergedContentState,
-      ...(importMisses.length > 0 || importFailures.length > 0 || stillIncompleteFailures.length > 0
-        ? { failed: [...importFailures, ...stillIncompleteFailures, ...historyFailuresFor(importMisses)] }
-        : {}),
+      ...(historyFailed.length > 0 ? { failed: historyFailed } : {}),
     };
 
     newPublishHistory = [historyEntry];
