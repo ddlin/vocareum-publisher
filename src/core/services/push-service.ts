@@ -27,10 +27,11 @@ import { reconcile, displayPlan } from '../reconciler';
 import {
   assertConfinedToWorkspace,
   publishExcludePatterns,
+  userExcludePatterns,
   PUSH_INCOMPLETE_MARKER,
   INCOMPLETE_PULL_MARKER,
 } from '../local-scan';
-import { calculateDirectoryHash, readFile as readTextFile } from '../../utils/files';
+import { calculateDirectoryHash, compileExcludedSubtreeMatcher, readFile as readTextFile } from '../../utils/files';
 import { copyAssignment, getAssignment, updateAssignment } from '../../api/assignments';
 import { updateCourse } from '../../api/courses';
 import { getPart, updatePart } from '../../api/parts';
@@ -537,8 +538,9 @@ export async function planPush(
               );
             }
             const localFileSet = new Set(Object.keys(localFiles));
+            const isExcluded = compileExcludedSubtreeMatcher(userExcludePatterns(workingConfig));
             for (const remoteFile of remoteFiles) {
-              if (!localFileSet.has(remoteFile.path)) {
+              if (!localFileSet.has(remoteFile.path) && !isExcluded(remoteFile.path)) {
                 deletePaths.push(path.posix.join(dir, remoteFile.path.replace(/\\/g, '/')));
               }
             }
@@ -1451,6 +1453,7 @@ export async function executePush(
                 syncDeletes,
                 ...(plannedDeletePaths !== undefined ? { plannedDeletePaths } : {}),
                 excludePatterns: effectiveExcludePatterns,
+                userExcludePatterns: userExcludePatterns(workingConfig),
                 architecture: resolveArchitecture(
                   ctx.persistedConfig.vocareum.architecture,
                   partAction.part.settings?.labtype,

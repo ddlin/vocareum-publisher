@@ -19,10 +19,14 @@ vi.mock('../../src/api/content', () => ({
 }));
 
 // Mock the files utility module
-vi.mock('../../src/utils/files', () => ({
+vi.mock('../../src/utils/files', async () => ({
   readDirectory: vi.fn(),
   calculateDirectoryHash: vi.fn(),
   compileExcludedPathMatcher: vi.fn(() => () => false),
+  // Real matcher: the delete set depends on its behaviour.
+  compileExcludedSubtreeMatcher: (
+    await vi.importActual<typeof import('../../src/utils/files')>('../../src/utils/files')
+  ).compileExcludedSubtreeMatcher,
 }));
 
 // Mock logger to suppress output during tests
@@ -229,6 +233,43 @@ describe('syncDirectory', () => {
       mockClient, 'c1', 'a1', 'p1', 'startercode', 'stale.py', undefined
     );
     expect(result.deleted).toEqual(['stale.py']);
+  });
+
+  describe.each([
+    ['venv', ['venv']],
+    ['venv/**', ['venv/**']],
+    ['venv/*', ['venv/*']],
+    ['venv/bin/**', ['venv/bin/**']],
+  ])('X9: excluded directory entry (%s)', (_label, patterns) => {
+    it('sends no delete request for the entry', async () => {
+      mockReadDirectory.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+      mockListFiles.mockResolvedValueOnce([{ path: 'venv', size: 0 }, { path: 'old.txt', size: 1 }]);
+      mockDeleteFile.mockResolvedValue(true);
+
+      const result = await syncDirectory(
+        mockClient, 'c1', 'a1', 'p1', 'lab1/part1/startercode', 'startercode',
+        { syncDeletes: true, userExcludePatterns: patterns },
+      );
+
+      expect(mockDeleteFile).toHaveBeenCalledTimes(1);
+      expect(mockDeleteFile).toHaveBeenCalledWith(
+        mockClient, 'c1', 'a1', 'p1', 'startercode', 'old.txt', undefined,
+      );
+      expect(result.deleted).toEqual(['old.txt']);
+    });
+  });
+
+  it('without patterns the delete set is unchanged', async () => {
+    mockReadDirectory.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+    mockListFiles.mockResolvedValueOnce([{ path: 'venv', size: 0 }, { path: 'old.txt', size: 1 }]);
+    mockDeleteFile.mockResolvedValue(true);
+
+    const result = await syncDirectory(
+      mockClient, 'c1', 'a1', 'p1', 'lab1/part1/startercode', 'startercode',
+      { syncDeletes: true, userExcludePatterns: [] },
+    );
+
+    expect(result.deleted).toEqual(['venv', 'old.txt']);
   });
 
   it('uses the approved deletion set without relisting remote files', async () => {

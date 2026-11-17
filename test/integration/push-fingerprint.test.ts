@@ -33,12 +33,14 @@ const { mockCalculateDirectoryHash, mockReadDirectory, mockReadFile } = vi.hoist
   mockReadFile: vi.fn().mockResolvedValue('vocareum-yaml-content'),
 }));
 
-vi.mock('../../src/utils/files', () => ({
+vi.mock('../../src/utils/files', async () => ({
   pathExists: vi.fn().mockResolvedValue(true),
   readFile: mockReadFile,
   ensureDirectory: vi.fn().mockResolvedValue(undefined),
   readDirectory: mockReadDirectory,
   calculateDirectoryHash: mockCalculateDirectoryHash,
+  // Real matcher: the plan's delete set depends on its behaviour.
+  compileExcludedSubtreeMatcher: (await vi.importActual<typeof import('../../src/utils/files')>('../../src/utils/files')).compileExcludedSubtreeMatcher,
 }));
 
 // ── RecordingClient + VocareumClient mock ─────────────────────────────────────
@@ -355,6 +357,19 @@ describe('push-fingerprint: deletePaths populated and shifts fingerprint (FIX 1b
 
     // The fingerprints must differ because the delete sets differ
     expect(plan1.semanticFingerprint).not.toBe(plan2.semanticFingerprint);
+  });
+
+  it('X9: plan deletePaths omit excluded paths', async () => {
+    const config = { ...makeConfig(), publish_options: { exclude_patterns: ['venv/*'] } } as Config;
+    enqueueWithDeleteResponses([{ path: 'venv' }, { path: 'old.txt' }, { path: 'local-file.txt' }]);
+    const plan = await planPush(makeCtx(config), { syncDeletes: true });
+    expect(plan.intent.assignments[0]?.parts[0]?.deletePaths).toEqual(['startercode/old.txt']);
+  });
+
+  it('without patterns the plan deletePaths are unchanged', async () => {
+    enqueueWithDeleteResponses([{ path: 'venv' }, { path: 'old.txt' }, { path: 'local-file.txt' }]);
+    const plan = await planPush(makeCtx(makeConfig()), { syncDeletes: true });
+    expect(plan.intent.assignments[0]?.parts[0]?.deletePaths).toEqual(['startercode/venv', 'startercode/old.txt']);
   });
 
   it('zero API calls for deletePaths when syncDeletes is false', async () => {

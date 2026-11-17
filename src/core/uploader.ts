@@ -9,7 +9,7 @@ import type { UploadOptions } from '../types/state';
 import type { UploadResult } from '../types/api';
 import { VocareumClient } from '../api/client';
 import { uploadContent, deleteFile, listFiles } from '../api/content';
-import { readDirectory as readLocalDirectory, calculateDirectoryHash } from '../utils/files';
+import { readDirectory as readLocalDirectory, calculateDirectoryHash, compileExcludedSubtreeMatcher } from '../utils/files';
 import { assertConfinedToWorkspace } from './local-scan';
 import { LoggerEventSink } from '../utils/logger-event-sink';
 import type { EventSink } from './services/event-sink';
@@ -132,7 +132,13 @@ export async function syncDirectory(
             );
             const localFiles = await readLocalDirectory(localPath, options.excludePatterns);
             const localFileSet = new Set(Object.keys(localFiles));
-            return remoteFiles.filter((remoteFile) => !localFileSet.has(remoteFile.path));
+            // An excluded path is invisible to the push, so its absence locally
+            // is not a deletion; this also protects an entry (e.g. `venv`)
+            // that holds excluded content.
+            const isExcluded = compileExcludedSubtreeMatcher(options.userExcludePatterns ?? []);
+            return remoteFiles.filter(
+              (remoteFile) => !localFileSet.has(remoteFile.path) && !isExcluded(remoteFile.path),
+            );
           })();
 
       if (filesToDelete.length > 0) {
