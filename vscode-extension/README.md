@@ -95,9 +95,10 @@ Or if using the GitHub Action workflow, vocgit is installed automatically in CI/
 - **vocgit CLI 1.2.0 or newer for sidebar sync badges** — the extension runs
   `vocgit status --json` so badges always reflect the content change detection
   `vocgit push` uses. With an older CLI, commands still work but badges show
-  "unknown" and the extension prompts you to update. Extension 1.2.0 reads
-  both the CLI 1.2–1.4 status report and the CLI 1.5 `--json` envelope;
-  earlier extension builds show "unknown" badges with CLI 1.5 or newer.
+  "unknown" and the extension prompts you to update. Extension 1.3.0 reads
+  the CLI 1.2–1.4 status report and every 1.x `--json` envelope (CLI 1.5 and
+  newer). Extension 1.2.0 shows "unknown" badges with CLI 1.6 or newer, and
+  earlier builds with CLI 1.5 or newer.
 - A valid `vocareum.yaml` configuration file
 
 ## Links
