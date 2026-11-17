@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-11-16
+
 ### Added
 - **`publish_options.exclude_patterns` now governs pull, drift and
   `--sync-deletes`, not only push.** An excluded path is never fetched, written,
@@ -32,7 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An unreadable local subdirectory inside a synced directory now makes the drift
   check incomplete (exit 6) instead of being ignored.
 - A pull history entry records skipped drift checks as failures (status
-  `failed`).
+  `failed`), and carries the previous entry's `settings_state` and
+  `file_size_state` forward, so a pull does not make the next push re-send
+  settings nobody changed.
 - Envelope `schema_version` is `"1.1"`. Pull `payload_schema_version` is `2`,
   with `applied.hashesRefreshed` and `inspection.hashRefresh` entries
   `{ assignmentName, stateKey }`.
@@ -44,16 +48,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### VS Code extension
 
-- **The status view needs an extension built from this repository after this
-  change.** The extension source here now accepts any 1.x envelope; the published
-  extension 1.2.0 accepts only envelope `"1.0"` and shows status as unknown
-  against the 1.1 envelope.
+- **Extension 1.3.0** accepts any 1.x `--json` envelope, including CLI 1.6's
+  `"1.1"`. Extension 1.2.0 accepts only `"1.0"` and shows "unknown" badges
+  against CLI 1.6.
+
+## [1.5.0] — 2026-11-12
+
+### VS Code extension
+
 - **Extension 1.2.0**, attached to the v1.5.0 GitHub Release as
   `vocgit-1.2.0.vsix`. It reads the CLI 1.5 `--json` envelope for the sidebar
   sync badges, and still reads the CLI 1.2–1.4 report. Extension 1.1.0 shows
   "unknown" badges against CLI 1.5.
-
-## [1.5.0] — 2026-11-12
 
 (A `[1.5.0]` section dated 2026-11-09 was written for the EU tenant work but
 never published; it is folded in here.)
