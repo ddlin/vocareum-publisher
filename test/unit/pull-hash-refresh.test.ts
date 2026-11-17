@@ -13,12 +13,24 @@ import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-const { mockDownloadContent, mockReconcile, hashHook } = vi.hoisted(() => ({
+const { mockDownloadContent, mockReconcile, hashHook, callLog } = vi.hoisted(() => ({
   mockDownloadContent: vi.fn(),
   mockReconcile: vi.fn(),
   /** When set, may replace the result of the n-th calculateDirectoryHash call (1-based). */
   hashHook: { fn: undefined as undefined | ((dir: string, call: number, real: string) => string), calls: 0 },
+  /** Ordered record of directory hashes and the service's local file reads. */
+  callLog: [] as string[],
 }));
+// The service reads local files through a dynamic `import('fs/promises')`;
+// logging its readFile pins where the comparison falls between the hashes.
+vi.mock('fs/promises', async () => {
+  const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+  const readFile = ((...args: Parameters<typeof actual.readFile>) => {
+    callLog.push(`read:${String(args[0])}`);
+    return actual.readFile(...args);
+  }) as typeof actual.readFile;
+  return { ...actual, readFile, default: { ...actual, readFile } };
+});
 vi.mock('../../src/api/content', async () => {
   const actual = await vi.importActual<typeof import('../../src/api/content')>('../../src/api/content');
   return { ...actual, downloadContent: mockDownloadContent };
@@ -31,6 +43,7 @@ vi.mock('../../src/utils/files', async () => {
     calculateDirectoryHash: async (dir: string, excludes?: string[]): Promise<string> => {
       const real = await actual.calculateDirectoryHash(dir, excludes);
       hashHook.calls++;
+      callLog.push(`hash:${dir}`);
       return hashHook.fn ? hashHook.fn(dir, hashHook.calls, real) : real;
     },
   };
@@ -59,6 +72,7 @@ beforeEach(async () => {
   mockReconcile.mockResolvedValue({ orphanedInVocareum: [], staleInConfig: [] });
   hashHook.fn = undefined;
   hashHook.calls = 0;
+  callLog.length = 0;
 });
 afterEach(async () => {
   for (const p of chmodded.splice(0)) { await fs.chmod(p, 0o755).catch(() => undefined); }
@@ -162,6 +176,7 @@ async function setupVenv(): Promise<{ withVenv: string; withoutVenv: string }> {
   const withVenv = await calculateDirectoryHash(dir, ['.gitkeep', '**/.gitkeep']);
   const withoutVenv = await calculateDirectoryHash(dir, HASHING);
   hashHook.calls = 0;
+  callLog.length = 0;
   return { withVenv, withoutVenv };
 }
 
@@ -222,6 +237,14 @@ describe('hash refresh: service', () => {
     expect(hashHook.calls).toBe(2);
     expect(inspection.hashRefresh).toEqual([]);
     expect(inspection.contentDrift).toEqual([]);
+    // The two hashes bracket the comparison's read of the local file.
+    const dataDir = abs('asn1/data');
+    const firstHash = callLog.indexOf(`hash:${dataDir}`);
+    const compareRead = callLog.indexOf(`read:${abs('asn1/data/a.txt')}`);
+    const secondHash = callLog.lastIndexOf(`hash:${dataDir}`);
+    expect(firstHash).toBeGreaterThanOrEqual(0);
+    expect(compareRead).toBeGreaterThan(firstHash);
+    expect(secondHash).toBeGreaterThan(compareRead);
   });
 
   it('directory removed between check and apply → no refresh, even when its checked hash is the empty digest', async () => {
@@ -270,6 +293,8 @@ describe('hash refresh: service', () => {
   it('an already-current hash is not refreshed (no-op pull stays a no-op)', async () => {
     const { withoutVenv } = await setupVenv();
     const run = await inspectAndApply(makeConfig({ state: { [KEY]: withoutVenv } }));
+    // Not eligible, so not read a second time.
+    expect(hashHook.calls).toBe(1);
     expect(run.inspection.hashRefresh).toEqual([]);
     expect(run.update).not.toHaveBeenCalled();
     expect(run.result.hashesRefreshed).toBe(0);
@@ -303,6 +328,22 @@ describe('hash refresh: service', () => {
       await fs.symlink(outside, abs('asn1/data/escape'));
       const { inspection } = await inspect(makeConfig({ state: { [KEY]: withVenv } }));
       expect(inspection.contentDrift).toEqual([]);
+      expect(inspection.hashRefresh).toEqual([]);
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('a top-level directory symlink escaping the part is never hashed or refreshed', async () => {
+    await fs.mkdir(abs('asn1'), { recursive: true });
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'vocgit-hash-refresh-home-'));
+    try {
+      await fs.writeFile(path.join(outside, 'private.txt'), 'outside the part');
+      await fs.symlink(outside, abs('asn1/data'));
+      mockDownloadContent.mockResolvedValue({});
+      const { inspection } = await inspect(makeConfig({ state: { [KEY]: 'old' } }));
+      expect(hashHook.calls).toBe(0);
+      expect(callLog.some((c) => c.includes(outside))).toBe(false);
       expect(inspection.hashRefresh).toEqual([]);
     } finally {
       await fs.rm(outside, { recursive: true, force: true });
@@ -396,6 +437,9 @@ describe('hash refresh: service', () => {
     const entry = run.update.mock.calls[0][0].publish_history[0];
     expect(entry.status).toBe('failed');
     expect(entry.content_state[KEY]).toBe('incomplete-pull');
+    // The inspection reports the cause as a skipped check; history records it once.
+    expect(run.inspection.contentDriftIncomplete).toHaveLength(1);
+    expect(entry.failed).toEqual([expect.objectContaining({ type: 'file', id: KEY })]);
   });
 
   it("history: a refresh in a run where another assignment's drift check was skipped records status failed with that skip in failed[]", async () => {

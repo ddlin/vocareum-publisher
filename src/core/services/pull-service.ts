@@ -1162,6 +1162,16 @@ async function walkLocalDirectory(
 }
 
 /**
+ * The skip reason for marked directories a drift check could not complete.
+ * Shared with apply, which records these causes as file failures and must
+ * not record them a second time as a skipped check.
+ */
+function stillIncompleteReason(dirs: readonly DirectoryType[]): string {
+  return `${dirs.map(d => `${d}/`).join(', ')} still incomplete: ` +
+    `some remote files could not be written locally (see the warnings above)`;
+}
+
+/**
  * The exclusion-aware hash of a local directory, or undefined when it is not
  * a directory or cannot be hashed. `calculateDirectoryHash` alone answers the
  * empty digest for a missing directory — the same as one holding only
@@ -1279,10 +1289,16 @@ export async function detectContentDrift(
         // The hash of what is about to be compared, taken before the
         // comparison reads a file: an edit before this point shows up as a
         // diff, an edit after it changes the second hash below.
+        // Only directories confined to the part are hashed: the hash follows
+        // a top-level symlink, and the check must read nothing outside the
+        // part (a `data -> $HOME` link would otherwise be read in full). A
+        // directory absent here has no `before` and is never refreshed.
         const checkedHashes = new Map<DirectoryType, string>();
         if (refreshes !== undefined && baseExists) {
           for (const dir of downloadPlan.directories) {
-            const hash = await directoryHashIfPresent(path.join(localBaseAbs, dir), hashingExcludes);
+            const dirAbs = path.join(localBaseAbs, dir);
+            if (!await pathExists(dirAbs) || !await isPathConfinedToBase(localBaseAbs, dirAbs)) { continue; }
+            const hash = await directoryHashIfPresent(dirAbs, hashingExcludes);
             if (hash !== undefined) { checkedHashes.set(dir, hash); }
           }
         }
@@ -1410,15 +1426,16 @@ export async function detectContentDrift(
           const shadowedDirs = new Set([...shadowedByLink].map(link => link.split('/')[0]));
           for (const dir of directories) {
             const before = checkedHashes.get(dir);
-            if (before === undefined || drifted.has(dir) || omittedDirs.has(dir) ||
-                unproven.has(dir) || shadowedDirs.has(dir)) {
+            const stateKey = path.join(localBasePath, dir);
+            // Already current: nothing to refresh, so no second full read.
+            // Missing, incomplete-pull and push-incomplete values all differ
+            // from a real hash: the check just proved what they say is unknown.
+            if (before === undefined || contentState[stateKey] === before || drifted.has(dir) ||
+                omittedDirs.has(dir) || unproven.has(dir) || shadowedDirs.has(dir)) {
               continue;
             }
             const after = await directoryHashIfPresent(path.join(localBaseAbs, dir), hashingExcludes);
-            const stateKey = path.join(localBasePath, dir);
-            // Missing, incomplete-pull and push-incomplete values all differ
-            // from a real hash: the check just proved what they say is unknown.
-            if (after !== before || contentState[stateKey] === after) { continue; }
+            if (after !== before) { continue; }
             assignmentRefreshes.push({
               assignmentName: assignment.name,
               stateKey,
@@ -1440,11 +1457,7 @@ export async function detectContentDrift(
           // Recovery cannot finish these: report the check as incomplete (the
           // pull exits 1) and keep their markers, or push would reset:1-delete
           // the remote files that could not be written here.
-          skipped?.push({
-            assignmentName: assignment.name,
-            reason: `${stillIncomplete.map(d => `${d}/`).join(', ')} still incomplete: ` +
-              `some remote files could not be written locally (see the warnings above)`,
-          });
+          skipped?.push({ assignmentName: assignment.name, reason: stillIncompleteReason(stillIncomplete) });
         }
         // A still-incomplete directory with nothing else to change must still
         // reach apply, or its failed recovery leaves no publish_history entry
@@ -2005,11 +2018,18 @@ export async function applyPull(
   ).values()];
   // A history entry written while some drift check was skipped (for example
   // one recording a refresh) must not read as a clean run (AGENTS.md #9).
-  const driftCheckSkips: HistoryFailedEntity[] = (inspection.contentDriftIncomplete ?? []).map(skip => ({
-    type: 'assignment',
-    id: skip.assignmentName,
-    error: `content drift check skipped: ${skip.reason}`,
-  }));
+  // Still-incomplete directories are already listed above, one file entry
+  // each; their skip is the same cause and is not recorded twice.
+  const stillIncompleteSkips = new Set(inspection.contentDrift.flatMap(drift => drift.partsDrift
+    .filter(pd => (pd.stillIncompleteDirectories?.length ?? 0) > 0)
+    .map(pd => `${drift.assignmentName}\0${stillIncompleteReason(pd.stillIncompleteDirectories ?? [])}`)));
+  const driftCheckSkips: HistoryFailedEntity[] = (inspection.contentDriftIncomplete ?? [])
+    .filter(skip => !stillIncompleteSkips.has(`${skip.assignmentName}\0${skip.reason}`))
+    .map(skip => ({
+      type: 'assignment',
+      id: skip.assignmentName,
+      error: `content drift check skipped: ${skip.reason}`,
+    }));
   const historyFailed: HistoryFailedEntity[] = [
     ...importFailures, ...stillIncompleteFailures, ...driftCheckSkips, ...historyFailuresFor(importMisses),
   ];
